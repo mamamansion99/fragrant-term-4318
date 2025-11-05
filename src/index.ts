@@ -736,6 +736,38 @@ function quickKeywordReply(text, env) {
     return contactMenu;
   }
 
+  if (['รายละเอียด', 'รายละเอียดห้อง', 'room detail', 'room details', 'details'].includes(lower)) {
+    const quickItems = [
+      { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
+      { label: 'เฟอร์นิเจอร์', act: 'ROOM_FURNITURE' },
+      { label: 'เครื่องใช้ไฟฟ้า', act: 'ROOM_APPLIANCE' },
+      { label: 'ค่าเช่า', act: 'ROOM_RENT' },
+      { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
+      { label: 'เงินประกัน/สัญญา', act: 'ROOM_DEPOSIT' },
+      { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
+      { label: 'เข้าอยู่เร็วสุด', act: 'ROOM_EARLIEST' },
+      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' }
+    ]
+      .filter(Boolean)
+      .map(({ label, act }) => ({
+        type: 'action',
+        action: {
+          type: 'postback',
+          label,
+          data: `act=${act}`,
+          displayText: label
+        }
+      }));
+
+    return [
+      {
+        type: 'text',
+        text: 'เลือกหัวข้อรายละเอียดห้องที่อยากดูได้เลยค่ะ 👇',
+        quickReply: { items: quickItems }
+      }
+    ];
+  }
+
   if (normalized.includes('ที่ตั้ง') || normalized.includes('แผนที่') || ['location', 'map'].includes(lower)) {
     const mapUrl = String((env?.MAPS_URL || '').trim() || 'https://maps.app.goo.gl/Qktm2mDGPappQ8EZA');
     const mapMessage = [
