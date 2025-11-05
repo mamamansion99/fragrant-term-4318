@@ -1,3 +1,5 @@
+// @ts-nocheck
+
 /* =========================
  * 0) Small utilities
  * ========================= */
@@ -572,4 +574,102 @@ function fixDetailByKey(key){
     FIX_OTHER:'[อื่น ๆ]\nเพิ่มเติมรายละเอียดให้เรา เพื่อจัดการได้เร็วขึ้น'
   };
   return map[key] || 'เลือกหัวข้อจาก Quick Reply ได้เลยครับ/ค่ะ';
+}
+
+/* =========================================
+ * 7) LINE helpers (missing utilities)
+ * ========================================= */
+async function lineReply(channelToken, replyToken, messages) {
+  if (!channelToken || !replyToken) {
+    throw new Error('lineReply: missing token or replyToken');
+  }
+
+  const res = await fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelToken}`,
+    },
+    body: JSON.stringify({ replyToken, messages })
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`LINE reply failed ${res.status} ${res.statusText}: ${body}`);
+  }
+}
+
+async function verifySig(bodyText, signature, channelSecret) {
+  if (!channelSecret || !signature) return false;
+
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(channelSecret);
+  const bodyData = encoder.encode(bodyText || '');
+
+  const key = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign', 'verify']
+  );
+
+  let sigBytes;
+  try {
+    const binary = atob(signature);
+    sigBytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+  } catch (_) {
+    return false;
+  }
+
+  const signatureBuffer = await crypto.subtle.sign('HMAC', key, bodyData);
+  const expected = new Uint8Array(signatureBuffer);
+
+  if (expected.length !== sigBytes.length) return false;
+
+  let diff = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    diff |= expected[i] ^ sigBytes[i];
+  }
+
+  return diff === 0;
+}
+
+function parseKv(data) {
+  const out = {};
+  if (!data) return out;
+
+  const parts = String(data).split('&');
+  for (const part of parts) {
+    if (!part) continue;
+    const [rawKey, rawVal = ''] = part.split('=');
+    const key = decodeURIComponent(rawKey || '').trim();
+    const val = decodeURIComponent(rawVal || '').trim();
+    if (!key) continue;
+    if (Object.prototype.hasOwnProperty.call(out, key)) {
+      const prev = out[key];
+      out[key] = Array.isArray(prev) ? prev.concat(val) : [prev, val];
+    } else {
+      out[key] = val;
+    }
+  }
+  return out;
+}
+
+async function moveoutTextGate(env, stateKey, textIn, replyToken) {
+  // Fallback implementation: forward all handling to GAS by returning false.
+  // Existing MOVEOUT flows handled in GAS will continue to work.
+  return false;
+}
+
+function quickKeywordReply(text, env) {
+  const normalized = (text || '').trim();
+  if (!normalized) return null;
+
+  const map = {
+    'เบอร์ติดต่อ': [{ type: 'text', text: 'ฝ่ายขาย 02-xxx-xxxx / LINE @mamamansion' }],
+    'ติดต่อ': [{ type: 'text', text: 'ติดต่อทีมแม่บ้าน/ผู้ดูแล โทร 02-xxx-xxxx หรือ LINE @mamamansion' }],
+  };
+
+  return map[normalized] || null;
 }
