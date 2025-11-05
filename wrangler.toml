@@ -1,6 +1,6 @@
 name = "fragrant-term-4318"
 main = "src/index.ts"
-compatibility_date = "2024-11-06"
+compatibility_date = "2025-08-08"
 
 [vars]
 ALLOWED_ORIGIN = "https://mamamansion-ar2.pages.dev"
@@ -11,8 +11,9 @@ MM_GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyUJpLq0qumPl5B4sz
 APPS_SCRIPT_URL   = "https://script.google.com/macros/s/AKfycbyUJpLq0qumPl5B4szrNFBZdmVr3RN_y5pFmiRVOwpW_kkbwIgIXHL_MowlNjF97yqx/exec"
 PAYRENT_GAS_URL    = "https://script.google.com/macros/s/AKfycbwneoLD2XjHCFrCqodqDmy62PDAUjPwN3aG_GTA3VWpsB86W2Q6iPh8qKYSq6WdDNLL7w/exec"
 MOVEOUT_GAS_URL    = "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec"
-# HOWTO_IMAGE_URL_1 = ""
-# HOWTO_IMAGE_URL_2 = ""
+HOWTO_IMAGE_URL_1 = "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ"
+HOWTO_IMAGE_URL_2 = "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3"
+
 
 [[kv_namespaces]]
 binding = "KV"

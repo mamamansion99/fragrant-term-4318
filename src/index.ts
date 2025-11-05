@@ -691,6 +691,42 @@ function quickKeywordReply(text, env) {
     return contactMenu;
   }
 
+  if (normalized.includes('วิธีจอง')) {
+    const bookingStepsText = [
+      '[📅 วิธีจองห้องพัก]',
+      '',
+      '1) เข้า “ระบบจอง” ที่ลิงก์นี้: https://mamamansion-ar2.pages.dev/',
+      '2) กรอกข้อมูล เลือกห้องและวันที่เข้าอยู่ แล้วส่งฟอร์ม',
+      '3) ระบบออกเลขรหัส #MMxxx',
+      '4) พิมพ์รหัส #MMxxx ในแชทนี้',
+      '5) ชำระค่าจองและรอยืนยันจากเจ้าหน้าที่',
+      '6) ⚠️ หลังจองในเว็บไซต์ ต้องยืนยันและชำระค่าจองทาง LINE นี้ภายใน 2 ชั่วโมง มิฉะนั้นระบบจะยกเลิกอัตโนมัติ'
+    ].join('\n');
+
+    const defaultBookingImageUrls = [
+      'https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ',
+      'https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3'
+    ];
+
+    const bookingImages = defaultBookingImageUrls
+      .map((fallbackUrl, idx) => {
+        const override = idx === 0 ? env?.HOWTO_IMAGE_URL_1 : env?.HOWTO_IMAGE_URL_2;
+        const url = String((override || '').trim() || fallbackUrl);
+        if (!url) return null;
+        return {
+          type: 'image',
+          originalContentUrl: url,
+          previewImageUrl: url
+        };
+      })
+      .filter(Boolean);
+
+    return [
+      { type: 'text', text: bookingStepsText },
+      ...bookingImages
+    ];
+  }
+
   if (['แม่บ้าน', 'ติดต่อแม่บ้าน', 'เบอร์แม่บ้าน', 'โทรหาแม่บ้าน'].includes(lower)) {
     return maidContact;
   }
