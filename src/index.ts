@@ -448,46 +448,33 @@ if (
             continue;
           }
 
-          // (C.1) Fridge intent detection
-          const fridgeIntent = detectFridgeIntent(textIn);
-          if (fridgeIntent) {
-            const fridgeText = fridgeIntent === 'price'
-              ? 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง) และคิดรวมไปกับค่าเช่าเดือนถัดไปค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องหรือพิมพ์ "อยากได้ตู้เย็น" ได้เลยนะคะ'
-              : 'เรามีบริการเช่าตู้เย็นเสริม 200 บาท/เดือน พร้อมติดตั้งถึงห้อง หากต้องการเช่าสามารถแจ้งเลขห้องเพื่อให้เจ้าหน้าที่ตรวจสอบและนัดวันส่งได้เลยค่ะ';
-
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-              type: 'text',
-              text: fridgeText,
-              quickReply: {
-                items: [
-                  {
-                    type: 'action',
-                    action: {
-                      type: 'message',
-                      label: 'อยากได้ตู้เย็น',
-                      text: 'อยากได้ตู้เย็น'
-                    }
-                  },
-                  {
-                    type: 'action',
-                    action: {
-                      type: 'message',
-                      label: 'ราคาตู้เย็น',
-                      text: 'ราคาตู้เย็นเท่าไหร่'
-                    }
-                  }
-                ]
-              }
-            }]).catch(console.error);
-
-            if (fridgeIntent === 'rent') {
-              ctx.waitUntil(forwardToGas(env, {
-                intent: 'fridge_rent',
-                text: textIn,
-                events: [ev]
-              }));
+          // (C.1) Fridge intent detection (AI + fallback)
+          if (mentionsFridge(textIn)) {
+            let aiIntent = null;
+            try {
+              aiIntent = await withTimeout(
+                classifyFridgeIntentWithAI(env, textIn),
+                4000
+              );
+            } catch (err) {
+              console.warn('fridge_ai_timeout', err);
             }
-            continue;
+
+            const intentKey = aiIntent?.intent || detectFridgeIntent(textIn);
+            if (intentKey) {
+              const reply = buildFridgeReply(intentKey);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [reply]).catch(console.error);
+
+              if (intentKey === 'rent') {
+                ctx.waitUntil(forwardToGas(env, {
+                  intent: 'fridge_rent',
+                  text: textIn,
+                  events: [ev],
+                  sourceIntent: aiIntent?.intent ? 'ai' : 'fallback'
+                }));
+              }
+              continue;
+            }
           }
 
           // (D) Quick keyword replies
@@ -901,6 +888,10 @@ function quickKeywordReply(text, env) {
   return null;
 }
 
+function mentionsFridge(text) {
+  return /(ตู้เย็น|fridge|refrigerator)/i.test(text || '');
+}
+
 function detectFridgeIntent(text) {
   const normalized = (text || '').trim().toLowerCase();
   if (!normalized) return null;
@@ -916,4 +907,117 @@ function detectFridgeIntent(text) {
   if (hasRent) return 'rent';
 
   return 'general';
+}
+
+function buildFridgeReply(intentKey) {
+  const quickItems = [
+    {
+      type: 'action',
+      action: { type: 'message', label: 'อยากได้ตู้เย็น', text: 'อยากได้ตู้เย็น' }
+    },
+    {
+      type: 'action',
+      action: { type: 'message', label: 'ราคาตู้เย็น', text: 'ราคาตู้เย็นเท่าไหร่' }
+    }
+  ];
+
+  switch (intentKey) {
+    case 'rent':
+      return {
+        type: 'text',
+        text: 'รับทราบค่ะ ตู้เย็นเสริมมีค่าเช่า 200 บาท/เดือน (รวมติดตั้ง) กรุณาพิมพ์เลขห้องเพื่อให้เราตรวจสอบตู้เย็นว่างและนัดหมายส่งให้คุณนะคะ',
+        quickReply: { items: quickItems }
+      };
+    case 'price':
+      return {
+        type: 'text',
+        text: 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง และคิดรวมกับค่าเช่าเดือนถัดไป) หากต้องการเช่าสามารถแจ้งเลขห้องหรือกดปุ่ม “อยากได้ตู้เย็น” ได้เลยค่ะ',
+        quickReply: { items: quickItems }
+      };
+    case 'general':
+    case 'fridge_other':
+      return {
+        type: 'text',
+        text: 'เรามีบริการเช่าตู้เย็นเสริม 200 บาท/เดือน พร้อมติดตั้งถึงห้อง หากต้องการเช่าสามารถแจ้งเลขห้องเพื่อให้เจ้าหน้าที่ตรวจสอบและนัดวันส่งได้เลยค่ะ',
+        quickReply: { items: quickItems }
+      };
+    default:
+      return {
+        type: 'text',
+        text: 'ตู้เย็นเสริมมีให้เช่า 200 บาท/เดือนค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องได้เลยนะคะ',
+        quickReply: { items: quickItems }
+      };
+  }
+}
+
+async function classifyFridgeIntentWithAI(env, text) {
+  if (!env?.OPENAI_API_KEY) return null;
+  const systemPrompt = [
+    'You classify Thai LINE chat messages for an apartment assistant.',
+    'Return JSON with fields intent and optional confidence 0-1.',
+    'Intent options: fridge_rent, fridge_price, fridge_other, other.',
+    'fridge_rent: user wants to rent/add a fridge.',
+    'fridge_price: user asks about price or plan for the fridge.',
+    'fridge_other: general fridge question.',
+    'other: anything else.',
+    'Do not include extra text outside JSON.'
+  ].join('\n');
+
+  const payload = {
+    model: 'gpt-4o-mini',
+    response_format: { type: 'json_object' },
+    temperature: 0.2,
+    max_output_tokens: 200,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: text }
+    ]
+  };
+
+  const res = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${env.OPENAI_API_KEY}`
+    },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    console.error('openai_responses_error', res.status, errText.slice(0, 200));
+    return null;
+  }
+
+  let raw = '';
+  try {
+    const data = await res.json();
+    raw = data?.output?.[0]?.content?.[0]?.text || '';
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const intent = typeof parsed.intent === 'string' ? parsed.intent.trim() : '';
+    if (!intent) return null;
+    return {
+      intent: intent === 'fridge_other' ? 'general' : intent.replace(/^fridge_/, ''),
+      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null
+    };
+  } catch (err) {
+    console.error('openai_responses_parse', err, raw.slice(0, 200));
+    return null;
+  }
+}
+
+async function withTimeout(promise, ms) {
+  let timeout;
+  const timer = new Promise((_, reject) => {
+    timeout = setTimeout(() => reject(new Error('timeout')), ms);
+  });
+  try {
+    const result = await Promise.race([promise, timer]);
+    clearTimeout(timeout);
+    return result;
+  } catch (err) {
+    clearTimeout(timeout);
+    throw err;
+  }
 }
