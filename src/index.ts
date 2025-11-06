@@ -433,14 +433,6 @@ if (url.pathname.startsWith('/api/moveout')) {
             };
 
             await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, confirmMessage).catch(console.error);
-
-            ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), {
-              intent: 'fridge_rent',
-              via: 'quick_button',
-              roomId,
-              lineUserId: userId,
-              events: [ev]
-            }));
           } else {
             const retryMessage = {
               type: 'text',
@@ -505,6 +497,7 @@ if (
           const textIn  = (m.text || '').trim();
           const chatId  = getChatId(ev);
           const stateKey= getStateKey(ev);
+          const userId  = ev?.source?.userId || '';
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
@@ -548,6 +541,27 @@ if (
           const fast = quickKeywordReply(textIn, env);
           if (fast) {
             ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
+            continue;
+          }
+
+          const confirmMatch = /^ยืนยันเช่าตู้เย็น\s+ห้อง\s+([A-Za-z]\d{3,4})\s*$/i.exec(textIn || '');
+          if (confirmMatch) {
+            const confirmedRoom = confirmMatch[1].toUpperCase();
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+              type: 'text',
+              text: `✅ รับคำยืนยันเช่าตู้เย็นสำหรับห้อง ${confirmedRoom} แล้วค่ะ ทีมงานจะดำเนินการต่อให้เร็วที่สุด`
+            }]).catch(console.error);
+
+            ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), {
+              act: 'fridge_rent',
+              via: 'LINE confirm',
+              roomId: confirmedRoom,
+              lineUserId: userId,
+              text: textIn,
+              events: [ev]
+            }));
+
             continue;
           }
 
