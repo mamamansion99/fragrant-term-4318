@@ -451,21 +451,8 @@ if (
           // (C.1) Fridge intent detection
           const fridgeIntent = detectFridgeIntent(textIn);
           if (fridgeIntent) {
-            if (fridgeIntent === 'rent') {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-                type: 'text',
-                text: 'รับทราบค่ะ กำลังตรวจสอบตู้เย็นว่างและจะแจ้งผู้จัดการนัดหมายรับตู้เย็นให้คุณนะคะ'
-              }]).catch(console.error);
-              ctx.waitUntil(forwardToGas(env, {
-                intent: 'fridge_rent',
-                text: textIn,
-                events: [ev]
-              }));
-              continue;
-            }
-
             const fridgeText = fridgeIntent === 'price'
-              ? 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง) และคิดรวมไปกับค่าเช่าเดือนถัดไปค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องหรือพิมพ์ "ขอเช่าตู้เย็น" ได้เลยนะคะ'
+              ? 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง) และคิดรวมไปกับค่าเช่าเดือนถัดไปค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องหรือพิมพ์ "อยากได้ตู้เย็น" ได้เลยนะคะ'
               : 'เรามีบริการเช่าตู้เย็นเสริม 200 บาท/เดือน พร้อมติดตั้งถึงห้อง หากต้องการเช่าสามารถแจ้งเลขห้องเพื่อให้เจ้าหน้าที่ตรวจสอบและนัดวันส่งได้เลยค่ะ';
 
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
@@ -477,8 +464,8 @@ if (
                     type: 'action',
                     action: {
                       type: 'message',
-                      label: 'ขอเช่าตู้เย็น',
-                      text: 'ขอเช่าตู้เย็น'
+                      label: 'อยากได้ตู้เย็น',
+                      text: 'อยากได้ตู้เย็น'
                     }
                   },
                   {
@@ -492,6 +479,14 @@ if (
                 ]
               }
             }]).catch(console.error);
+
+            if (fridgeIntent === 'rent') {
+              ctx.waitUntil(forwardToGas(env, {
+                intent: 'fridge_rent',
+                text: textIn,
+                events: [ev]
+              }));
+            }
             continue;
           }
 
@@ -917,9 +912,8 @@ function detectFridgeIntent(text) {
   const hasRent = rentKeywords.some(k => normalized.includes(k));
   const hasPrice = priceKeywords.some(k => normalized.includes(k));
 
-  if (hasRent && !hasPrice) return 'rent';
-  if (hasPrice && !hasRent) return 'price';
-  if (hasRent && hasPrice) return 'rent';
+  if (hasPrice) return 'price';
+  if (hasRent) return 'rent';
 
   return 'general';
 }
