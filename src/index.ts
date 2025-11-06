@@ -77,6 +77,10 @@ function getPayRentGas(env){
   return env.PAYRENT_GAS_URL || '';
 }
 
+function getReservationGas(env){
+  return env.RESERVATION_URL || '';
+}
+
 async function forwardToSpecificGas(env, gasUrl, body) {
   const secret = env.WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret };
@@ -382,7 +386,7 @@ if (url.pathname.startsWith('/api/moveout')) {
               text: `✅ บันทึกคำขอเช่าตู้เย็นสำหรับห้อง ${roomId} แล้วค่ะ ทีมงานจะติดต่อเพื่อยืนยันวันติดตั้ง หากมีข้อมูลเพิ่มเติมสามารถพิมพ์แจ้งได้เลยนะคะ`
             }]).catch(console.error);
 
-            ctx.waitUntil(forwardToGas(env, {
+            ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), {
               intent: 'fridge_rent',
               via: 'quick_button',
               roomId,
@@ -941,7 +945,7 @@ async function lookupRoomForUser(env, lineUserId) {
   const userId = (lineUserId || '').trim();
   if (!userId) return null;
 
-  const gasUrl = getWebhookGas(env);
+  const gasUrl = getReservationGas(env);
   const secret = env.WORKER_SECRET || '';
   if (!gasUrl || !secret) return null;
 
