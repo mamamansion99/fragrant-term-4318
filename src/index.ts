@@ -362,6 +362,43 @@ if (url.pathname.startsWith('/api/moveout')) {
           continue;
         }
 
+        if (data.act === 'FRIDGE_RENT_NOW') {
+          const userId = ev?.source?.userId || '';
+          if (!userId) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+              type: 'text',
+              text: 'ขออภัยค่ะ ยังไม่ทราบเลขห้องของคุณ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อดำเนินการต่อ',
+              quickReply: { items: fridgeQuickReplyItems() }
+            }]).catch(console.error);
+            continue;
+          }
+
+          await lineStartLoading(env.LINE_ACCESS_TOKEN, getChatId(ev), 6).catch(console.error);
+
+          const roomId = await lookupRoomForUser(env, userId);
+          if (roomId) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+              type: 'text',
+              text: `✅ บันทึกคำขอเช่าตู้เย็นสำหรับห้อง ${roomId} แล้วค่ะ ทีมงานจะติดต่อเพื่อยืนยันวันติดตั้ง หากมีข้อมูลเพิ่มเติมสามารถพิมพ์แจ้งได้เลยนะคะ`
+            }]).catch(console.error);
+
+            ctx.waitUntil(forwardToGas(env, {
+              intent: 'fridge_rent',
+              via: 'quick_button',
+              roomId,
+              lineUserId: userId,
+              events: [ev]
+            }));
+          } else {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+              type: 'text',
+              text: 'ยังไม่พบข้อมูลเลขห้องในระบบค่ะ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อให้เราช่วยตรวจสอบให้อีกครั้ง',
+              quickReply: { items: fridgeQuickReplyItems() }
+            }]).catch(console.error);
+          }
+          continue;
+        }
+
 const stateKey = getStateKey(ev);
 // Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
 // Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
@@ -460,7 +497,9 @@ if (
               console.warn('fridge_ai_timeout', err);
             }
 
-            const intentKey = aiIntent?.intent || detectFridgeIntent(textIn);
+            const intentKey = aiIntent?.intent && aiIntent.intent !== 'none'
+              ? aiIntent.intent
+              : detectFridgeIntent(textIn);
             if (intentKey) {
               const reply = buildFridgeReply(intentKey);
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [reply]).catch(console.error);
@@ -910,17 +949,7 @@ function detectFridgeIntent(text) {
 }
 
 function buildFridgeReply(intentKey) {
-  const quickItems = [
-    {
-      type: 'action',
-      action: { type: 'message', label: 'อยากได้ตู้เย็น', text: 'อยากได้ตู้เย็น' }
-    },
-    {
-      type: 'action',
-      action: { type: 'message', label: 'ราคาตู้เย็น', text: 'ราคาตู้เย็นเท่าไหร่' }
-    }
-  ];
-
+  const quickItems = fridgeQuickReplyItems();
   switch (intentKey) {
     case 'rent':
       return {
@@ -950,17 +979,39 @@ function buildFridgeReply(intentKey) {
   }
 }
 
+function fridgeQuickReplyItems() {
+  return [
+    {
+      type: 'action',
+      action: { type: 'message', label: 'อยากได้ตู้เย็น', text: 'อยากได้ตู้เย็น' }
+    },
+    {
+      type: 'action',
+      action: { type: 'message', label: 'ราคาตู้เย็น', text: 'ราคาตู้เย็นเท่าไหร่' }
+    },
+    {
+      type: 'action',
+      action: {
+        type: 'postback',
+        label: 'สนใจ? เช่าเลย',
+        data: 'act=FRIDGE_RENT_NOW',
+        displayText: 'สนใจเช่าตู้เย็น'
+      }
+    }
+  ];
+}
+
 async function classifyFridgeIntentWithAI(env, text) {
   if (!env?.OPENAI_API_KEY) return null;
   const systemPrompt = [
-    'You classify Thai LINE chat messages for an apartment assistant.',
-    'Return JSON with fields intent and optional confidence 0-1.',
-    'Intent options: fridge_rent, fridge_price, fridge_other, other.',
-    'fridge_rent: user wants to rent/add a fridge.',
-    'fridge_price: user asks about price or plan for the fridge.',
-    'fridge_other: general fridge question.',
-    'other: anything else.',
-    'Do not include extra text outside JSON.'
+    'You are an intent classifier for LINE chat messages about apartment services.',
+    'Respond ONLY with JSON in this shape: {"intent":"value","confidence":0-1}.',
+    'Allowed intent values:',
+    '- "rent": user clearly wants to add/rent/receive a fridge (phrases like "อยากได้ตู้เย็น", "ขอเช่าตู้เย็น", "เพิ่มตู้เย็น").',
+    '- "price": user is asking about cost, package, promotion, or whether fridge is included (phrases like "ราคาเท่าไหร่", "มีตู้เย็นฟรีไหม").',
+    '- "general": user mentions fridge but only asks availability or general info without asking price or rental action (phrases like "มีตู้เย็นไหม", "ให้ตู้เย็นหรือเปล่า").',
+    '- "none": message is not about fridges at all.',
+    'If unsure between rent and price, pick the one that best matches the actionable request. Never invent fields or text outside the JSON.'
   ].join('\n');
 
   const payload = {
@@ -995,10 +1046,12 @@ async function classifyFridgeIntentWithAI(env, text) {
     raw = data?.output?.[0]?.content?.[0]?.text || '';
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    const intent = typeof parsed.intent === 'string' ? parsed.intent.trim() : '';
+    const intentRaw = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
+    if (!intentRaw) return null;
+    const intent = ['rent', 'price', 'general', 'none'].includes(intentRaw) ? intentRaw : null;
     if (!intent) return null;
     return {
-      intent: intent === 'fridge_other' ? 'general' : intent.replace(/^fridge_/, ''),
+      intent,
       confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null
     };
   } catch (err) {
@@ -1019,5 +1072,46 @@ async function withTimeout(promise, ms) {
   } catch (err) {
     clearTimeout(timeout);
     throw err;
+  }
+}
+
+async function lookupRoomForUser(env, lineUserId) {
+  const userId = (lineUserId || '').trim();
+  if (!userId) return null;
+
+  const gasUrl = getWebhookGas(env);
+  const secret = env.WORKER_SECRET || '';
+  if (!gasUrl || !secret) return null;
+
+  const payload = {
+    act: 'lookup_room_by_line',
+    lineUserId: userId,
+    workerSecret: secret
+  };
+
+  try {
+    const res = await fetch(gasUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Worker-Secret': secret
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (!ct.includes('application/json')) {
+      const text = await res.text().catch(() => '');
+      console.warn('lookupRoomForUser non-json', text.slice(0, 200));
+      return null;
+    }
+
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return null;
+    const room = typeof data.roomId === 'string' ? data.roomId.trim() : '';
+    return room || null;
+  } catch (err) {
+    console.error('lookupRoomForUser error', err);
+    return null;
   }
 }
