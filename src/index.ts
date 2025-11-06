@@ -52,6 +52,33 @@ async function linePushText(channelToken, to, text) {
   }
 }
 
+async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
+  let currentUrl = url;
+  let options = { ...init };
+  if (bodyString !== undefined) {
+    options.body = bodyString;
+  }
+
+  for (let i = 0; i <= maxRedirects; i += 1) {
+    const res = await fetch(currentUrl, options);
+    if (![301, 302, 303, 307, 308].includes(res.status)) {
+      return res;
+    }
+    const location = res.headers.get('location');
+    if (!location) {
+      return res;
+    }
+
+    currentUrl = new URL(location, currentUrl).toString();
+    options = { ...options };
+    if (bodyString !== undefined) {
+      options.body = bodyString;
+    }
+  }
+
+  return fetch(currentUrl, options);
+}
+
 async function linePushMessage(channelToken, to, message) {
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
@@ -111,14 +138,15 @@ async function forwardToSpecificGas(env, gasUrl, body) {
 
   let ok = false, status = 0, text = '';
   try {
-    const res = await fetch(gasUrl, {
+    const bodyString = JSON.stringify(payload);
+    const res = await fetchWithRedirect(gasUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Worker-Secret': secret
       },
-      body: JSON.stringify(payload)
-    });
+      body: bodyString
+    }, bodyString);
     status = res.status;
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
@@ -149,14 +177,15 @@ async function forwardToGas(env, body) {
 
   let ok = false, status = 0, text = '';
   try {
-    const res = await fetch(gasUrl, {
+    const bodyString = JSON.stringify(payload);
+    const res = await fetchWithRedirect(gasUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Worker-Secret': secret // header secret for forwarded LINE events
       },
-      body: JSON.stringify(payload)
-    });
+      body: bodyString
+    }, bodyString);
     status = res.status;
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
@@ -1019,14 +1048,15 @@ async function lookupRoomForUser(env, lineUserId) {
   };
 
   try {
-    const res = await fetch(gasUrl, {
+    const bodyString = JSON.stringify(payload);
+    const res = await fetchWithRedirect(gasUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'X-Worker-Secret': secret
       },
-      body: JSON.stringify(payload)
-    });
+      body: bodyString
+    }, bodyString);
 
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (!ct.includes('application/json')) {
