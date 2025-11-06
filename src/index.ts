@@ -79,25 +79,6 @@ async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
   return fetch(currentUrl, options);
 }
 
-async function linePushMessage(channelToken, to, message) {
-  const res = await fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${channelToken}`,
-    },
-    body: JSON.stringify({
-      to,
-      messages: [message],
-    }),
-  });
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
-  }
-}
-
 
 // GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
 function getWebhookGas(env){
@@ -121,10 +102,6 @@ function corsHeaders(origin){
 
 function getPayRentGas(env){
   return env.PAYRENT_GAS_URL || '';
-}
-
-function getReservationGas(env){
-  return env.RESERVATION_URL || '';
 }
 
 async function forwardToSpecificGas(env, gasUrl, body) {
@@ -414,65 +391,6 @@ if (url.pathname.startsWith('/api/moveout')) {
           continue;
         }
 
-        if (data.act === 'FRIDGE_RENT_NOW') {
-          const userId = ev?.source?.userId || '';
-          if (!userId) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-              type: 'text',
-              text: 'ขออภัยค่ะ ยังไม่ทราบเลขห้องของคุณ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อดำเนินการต่อ',
-              quickReply: { items: fridgeConfirmQuickReplyItems() }
-            }]).catch(console.error);
-            continue;
-          }
-
-          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-            type: 'text',
-            text: 'กำลังตรวจสอบเลขห้องของคุณและเตรียมตู้เย็นค่ะ โปรดรอสักครู่…'
-          }]).catch(console.error);
-
-          const chatId = getChatId(ev);
-          ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6).catch(console.error));
-
-          const roomId = await lookupRoomForUser(env, userId);
-          if (roomId) {
-            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, {
-              type: 'text',
-              text: `✅ ตรวจสอบแล้วว่าคุณอยู่ห้อง ${roomId}\nทีมงานจะติดต่อเพื่อยืนยันเวลาส่งตู้เย็น หากพร้อมกดปุ่มยืนยันได้เลยค่ะ`
-            }).catch(console.error);
-
-            const confirmMessage = {
-              type: 'template',
-              altText: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`,
-              template: {
-                type: 'confirm',
-                text: `ต้องการเช่าตู้เย็นให้ห้อง ${roomId} หรือไม่?`,
-                actions: [
-                  {
-                    type: 'message',
-                    label: 'ยืนยัน',
-                    text: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`
-                  },
-                  {
-                    type: 'message',
-                    label: 'ยกเลิก',
-                    text: 'ขอยกเลิกเช่าตู้เย็น'
-                  }
-                ]
-              }
-            };
-
-            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, confirmMessage).catch(console.error);
-          } else {
-            const retryMessage = {
-              type: 'text',
-              text: 'ยังไม่พบข้อมูลเลขห้องในระบบค่ะ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อให้เราช่วยตรวจสอบให้อีกครั้ง',
-              quickReply: { items: fridgeConfirmQuickReplyItems() }
-            };
-            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, retryMessage).catch(console.error);
-          }
-          continue;
-        }
-
 const stateKey = getStateKey(ev);
 // Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
 // Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
@@ -560,9 +478,14 @@ if (
             continue;
           }
 
-          // (C.1) Fridge inquiry → single response with confirm button
+          // (C.1) Fridge inquiry → forward to n8n automation
           if (isFridgeInquiry(textIn)) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [fridgeInfoReply()]).catch(console.error);
+            ctx.waitUntil(notifyN8nFridge(env, {
+              kind: 'message',
+              text: textIn,
+              event: ev
+            }));
             continue;
           }
 
@@ -570,27 +493,6 @@ if (
           const fast = quickKeywordReply(textIn, env);
           if (fast) {
             ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
-            continue;
-          }
-
-          const confirmMatch = /^ยืนยันเช่าตู้เย็น\s+ห้อง\s+([A-Za-z]\d{3,4})\s*$/i.exec(textIn || '');
-          if (confirmMatch) {
-            const confirmedRoom = confirmMatch[1].toUpperCase();
-
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-              type: 'text',
-              text: `✅ รับคำยืนยันเช่าตู้เย็นสำหรับห้อง ${confirmedRoom} แล้วค่ะ ทีมงานจะดำเนินการต่อให้เร็วที่สุด`
-            }]).catch(console.error);
-
-            ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), {
-              act: 'fridge_rent',
-              via: 'LINE confirm',
-              roomId: confirmedRoom,
-              lineUserId: userId,
-              text: textIn,
-              events: [ev]
-            }));
-
             continue;
           }
 
@@ -1014,59 +916,32 @@ function isFridgeInquiry(text) {
 function fridgeInfoReply() {
   return {
     type: 'text',
-    text: '🧊 ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน หากสนใจกดปุ่ม “สนใจ”',
-    quickReply: { items: fridgeConfirmQuickReplyItems() }
+    text: '🧊 รับเรื่องตู้เย็นแล้ว กำลังส่งต่อให้ระบบอัตโนมัติ ทีมงานจะติดต่อกลับเพื่อยืนยันรายละเอียดค่ะ'
   };
 }
 
-function fridgeConfirmQuickReplyItems() {
-  return [
-    {
-      type: 'action',
-      action: {
-        type: 'postback',
-        label: 'สนใจ',
-        data: 'act=FRIDGE_RENT_NOW',
-        displayText: 'สนใจเช่าตู้เย็น'
-      }
-    }
-  ];
+function getN8nFridgeWebhook(env) {
+  return env.N8N_FRIDGE_WEBHOOK_URL || '';
 }
 
-async function lookupRoomForUser(env, lineUserId) {
-  const userId = (lineUserId || '').trim();
-  if (!userId) return null;
+async function notifyN8nFridge(env, payload) {
+  const url = getN8nFridgeWebhook(env);
+  if (!url) return;
 
-  const gasUrl = getReservationGas(env);
-  const secret = env.WORKER_SECRET || '';
-  if (!gasUrl || !secret) return null;
-
-  const url = new URL(gasUrl);
-  url.searchParams.set('act', 'lookup_room_by_line');
-  url.searchParams.set('lineUserId', userId);
-  url.searchParams.set('workerSecret', secret);
+  const body = {
+    workerSecret: env.WORKER_SECRET || '',
+    ...payload
+  };
 
   try {
-    const res = await fetchWithRedirect(url.toString(), {
-      method: 'GET',
+    await fetch(url, {
+      method: 'POST',
       headers: {
-        'X-Worker-Secret': secret
-      }
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
     });
-
-    const ct = (res.headers.get('content-type') || '').toLowerCase();
-    if (!ct.includes('application/json')) {
-      const text = await res.text().catch(() => '');
-      console.warn('lookupRoomForUser non-json', text.slice(0, 200));
-      return null;
-    }
-
-    const data = await res.json().catch(() => null);
-    if (!data || !data.ok) return null;
-    const room = typeof data.roomId === 'string' ? data.roomId.trim() : '';
-    return room || null;
   } catch (err) {
-    console.error('lookupRoomForUser error', err);
-    return null;
+    console.error('notifyN8nFridge error', err);
   }
 }
