@@ -448,6 +448,53 @@ if (
             continue;
           }
 
+          // (C.1) Fridge intent detection
+          const fridgeIntent = detectFridgeIntent(textIn);
+          if (fridgeIntent) {
+            if (fridgeIntent === 'rent') {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+                type: 'text',
+                text: 'รับทราบค่ะ กำลังตรวจสอบตู้เย็นว่างและจะแจ้งผู้จัดการนัดหมายรับตู้เย็นให้คุณนะคะ'
+              }]).catch(console.error);
+              ctx.waitUntil(forwardToGas(env, {
+                intent: 'fridge_rent',
+                text: textIn,
+                events: [ev]
+              }));
+              continue;
+            }
+
+            const fridgeText = fridgeIntent === 'price'
+              ? 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง) และคิดรวมไปกับค่าเช่าเดือนถัดไปค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องหรือพิมพ์ "ขอเช่าตู้เย็น" ได้เลยนะคะ'
+              : 'เรามีบริการเช่าตู้เย็นเสริม 200 บาท/เดือน พร้อมติดตั้งถึงห้อง หากต้องการเช่าสามารถแจ้งเลขห้องเพื่อให้เจ้าหน้าที่ตรวจสอบและนัดวันส่งได้เลยค่ะ';
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+              type: 'text',
+              text: fridgeText,
+              quickReply: {
+                items: [
+                  {
+                    type: 'action',
+                    action: {
+                      type: 'message',
+                      label: 'ขอเช่าตู้เย็น',
+                      text: 'ขอเช่าตู้เย็น'
+                    }
+                  },
+                  {
+                    type: 'action',
+                    action: {
+                      type: 'message',
+                      label: 'ราคาตู้เย็น',
+                      text: 'ราคาตู้เย็นเท่าไหร่'
+                    }
+                  }
+                ]
+              }
+            }]).catch(console.error);
+            continue;
+          }
+
           // (D) Quick keyword replies
           const fast = quickKeywordReply(textIn, env);
           if (fast) {
@@ -857,4 +904,22 @@ function quickKeywordReply(text, env) {
   }
 
   return null;
+}
+
+function detectFridgeIntent(text) {
+  const normalized = (text || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (!/(ตู้เย็น|fridge|refrigerator)/.test(normalized)) return null;
+
+  const priceKeywords = ['ราคา', 'เท่าไหร่', 'กี่บาท', 'แพ็ก', 'แพค', 'package', 'plan', 'cost', 'price'];
+  const rentKeywords = ['เช่า', 'rent', 'ขอ', 'เพิ่ม', 'ต้องการ', 'อยาก', 'ติดตั้ง', 'รับ', 'จอง'];
+
+  const hasRent = rentKeywords.some(k => normalized.includes(k));
+  const hasPrice = priceKeywords.some(k => normalized.includes(k));
+
+  if (hasRent && !hasPrice) return 'rent';
+  if (hasPrice && !hasRent) return 'price';
+  if (hasRent && hasPrice) return 'rent';
+
+  return 'general';
 }
