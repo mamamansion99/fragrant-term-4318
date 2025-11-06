@@ -1041,22 +1041,18 @@ async function lookupRoomForUser(env, lineUserId) {
   const secret = env.WORKER_SECRET || '';
   if (!gasUrl || !secret) return null;
 
-  const payload = {
-    act: 'lookup_room_by_line',
-    lineUserId: userId,
-    workerSecret: secret
-  };
+  const url = new URL(gasUrl);
+  url.searchParams.set('act', 'lookup_room_by_line');
+  url.searchParams.set('lineUserId', userId);
+  url.searchParams.set('workerSecret', secret);
 
   try {
-    const bodyString = JSON.stringify(payload);
-    const res = await fetchWithRedirect(gasUrl, {
-      method: 'POST',
+    const res = await fetchWithRedirect(url.toString(), {
+      method: 'GET',
       headers: {
-        'Content-Type': 'application/json',
         'X-Worker-Secret': secret
-      },
-      body: bodyString
-    }, bodyString);
+      }
+    });
 
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (!ct.includes('application/json')) {
