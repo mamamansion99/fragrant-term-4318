@@ -406,18 +406,27 @@ if (url.pathname.startsWith('/api/moveout')) {
 
           const roomId = await lookupRoomForUser(env, userId);
           if (roomId) {
-            const confirmMessage = {
+            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, {
               type: 'text',
-              text: `✅ ตรวจสอบแล้วว่าคุณอยู่ห้อง ${roomId}\nทีมงานจะติดต่อเพื่อยืนยันเวลาส่งตู้เย็น หากพร้อมยืนยันสามารถกดปุ่มด้านล่างได้เลยค่ะ`,
-              quickReply: {
-                items: [
+              text: `✅ ตรวจสอบแล้วว่าคุณอยู่ห้อง ${roomId}\nทีมงานจะติดต่อเพื่อยืนยันเวลาส่งตู้เย็น หากพร้อมกดปุ่มยืนยันได้เลยค่ะ`
+            }).catch(console.error);
+
+            const confirmMessage = {
+              type: 'template',
+              altText: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`,
+              template: {
+                type: 'confirm',
+                text: `ต้องการเช่าตู้เย็นให้ห้อง ${roomId} หรือไม่?`,
+                actions: [
                   {
-                    type: 'action',
-                    action: {
-                      type: 'message',
-                      label: 'ยืนยันเช่าตู้เย็น',
-                      text: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`
-                    }
+                    type: 'message',
+                    label: 'ยืนยัน',
+                    text: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`
+                  },
+                  {
+                    type: 'message',
+                    label: 'ยกเลิก',
+                    text: 'ขอยกเลิกเช่าตู้เย็น'
                   }
                 ]
               }
