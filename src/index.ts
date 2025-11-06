@@ -52,6 +52,25 @@ async function linePushText(channelToken, to, text) {
   }
 }
 
+async function linePushMessage(channelToken, to, message) {
+  const res = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelToken}`,
+    },
+    body: JSON.stringify({
+      to,
+      messages: [message],
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
+  }
+}
+
 
 // GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
 function getWebhookGas(env){
@@ -377,14 +396,34 @@ if (url.pathname.startsWith('/api/moveout')) {
             continue;
           }
 
-          await lineStartLoading(env.LINE_ACCESS_TOKEN, getChatId(ev), 6).catch(console.error);
+          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+            type: 'text',
+            text: 'กำลังตรวจสอบเลขห้องของคุณและเตรียมตู้เย็นค่ะ โปรดรอสักครู่…'
+          }]).catch(console.error);
+
+          const chatId = getChatId(ev);
+          ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6).catch(console.error));
 
           const roomId = await lookupRoomForUser(env, userId);
           if (roomId) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+            const confirmMessage = {
               type: 'text',
-              text: `✅ บันทึกคำขอเช่าตู้เย็นสำหรับห้อง ${roomId} แล้วค่ะ ทีมงานจะติดต่อเพื่อยืนยันวันติดตั้ง หากมีข้อมูลเพิ่มเติมสามารถพิมพ์แจ้งได้เลยนะคะ`
-            }]).catch(console.error);
+              text: `✅ ตรวจสอบแล้วว่าคุณอยู่ห้อง ${roomId}\nทีมงานจะติดต่อเพื่อยืนยันเวลาส่งตู้เย็น หากพร้อมยืนยันสามารถกดปุ่มด้านล่างได้เลยค่ะ`,
+              quickReply: {
+                items: [
+                  {
+                    type: 'action',
+                    action: {
+                      type: 'message',
+                      label: 'ยืนยันเช่าตู้เย็น',
+                      text: `ยืนยันเช่าตู้เย็น ห้อง ${roomId}`
+                    }
+                  }
+                ]
+              }
+            };
+
+            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, confirmMessage).catch(console.error);
 
             ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), {
               intent: 'fridge_rent',
@@ -394,11 +433,12 @@ if (url.pathname.startsWith('/api/moveout')) {
               events: [ev]
             }));
           } else {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
+            const retryMessage = {
               type: 'text',
               text: 'ยังไม่พบข้อมูลเลขห้องในระบบค่ะ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อให้เราช่วยตรวจสอบให้อีกครั้ง',
               quickReply: { items: fridgeConfirmQuickReplyItems() }
-            }]).catch(console.error);
+            };
+            await linePushMessage(env.LINE_ACCESS_TOKEN, chatId, retryMessage).catch(console.error);
           }
           continue;
         }
