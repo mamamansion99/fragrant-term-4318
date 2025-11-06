@@ -368,7 +368,7 @@ if (url.pathname.startsWith('/api/moveout')) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
               type: 'text',
               text: 'ขออภัยค่ะ ยังไม่ทราบเลขห้องของคุณ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อดำเนินการต่อ',
-              quickReply: { items: fridgeQuickReplyItems() }
+              quickReply: { items: fridgeConfirmQuickReplyItems() }
             }]).catch(console.error);
             continue;
           }
@@ -393,7 +393,7 @@ if (url.pathname.startsWith('/api/moveout')) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
               type: 'text',
               text: 'ยังไม่พบข้อมูลเลขห้องในระบบค่ะ กรุณาพิมพ์เลขห้อง (เช่น A101) เพื่อให้เราช่วยตรวจสอบให้อีกครั้ง',
-              quickReply: { items: fridgeQuickReplyItems() }
+              quickReply: { items: fridgeConfirmQuickReplyItems() }
             }]).catch(console.error);
           }
           continue;
@@ -485,35 +485,10 @@ if (
             continue;
           }
 
-          // (C.1) Fridge intent detection (AI + fallback)
-          if (mentionsFridge(textIn)) {
-            let aiIntent = null;
-            try {
-              aiIntent = await withTimeout(
-                classifyFridgeIntentWithAI(env, textIn),
-                4000
-              );
-            } catch (err) {
-              console.warn('fridge_ai_timeout', err);
-            }
-
-            const intentKey = aiIntent?.intent && aiIntent.intent !== 'none'
-              ? aiIntent.intent
-              : detectFridgeIntent(textIn);
-            if (intentKey) {
-              const reply = buildFridgeReply(intentKey);
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [reply]).catch(console.error);
-
-              if (intentKey === 'rent') {
-                ctx.waitUntil(forwardToGas(env, {
-                  intent: 'fridge_rent',
-                  text: textIn,
-                  events: [ev],
-                  sourceIntent: aiIntent?.intent ? 'ai' : 'fallback'
-                }));
-              }
-              continue;
-            }
+          // (C.1) Fridge inquiry → single response with confirm button
+          if (isFridgeInquiry(textIn)) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [fridgeInfoReply()]).catch(console.error);
+            continue;
           }
 
           // (D) Quick keyword replies
@@ -927,68 +902,29 @@ function quickKeywordReply(text, env) {
   return null;
 }
 
-function mentionsFridge(text) {
-  return /(ตู้เย็น|fridge|refrigerator)/i.test(text || '');
-}
-
-function detectFridgeIntent(text) {
+function isFridgeInquiry(text) {
   const normalized = (text || '').trim().toLowerCase();
-  if (!normalized) return null;
-  if (!/(ตู้เย็น|fridge|refrigerator)/.test(normalized)) return null;
+  if (!normalized) return false;
 
-  const priceKeywords = ['ราคา', 'เท่าไหร่', 'กี่บาท', 'แพ็ก', 'แพค', 'package', 'plan', 'cost', 'price'];
-  const rentKeywords = ['เช่า', 'rent', 'ขอ', 'เพิ่ม', 'ต้องการ', 'อยาก', 'ติดตั้ง', 'รับ', 'จอง'];
+  const fridgeTokens = ['ตู้เย็น', 'fridge', 'refrigerator'];
+  const intentTokens = ['สนใจ', 'เช่า', 'ราคา', 'เท่าไหร่', 'กี่บาท', 'ยังไง', 'ไง', 'อยาก', 'ขอ', 'เพิ่ม', 'มีไหม', 'ต้องการ'];
 
-  const hasRent = rentKeywords.some(k => normalized.includes(k));
-  const hasPrice = priceKeywords.some(k => normalized.includes(k));
+  const hasFridgeWord = fridgeTokens.some(token => normalized.includes(token));
+  if (!hasFridgeWord) return false;
 
-  if (hasPrice) return 'price';
-  if (hasRent) return 'rent';
-
-  return 'general';
+  return intentTokens.some(token => normalized.includes(token));
 }
 
-function buildFridgeReply(intentKey) {
-  const quickItems = fridgeQuickReplyItems();
-  switch (intentKey) {
-    case 'rent':
-      return {
-        type: 'text',
-        text: 'รับทราบค่ะ ตู้เย็นเสริมมีค่าเช่า 200 บาท/เดือน (รวมติดตั้ง) กรุณาพิมพ์เลขห้องเพื่อให้เราตรวจสอบตู้เย็นว่างและนัดหมายส่งให้คุณนะคะ',
-        quickReply: { items: quickItems }
-      };
-    case 'price':
-      return {
-        type: 'text',
-        text: 'ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง และคิดรวมกับค่าเช่าเดือนถัดไป) หากต้องการเช่าสามารถแจ้งเลขห้องหรือกดปุ่ม “อยากได้ตู้เย็น” ได้เลยค่ะ',
-        quickReply: { items: quickItems }
-      };
-    case 'general':
-    case 'fridge_other':
-      return {
-        type: 'text',
-        text: 'เรามีบริการเช่าตู้เย็นเสริม 200 บาท/เดือน พร้อมติดตั้งถึงห้อง หากต้องการเช่าสามารถแจ้งเลขห้องเพื่อให้เจ้าหน้าที่ตรวจสอบและนัดวันส่งได้เลยค่ะ',
-        quickReply: { items: quickItems }
-      };
-    default:
-      return {
-        type: 'text',
-        text: 'ตู้เย็นเสริมมีให้เช่า 200 บาท/เดือนค่ะ หากต้องการเช่าสามารถแจ้งเลขห้องได้เลยนะคะ',
-        quickReply: { items: quickItems }
-      };
-  }
+function fridgeInfoReply() {
+  return {
+    type: 'text',
+    text: '🧊 ตู้เย็นมีให้เช่าเพิ่ม 200 บาท/เดือน (รวมค่าติดตั้ง และตัดพร้อมค่าเช่าเดือนถัดไป) หากสนใจกดปุ่ม “สนใจ? เช่าเลย” ด้านล่างเพื่อยืนยันเลขห้องและนัดรับตู้เย็นค่ะ',
+    quickReply: { items: fridgeConfirmQuickReplyItems() }
+  };
 }
 
-function fridgeQuickReplyItems() {
+function fridgeConfirmQuickReplyItems() {
   return [
-    {
-      type: 'action',
-      action: { type: 'message', label: 'อยากได้ตู้เย็น', text: 'อยากได้ตู้เย็น' }
-    },
-    {
-      type: 'action',
-      action: { type: 'message', label: 'ราคาตู้เย็น', text: 'ราคาตู้เย็นเท่าไหร่' }
-    },
     {
       type: 'action',
       action: {
@@ -999,80 +935,6 @@ function fridgeQuickReplyItems() {
       }
     }
   ];
-}
-
-async function classifyFridgeIntentWithAI(env, text) {
-  if (!env?.OPENAI_API_KEY) return null;
-  const systemPrompt = [
-    'You are an intent classifier for LINE chat messages about apartment services.',
-    'Respond ONLY with JSON in this shape: {"intent":"value","confidence":0-1}.',
-    'Allowed intent values:',
-    '- "rent": user clearly wants to add/rent/receive a fridge (phrases like "อยากได้ตู้เย็น", "ขอเช่าตู้เย็น", "เพิ่มตู้เย็น").',
-    '- "price": user is asking about cost, package, promotion, or whether fridge is included (phrases like "ราคาเท่าไหร่", "มีตู้เย็นฟรีไหม").',
-    '- "general": user mentions fridge but only asks availability or general info without asking price or rental action (phrases like "มีตู้เย็นไหม", "ให้ตู้เย็นหรือเปล่า").',
-    '- "none": message is not about fridges at all.',
-    'If unsure between rent and price, pick the one that best matches the actionable request. Never invent fields or text outside the JSON.'
-  ].join('\n');
-
-  const payload = {
-    model: 'gpt-4o-mini',
-    response_format: { type: 'json_object' },
-    temperature: 0.2,
-    max_output_tokens: 200,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: text }
-    ]
-  };
-
-  const res = await fetch('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${env.OPENAI_API_KEY}`
-    },
-    body: JSON.stringify(payload)
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    console.error('openai_responses_error', res.status, errText.slice(0, 200));
-    return null;
-  }
-
-  let raw = '';
-  try {
-    const data = await res.json();
-    raw = data?.output?.[0]?.content?.[0]?.text || '';
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    const intentRaw = typeof parsed.intent === 'string' ? parsed.intent.trim().toLowerCase() : '';
-    if (!intentRaw) return null;
-    const intent = ['rent', 'price', 'general', 'none'].includes(intentRaw) ? intentRaw : null;
-    if (!intent) return null;
-    return {
-      intent,
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : null
-    };
-  } catch (err) {
-    console.error('openai_responses_parse', err, raw.slice(0, 200));
-    return null;
-  }
-}
-
-async function withTimeout(promise, ms) {
-  let timeout;
-  const timer = new Promise((_, reject) => {
-    timeout = setTimeout(() => reject(new Error('timeout')), ms);
-  });
-  try {
-    const result = await Promise.race([promise, timer]);
-    clearTimeout(timeout);
-    return result;
-  } catch (err) {
-    clearTimeout(timeout);
-    throw err;
-  }
 }
 
 async function lookupRoomForUser(env, lineUserId) {
