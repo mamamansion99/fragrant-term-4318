@@ -82,7 +82,7 @@ async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
 
 // GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
 function getWebhookGas(env){
-  return env.MM_GAS_WEBHOOK_URL || env.APPS_SCRIPT_URL || '';
+  return env.MM_WEBHOOK_URL || env.MM_GAS_WEBHOOK_URL || env.APPS_SCRIPT_URL || '';
 }
 
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
