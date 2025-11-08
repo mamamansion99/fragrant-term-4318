@@ -1,5 +1,26 @@
 {
   "name": "fragrant-term-4318",
   "main": "src/index.ts",
-  "compatibility_date": "2025-08-08"
+  "compatibility_date": "2025-08-08",
+  "vars": {
+    "ALLOWED_ORIGIN": "https://mamamansion-ar2.pages.dev",
+    "BOOKING_URL": "https://mamamansion-ar2.pages.dev/",
+    "MAPS_URL": "https://maps.app.goo.gl/Qktm2mDGPappQ8EZA",
+    "FB_PAGE_URL": "https://www.facebook.com/MamaMansion37/",
+    "MM_WEBHOOK_URL": "https://script.google.com/macros/s/AKfycbxL5KmquX_muliqeptqvrFqtahfb3jH4zVoYQld-KuIBFGQ5d0uATf0WeqzTmZ6KpJ0/exec",
+    "MM_GAS_WEBHOOK_URL": "https://script.google.com/macros/s/AKfycbxL5KmquX_muliqeptqvrFqtahfb3jH4zVoYQld-KuIBFGQ5d0uATf0WeqzTmZ6KpJ0/exec",
+    "APPS_SCRIPT_URL": "https://script.google.com/macros/s/AKfycbxL5KmquX_muliqeptqvrFqtahfb3jH4zVoYQld-KuIBFGQ5d0uATf0WeqzTmZ6KpJ0/exec",
+    "N8N_FRIDGE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/4ad82001-0797-4b1c-8c92-f0606b0d0f9e",
+    "N8N_FRIDGE_LINK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/4ad82001-0797-4b1c-8c92-f0606b0d0f9e",
+    "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbwneoLD2XjHCFrCqodqDmy62PDAUjPwN3aG_GTA3VWpsB86W2Q6iPh8qKYSq6WdDNLL7w/exec",
+    "MOVEOUT_GAS_URL": "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec",
+    "HOWTO_IMAGE_URL_1": "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ",
+    "HOWTO_IMAGE_URL_2": "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "a3650d699e944f65944cf935c869aaa3"
+    }
+  ]
 }

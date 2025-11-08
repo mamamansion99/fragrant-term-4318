@@ -445,6 +445,7 @@ if (
           const chatId  = getChatId(ev);
           const stateKey= getStateKey(ev);
           const userId  = ev?.source?.userId || '';
+          const fridgeServiceKeyword = /^\s*บริการ\s*ตู้เย็น\s*$/i.test(textIn);
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
@@ -478,14 +479,19 @@ if (
             continue;
           }
 
-          // (C.1) Fridge inquiry → forward to n8n automation
-          if (isFridgeInquiry(textIn)) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [fridgeInfoReply()]).catch(console.error);
-            ctx.waitUntil(notifyN8nFridge(env, {
+          // (C.1) Fridge service button → link to n8n automation
+          if (fridgeServiceKeyword) {
+            const replies = [fridgeInfoReply(env, { includeN8nButton: true })];
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
+
+            const fridgePayload = {
               kind: 'message',
               text: textIn,
               event: ev
-            }));
+            };
+            fridgePayload.matchedKeyword = 'บริการตู้เย็น';
+
+            ctx.waitUntil(notifyN8nFridge(env, fridgePayload));
             continue;
           }
 
@@ -900,28 +906,40 @@ function quickKeywordReply(text, env) {
   return null;
 }
 
-function isFridgeInquiry(text) {
-  const normalized = (text || '').trim().toLowerCase();
-  if (!normalized) return false;
+function fridgeInfoReply(env, options = {}) {
+  const fridgeLink = getN8nFridgeLink(env);
+  if (options.includeN8nButton && fridgeLink) {
+    return fridgeButtonMessage(fridgeLink);
+  }
 
-  const fridgeTokens = ['ตู้เย็น', 'fridge', 'refrigerator'];
-  const intentTokens = ['สนใจ', 'เช่า', 'ราคา', 'เท่าไหร่', 'กี่บาท', 'ยังไง', 'ไง', 'อยาก', 'ขอ', 'เพิ่ม', 'มีไหม', 'ต้องการ'];
-
-  const hasFridgeWord = fridgeTokens.some(token => normalized.includes(token));
-  if (!hasFridgeWord) return false;
-
-  return intentTokens.some(token => normalized.includes(token));
+  console.warn('fridgeInfoReply: missing fridge link');
+  return { type: 'text', text: 'มีข้อผิดพลาด กรุณาติดต่อเจ้าหน้าที่' };
 }
 
-function fridgeInfoReply() {
+function fridgeButtonMessage(link) {
   return {
-    type: 'text',
-    text: '🧊 รับเรื่องตู้เย็นแล้ว กำลังส่งต่อให้ระบบอัตโนมัติ ทีมงานจะติดต่อกลับเพื่อยืนยันรายละเอียดค่ะ'
+    type: 'template',
+    altText: 'สนใจเช่าตู้เย็น 200 บาท/เดือน',
+    template: {
+      type: 'buttons',
+      text: 'เช่าตู้เย็น',
+      actions: [
+        {
+          type: 'uri',
+          label: 'เช่าตู้เย็น',
+          uri: link
+        }
+      ]
+    }
   };
 }
 
 function getN8nFridgeWebhook(env) {
   return env.N8N_FRIDGE_WEBHOOK_URL || '';
+}
+
+function getN8nFridgeLink(env) {
+  return env.N8N_FRIDGE_LINK_URL || getN8nFridgeWebhook(env) || '';
 }
 
 async function notifyN8nFridge(env, payload) {
