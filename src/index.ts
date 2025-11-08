@@ -919,10 +919,10 @@ function fridgeInfoReply(env, options = {}) {
 function fridgeButtonMessage(link) {
   return {
     type: 'template',
-    altText: 'สนใจเช่าตู้เย็น 200 บาท/เดือน',
+    altText: 'เช่าตู้เย็น',
     template: {
       type: 'buttons',
-      text: 'เช่าตู้เย็น',
+      text: 'มีให้เช่าเดือนละ 200 บาท',
       actions: [
         {
           type: 'uri',
