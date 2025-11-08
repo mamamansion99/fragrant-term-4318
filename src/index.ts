@@ -303,7 +303,7 @@ if (url.pathname.startsWith('/api/moveout')) {
        * POSTBACK HANDLER
        * --------------------- */
       if (ev.type === 'postback') {
-        const data = parseKv(ev.postback?.data || '');
+        const data = parsePostbackData(ev.postback?.data || '');
 
         // Move-out postbacks handled at Edge
         if (data.act === 'moveout_yes' || data.act === 'moveout_cancel') {
@@ -333,6 +333,34 @@ if (url.pathname.startsWith('/api/moveout')) {
             { type: 'text', text: '❌ ยกเลิกขั้นตอนชำระค่าเช่าแล้วครับ/ค่ะ' }
           ]).catch(console.error));
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+          continue;
+        }
+
+        if (data.act === 'fridge_rent_request') {
+          const sanitizedData = {
+            ...data,
+            lineUserId: ev?.source?.userId || data.lineUserId || null,
+            chatId: getChatId(ev) || data.chatId || null
+          };
+
+          const fridgePayload = {
+            source: 'line_postback',
+            channel: 'fridge',
+            event: ev,
+            data: sanitizedData,
+            receivedAt: new Date().toISOString()
+          };
+
+          ctx.waitUntil(
+            notifyN8nFridge(env, fridgePayload)
+              .catch((err) => console.error('fridge notify failed', err))
+          );
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'รับคำขอเช่าตู้เย็นแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ต่อให้ทันที' }
+            ]).catch(console.error);
+          }
           continue;
         }
 
@@ -481,17 +509,14 @@ if (
 
           // (C.1) Fridge service button → link to n8n automation
           if (fridgeServiceKeyword) {
-            const replies = [fridgeInfoReply(env, { includeN8nButton: true })];
+            const replies = [
+              fridgeInfoReply(env, {
+                includeN8nButton: true,
+                lineUserId: ev?.source?.userId || null,
+                chatId: getChatId(ev) || null
+              })
+            ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
-
-            const fridgePayload = {
-              kind: 'message',
-              text: textIn,
-              event: ev
-            };
-            fridgePayload.matchedKeyword = 'บริการตู้เย็น';
-
-            ctx.waitUntil(notifyN8nFridge(env, fridgePayload));
             continue;
           }
 
@@ -749,6 +774,24 @@ function parseKv(data) {
   return out;
 }
 
+function parsePostbackData(raw) {
+  const input = (raw || '').trim();
+  if (!input) return {};
+
+  if (input.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(input);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch (err) {
+      console.warn('parsePostbackData JSON parse failed', err);
+    }
+  }
+
+  return parseKv(input);
+}
+
 async function moveoutTextGate(env, stateKey, textIn, replyToken) {
   // Fallback implementation: forward all handling to GAS by returning false.
   // Existing MOVEOUT flows handled in GAS will continue to work.
@@ -907,16 +950,32 @@ function quickKeywordReply(text, env) {
 }
 
 function fridgeInfoReply(env, options = {}) {
-  const fridgeLink = getN8nFridgeLink(env);
-  if (options.includeN8nButton && fridgeLink) {
-    return fridgeButtonMessage(fridgeLink);
+  const fridgeWebhook = getN8nFridgeWebhook(env);
+  if (options.includeN8nButton && fridgeWebhook) {
+    return fridgeButtonMessage(buildFridgePostbackPayload(options));
   }
 
-  console.warn('fridgeInfoReply: missing fridge link');
+  console.warn('fridgeInfoReply: missing fridge webhook or button disabled');
   return { type: 'text', text: 'มีข้อผิดพลาด กรุณาติดต่อเจ้าหน้าที่' };
 }
 
-function fridgeButtonMessage(link) {
+function buildFridgePostbackPayload(options = {}) {
+  return {
+    act: 'fridge_rent_request',
+    lineUserId: options.lineUserId || null,
+    roomHint: options.roomHint || null,
+    chatId: options.chatId || null
+  };
+}
+
+function fridgeButtonMessage(postbackData) {
+  let dataString = '{}';
+  try {
+    dataString = JSON.stringify(postbackData);
+  } catch (err) {
+    console.error('fridgeButtonMessage stringify error', err);
+  }
+
   return {
     type: 'template',
     altText: 'เช่าตู้เย็น',
@@ -925,9 +984,10 @@ function fridgeButtonMessage(link) {
       text: 'มีให้เช่าเดือนละ 200 บาท',
       actions: [
         {
-          type: 'uri',
+          type: 'postback',
           label: 'เช่าตู้เย็น',
-          uri: link
+          data: dataString,
+          displayText: 'ขอเช่าตู้เย็น'
         }
       ]
     }
@@ -938,28 +998,33 @@ function getN8nFridgeWebhook(env) {
   return env.N8N_FRIDGE_WEBHOOK_URL || '';
 }
 
-function getN8nFridgeLink(env) {
-  return env.N8N_FRIDGE_LINK_URL || getN8nFridgeWebhook(env) || '';
-}
-
 async function notifyN8nFridge(env, payload) {
   const url = getN8nFridgeWebhook(env);
-  if (!url) return;
+  if (!url) {
+    console.warn('notifyN8nFridge: missing webhook URL');
+    return false;
+  }
 
-  const body = {
-    workerSecret: env.WORKER_SECRET || '',
-    ...payload
-  };
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nFridge: missing WORKER_SECRET');
+  }
 
   try {
-    await fetch(url, {
+    const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
+      headers,
+      body: JSON.stringify(payload)
     });
+    if (!res.ok) {
+      console.error('notifyN8nFridge: non-200 response', res.status);
+    }
+    return res.ok;
   } catch (err) {
     console.error('notifyN8nFridge error', err);
+    return false;
   }
 }
