@@ -296,6 +296,28 @@ if (url.pathname.startsWith('/api/moveout')) {
     const payload = JSON.parse(bodyText || '{}');
     const events = Array.isArray(payload.events) ? payload.events : [];
 
+    if (events.length > 0 && env.N8N_POSTBACK_URL) {
+      const firstEvent = events[0];
+      if (firstEvent?.type === 'postback' && firstEvent?.postback?.data) {
+        let fridgePostback = null;
+        try {
+          fridgePostback = JSON.parse(firstEvent.postback.data);
+        } catch (_) {
+          fridgePostback = null;
+        }
+
+        if (fridgePostback?.type === 'fridge' && fridgePostback?.action === 'not_ready') {
+          ctx.waitUntil(
+            fetch(env.N8N_POSTBACK_URL, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(payload)
+            }).catch((err) => console.error('forward fridge not_ready failed', err))
+          );
+        }
+      }
+    }
+
     for (const ev of events) {
       const replyToken = ev?.replyToken;
 
