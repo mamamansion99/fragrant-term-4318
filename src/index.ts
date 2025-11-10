@@ -386,6 +386,38 @@ if (url.pathname.startsWith('/api/moveout')) {
           continue;
         }
 
+        if (data.act === 'parking_rent_request') {
+          const sanitizedParking = {
+            ...data,
+            type: 'parking',
+            plan: data.plan === 'covered' ? 'covered' : 'open',
+            lineUserId: ev?.source?.userId || data.lineUserId || null,
+            chatId: getChatId(ev) || data.chatId || null
+          };
+          const parkingPayload = {
+            source: 'line_postback',
+            channel: 'parking',
+            event: ev,
+            data: sanitizedParking,
+            receivedAt: new Date().toISOString()
+          };
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'รับคำขอที่จอดรถแล้วครับ กำลังตรวจสอบความว่างให้ทันที' }
+            ]).catch(console.error);
+          }
+
+          ctx.waitUntil(
+            notifyN8nParking(env, parkingPayload).catch((err) => console.error('parking notify failed', err))
+          );
+
+          ctx.waitUntil(
+            forwardToGas(env, { events: [ev], parking: parkingPayload })
+          );
+          continue;
+        }
+
         // Ultra-fast postbacks handled here (no GAS)
 // Ultra-fast postbacks handled here (no GAS)
         if (isRoomAct(data.act)) {
@@ -496,6 +528,7 @@ if (
           const stateKey= getStateKey(ev);
           const userId  = ev?.source?.userId || '';
           const fridgeServiceKeyword = /^\s*บริการ\s*ตู้เย็น\s*$/i.test(textIn);
+          const parkingServiceKeyword = /^\s*บริการ\s*ที่จอดรถ\s*$/i.test(textIn);
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
@@ -537,6 +570,21 @@ if (
                 lineUserId: ev?.source?.userId || null,
                 chatId: getChatId(ev) || null
               })
+            ];
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
+            continue;
+          }
+
+          if (parkingServiceKeyword) {
+            const commonOptions = {
+              lineUserId: ev?.source?.userId || null,
+              chatId: getChatId(ev) || null
+            };
+            const replies = [
+              parkingButtonsMessage(
+                buildParkingPostbackPayload('open', commonOptions),
+                buildParkingPostbackPayload('covered', commonOptions)
+              )
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
             continue;
@@ -1016,8 +1064,73 @@ function fridgeButtonMessage(postbackData) {
   };
 }
 
+function buildParkingPostbackPayload(plan, options = {}) {
+  return {
+    act: 'parking_rent_request',
+    type: 'parking',
+    plan,
+    lineUserId: options.lineUserId || null,
+    chatId: options.chatId || null
+  };
+}
+
+function parkingButtonsMessage(payloadOpen, payloadCovered) {
+  let dataOpen = '{}';
+  let dataCovered = '{}';
+
+  try {
+    dataOpen = JSON.stringify(payloadOpen);
+  } catch (err) {
+    console.error('parkingButtonsMessage stringify open error', err);
+  }
+
+  try {
+    dataCovered = JSON.stringify(payloadCovered);
+  } catch (err) {
+    console.error('parkingButtonsMessage stringify covered error', err);
+  }
+
+  return {
+    type: 'template',
+    altText: 'เช่าที่จอดรถ',
+    template: {
+      type: 'carousel',
+      columns: [
+        {
+          title: 'ไม่มีหลังคา',
+          text: '500 บาท/เดือน',
+          actions: [
+            {
+              type: 'postback',
+              label: 'เช่าเลย',
+              data: dataOpen,
+              displayText: 'เช่าที่จอดรถ (ไม่มีหลังคา)'
+            }
+          ]
+        },
+        {
+          title: 'มีหลังคา',
+          text: '800 บาท/เดือน',
+          actions: [
+            {
+              type: 'postback',
+              label: 'เช่าเลย',
+              data: dataCovered,
+              displayText: 'เช่าที่จอดรถ (มีหลังคา)'
+            }
+          ]
+        }
+      ]
+    }
+  };
+}
+
 function getN8nFridgeWebhook(env) {
   return env.N8N_FRIDGE_WEBHOOK_URL || '';
+}
+
+function getN8nParkingWebhook(env) {
+  return env.N8N_PARKING_WEBHOOK_URL || '';
 }
 
 async function notifyN8nFridge(env, payload) {
@@ -1047,6 +1160,37 @@ async function notifyN8nFridge(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nFridge error', err);
+    return false;
+  }
+}
+
+async function notifyN8nParking(env, payload) {
+  const url = getN8nParkingWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nParking: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nParking: missing WORKER_SECRET');
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.error('notifyN8nParking: non-200 response', res.status);
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nParking error', err);
     return false;
   }
 }
