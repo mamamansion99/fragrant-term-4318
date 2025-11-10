@@ -390,7 +390,7 @@ if (url.pathname.startsWith('/api/moveout')) {
           const sanitizedParking = {
             ...data,
             type: 'parking',
-            plan: data.plan === 'covered' ? 'covered' : 'open',
+            plan: data.plan === 'roofed' ? 'roofed' : 'open',
             lineUserId: ev?.source?.userId || data.lineUserId || null,
             chatId: getChatId(ev) || data.chatId || null
           };
@@ -583,7 +583,7 @@ if (
             const replies = [
               parkingButtonsMessage(
                 buildParkingPostbackPayload('open', commonOptions),
-                buildParkingPostbackPayload('covered', commonOptions)
+                buildParkingPostbackPayload('roofed', commonOptions)
               )
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
