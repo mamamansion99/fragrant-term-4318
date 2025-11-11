@@ -528,7 +528,7 @@ if (
           const stateKey= getStateKey(ev);
           const userId  = ev?.source?.userId || '';
           const fridgeServiceKeyword = /^\s*บริการ\s*ตู้เย็น\s*$/i.test(textIn);
-          const parkingServiceKeyword = /^\s*บริการ\s*ที่จอดรถ\s*$/i.test(textIn);
+          const parkingServiceKeyword = /^\s*บริการ\s*ที่(?:จอด|จิด)รถ\s*$/i.test(textIn);
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
