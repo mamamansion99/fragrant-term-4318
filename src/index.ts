@@ -13,6 +13,17 @@ function getStateKey(ev) {
 
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
 const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
+const PARKING_KEYWORD_RE = /ที่(?:จอด|จิด)รถ/i;
+const PARKING_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล)/i;
+
+// Detects general parking interest by requiring the parking keyword plus a basic intent verb.
+function isParkingIntent(text){
+  const normalized = (text || '').trim();
+  if (!normalized) return false;
+  if (/^\s*บริการ\s*ที่(?:จอด|จิด)รถ\s*$/i.test(normalized)) return true;
+  if (!PARKING_KEYWORD_RE.test(normalized)) return false;
+  return PARKING_INTENT_RE.test(normalized);
+}
 
 /* =========================
  * 1) KV + Loading helpers
@@ -528,7 +539,7 @@ if (
           const stateKey= getStateKey(ev);
           const userId  = ev?.source?.userId || '';
           const fridgeServiceKeyword = /^\s*บริการ\s*ตู้เย็น\s*$/i.test(textIn);
-          const parkingServiceKeyword = /^\s*บริการ\s*ที่(?:จอด|จิด)รถ\s*$/i.test(textIn);
+          const parkingServiceKeyword = isParkingIntent(textIn);
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
