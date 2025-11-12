@@ -772,6 +772,28 @@ function resDetailByKey(key){
     return [{ type: 'text', text: kmitlText }];
   }
 
+  if (key === 'RES_CONTACT_BIKE') {
+    const motoText = [
+      '🛵 เบอร์พี่วินมอเตอร์ไซค์ (หน้าปากซอย) สะดวก รวดเร็ว โทรเรียกเข้ามารับที่ตึกได้เลยครับ',
+      '',
+      '📞 รายชื่อพี่วินประจำจุด',
+      'เบอร์ 18 : 086-113-2734',
+      'เบอร์ 1 : 061-608-2523',
+      'เบอร์ 24 : 094-419-8652',
+      'เบอร์ 38 : 098-636-7991',
+      'เบอร์ 3 : 063-520-6658',
+      'เบอร์ 10 : 083-908-1127',
+      'เบอร์ 34 : 080-063-9128',
+      '',
+      '💡 ข้อแนะนำ:',
+      'แจ้งว่า "มารับที่ Mama Mansion"',
+      'สอบถามราคาก่อนใช้บริการนะครับ',
+      'กลางคืนดึก ๆ อาจจะมีรถน้อยกว่าปกตินะครับ',
+      '🏠 ด้วยความห่วงใยจาก Mama Mansion'
+    ].join('\n');
+    return [{ type: 'text', text: motoText }];
+  }
+
   return null;
 }
 
@@ -885,6 +907,20 @@ function quickKeywordReply(text, env) {
 
   const lower = normalized.toLowerCase();
 
+  const contactQuickReply = {
+    items: [
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'เบอร์พี่วินหน้าปากซอย',
+          data: 'act=RES_CONTACT_BIKE',
+          displayText: 'เบอร์พี่วิน'
+        }
+      }
+    ]
+  };
+
   const contactMenu = [
     {
       type: 'text',
@@ -893,7 +929,8 @@ function quickKeywordReply(text, env) {
         '• แม่บ้าน (พี่ก้อย) 080-649-0441 ตึก A',
         '• แม่บ้าน (พี่ยุ) ………………………. ตึก B',
         '• ผู้จัดการ 082-798-1676'
-      ].join('\n')
+      ].join('\n'),
+      quickReply: contactQuickReply
     }
   ];
 
