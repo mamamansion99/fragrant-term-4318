@@ -998,7 +998,7 @@ function quickKeywordReply(text, env) {
     ];
   }
 
-  const contactTriggers = ['เบอร์ติดต่อ', 'เบอร์โทร', 'ช่องทางติดต่อ', 'contact', 'phone'];
+  const contactTriggers = ['เบอร์ติดต่อ', 'เบอร์โทร', 'ช่องทางติดต่อ', 'ติดต่อ', 'contact', 'phone'];
   if (includesAny(lower, contactTriggers) || (normalized.includes('เบอร์') && normalized.includes('ติดต่อ'))) {
     return contactMenu;
   }
