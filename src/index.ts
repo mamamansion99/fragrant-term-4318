@@ -13,16 +13,49 @@ function getStateKey(ev) {
 
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
 const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
-const PARKING_KEYWORD_RE = /ที่(?:จอด|จิด)รถ/i;
+const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
+const PARKING_KEYWORD_RE = /(ที่จอดรถ|ลานจอด(?:รถ)?|จอดรถ(?:ยนต์)?|ที่\s*สำหรับ\s*รถ)/i;
 const PARKING_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล)/i;
+const PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่าง)/i;
+const FRIDGE_KEYWORD_RE = /(ตู้เย็น|fridge|refrigerator)/i;
+const FRIDGE_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|มี|ให้)/i;
+const CHECKIN_CHANGE_KEYWORDS = [
+  'เปลี่ยนวันเช็คอิน',
+  'เปลี่ยนวันที่เช็คอิน',
+  'เปลี่ยนวันทีเช็คอิน',
+  'เปลี่ยนวันเชคอิน',
+  'เปลี่ยนเวลาเช็คอิน',
+  'เปลี่ยนเวลาเชคอิน',
+  'changecheckindate',
+  'changecheckintime'
+];
 
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
 function isParkingIntent(text){
   const normalized = (text || '').trim();
   if (!normalized) return false;
-  if (/^\s*บริการ\s*ที่(?:จอด|จิด)รถ\s*$/i.test(normalized)) return true;
+  if (/^\s*บริการ\s*ที่จอดรถ\s*$/i.test(normalized)) return true;
   if (!PARKING_KEYWORD_RE.test(normalized)) return false;
-  return PARKING_INTENT_RE.test(normalized);
+  if (PARKING_INTENT_RE.test(normalized)) return true;
+  const hasQuestionWord = QUESTION_WORD_RE.test(normalized);
+  const hasAvailabilityWord = PARKING_AVAILABILITY_RE.test(normalized);
+  if (hasQuestionWord && hasAvailabilityWord) return true;
+  return false;
+}
+
+function isFridgeIntent(text){
+  const normalized = (text || '').trim();
+  if (!normalized) return false;
+  if (/^\s*บริการ\s*ตู้เย็น\s*$/i.test(normalized)) return true;
+  if (!FRIDGE_KEYWORD_RE.test(normalized)) return false;
+  if (FRIDGE_INTENT_RE.test(normalized)) return true;
+  return QUESTION_WORD_RE.test(normalized);
+}
+
+function isCheckinChangeIntent(text) {
+  const normalized = (text || '').toLowerCase().replace(/\s+/g, '');
+  if (!normalized) return false;
+  return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
 }
 
 /* =========================
@@ -534,12 +567,12 @@ if (
 
         // === TEXT ===
         if (m.type === 'text') {
-          const textIn  = (m.text || '').trim();
-          const chatId  = getChatId(ev);
-          const stateKey= getStateKey(ev);
-          const userId  = ev?.source?.userId || '';
-          const fridgeServiceKeyword = /^\s*บริการ\s*ตู้เย็น\s*$/i.test(textIn);
-          const parkingServiceKeyword = isParkingIntent(textIn);
+        const textIn  = (m.text || '').trim();
+        const chatId  = getChatId(ev);
+        const stateKey= getStateKey(ev);
+        const userId  = ev?.source?.userId || '';
+        const fridgeServiceKeyword = isFridgeIntent(textIn);
+        const parkingServiceKeyword = isParkingIntent(textIn);
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
@@ -605,6 +638,24 @@ if (
           const fast = quickKeywordReply(textIn, env);
           if (fast) {
             ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
+            continue;
+          }
+
+          if (isCheckinChangeIntent(textIn)) {
+            const notifyMsg = 'กำลังส่งปุ่มเลือกวัน–เวลาเช็คอินให้ค่ะ รอสักครู่…';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: notifyMsg }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg).catch(console.error));
+            }
+            ctx.waitUntil(forwardToGas(env, {
+              act: 'checkin_change_keyword',
+              lineUserId: ev?.source?.userId || '',
+              chatId,
+              message: textIn
+            }));
             continue;
           }
 
@@ -906,6 +957,7 @@ function quickKeywordReply(text, env) {
   if (!normalized) return null;
 
   const lower = normalized.toLowerCase();
+  const includesAny = (haystack, keywords) => keywords.some((kw) => haystack.includes(kw));
 
   const contactQuickReply = {
     items: [
@@ -941,7 +993,7 @@ function quickKeywordReply(text, env) {
     }
   ];
 
-  if (normalized.includes('โปรโมชั่น') || ['promotion', 'promo', 'promotions'].includes(lower)) {
+  if (normalized.includes('โปรโมชั่น') || includesAny(lower, ['promotion', 'promo', 'promotions', 'discount', 'special offer'])) {
     return [
       {
         type: 'text',
@@ -950,11 +1002,25 @@ function quickKeywordReply(text, env) {
     ];
   }
 
-  if (['เบอร์ติดต่อ', 'ติดต่อ', 'เบอร์โทร', 'ช่องทางติดต่อ', 'contact', 'phone'].includes(lower)) {
+  const contactTriggers = ['เบอร์ติดต่อ', 'เบอร์โทร', 'ช่องทางติดต่อ', 'contact', 'phone'];
+  if (includesAny(lower, contactTriggers) || (normalized.includes('เบอร์') && normalized.includes('ติดต่อ'))) {
     return contactMenu;
   }
 
-  if (['รายละเอียด', 'รายละเอียดห้อง', 'room detail', 'room details', 'details'].includes(lower)) {
+  const addressRegex = /(ขอ)?ที่อยู่|ส่ง(ของ|พัสดุ)|จัดส่ง|ส่งมาที่|ส่งหา|shipping|address|deliver|delivery|ส่งไปรษณีย์/i;
+  if (addressRegex.test(normalized) || addressRegex.test(lower)) {
+    const templateAddress = [
+      'มามา แมนชั่น ตึก A/B ห้อง A000',
+      '45 ซอยฉลองกรุง 37 แขวงลำปลาทิว เขตลาดกระบัง กรุงเทพฯ 10520'
+    ].join('\n');
+
+    return [
+      { type: 'text', text: templateAddress },
+      { type: 'text', text: 'โปรดระบุเลขตึกและเลขห้องจริงของคุณทุกครั้ง เพื่อให้พัสดุส่งถึงอย่างถูกต้องนะคะ' }
+    ];
+  }
+
+  if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
     const quickItems = [
       { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
       { label: 'เฟอร์นิเจอร์', act: 'ROOM_FURNITURE' },
@@ -986,7 +1052,10 @@ function quickKeywordReply(text, env) {
     ];
   }
 
-  if (normalized.includes('ที่ตั้ง') || normalized.includes('แผนที่') || ['location', 'map'].includes(lower)) {
+  const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];
+  const locationEnglishTriggers = ['location', 'map', 'where is', 'how to get', 'how do i get', 'how to go'];
+  const locationRegex = /(ไป|เดินทาง).*(ยังไง|อย่างไร|ทางไหน)/i;
+  if (includesAny(normalized, locationThaiTriggers) || includesAny(lower, locationEnglishTriggers) || locationRegex.test(normalized)) {
     const mapUrl = String((env?.MAPS_URL || '').trim() || 'https://maps.app.goo.gl/Qktm2mDGPappQ8EZA');
     const mapMessage = [
       '📍 ตำแหน่ง Mama Mansion',
@@ -1024,7 +1093,9 @@ function quickKeywordReply(text, env) {
     ];
   }
 
-  if (normalized.includes('วิธีจอง')) {
+  const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
+  const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
+  if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
     const bookingStepsText = [
       '[📅 วิธีจองห้องพัก]',
       '',
@@ -1060,7 +1131,7 @@ function quickKeywordReply(text, env) {
     ];
   }
 
-  if (['แม่บ้าน', 'ติดต่อแม่บ้าน', 'เบอร์แม่บ้าน', 'โทรหาแม่บ้าน'].includes(lower)) {
+  if (normalized.includes('แม่บ้าน') || lower.includes('maid')) {
     return maidContact;
   }
 
