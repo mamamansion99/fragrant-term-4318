@@ -650,12 +650,8 @@ if (
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg).catch(console.error));
             }
-            ctx.waitUntil(forwardToGas(env, {
-              act: 'checkin_change_keyword',
-              lineUserId: ev?.source?.userId || '',
-              chatId,
-              message: textIn
-            }));
+            // Forward the original event so GAS can run the regular check-in picker flow
+            ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
 
