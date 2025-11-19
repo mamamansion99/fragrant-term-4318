@@ -609,6 +609,22 @@ if (
         const userId  = ev?.source?.userId || '';
         const fridgeServiceKeyword = isFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
+        const payRentKey = stateKey + ':payrent_flow';
+        const payRentFlow = await kvGet(env, payRentKey);
+        const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
+
+        const forwardPayRent = () => {
+          const rentUrl = getPayRentGas(env);
+          if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
+          console.warn('pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS');
+          return forwardToGas(env, { events: [ev] });
+        };
+
+        if (payRentActive) {
+          ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
+          ctx.waitUntil(forwardPayRent());
+          continue;
+        }
 
 
         // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
@@ -642,13 +658,8 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
             }
 
-            const rentUrl = getPayRentGas(env);
-            if (rentUrl) {
-              ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
-            } else {
-              console.warn('pay rent keyword detected but PAYRENT_GAS_URL missing, falling back to main GAS');
-              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
-            }
+            ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
+            ctx.waitUntil(forwardPayRent());
             continue;
           }
 
