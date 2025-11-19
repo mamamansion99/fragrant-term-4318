@@ -19,6 +19,27 @@ const PARKING_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้
 const PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่าง)/i;
 const FRIDGE_KEYWORD_RE = /(ตู้เย็น|fridge|refrigerator)/i;
 const FRIDGE_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|มี|ให้)/i;
+const UTILITY_THAI_KEYWORDS = [
+  'ค่าน้ำ',
+  'ค่าไฟ',
+  'ค่าน้ำ-ไฟ',
+  'ค่าน้ำค่าไฟ',
+  'ค่าน้ำไฟ',
+  'น้ำไฟ',
+  'ค่าไฟฟ้า',
+  'ค่าน้ำประปา'
+];
+const UTILITY_EN_KEYWORDS = [
+  'utility bill',
+  'utility fee',
+  'utilities',
+  'utility',
+  'water bill',
+  'electric bill',
+  'electricity bill',
+  'water & electric',
+  'water/electric'
+];
 const CHECKIN_CHANGE_KEYWORDS = [
   'เปลี่ยนวันเช็คอิน',
   'เปลี่ยนวันที่เช็คอิน',
@@ -50,6 +71,21 @@ function isFridgeIntent(text){
   if (!FRIDGE_KEYWORD_RE.test(normalized)) return false;
   if (FRIDGE_INTENT_RE.test(normalized)) return true;
   return QUESTION_WORD_RE.test(normalized);
+}
+
+function isUtilityInquiry(text) {
+  const normalized = (text || '').trim();
+  if (!normalized) return false;
+  const lower = normalized.toLowerCase();
+  const collapsed = lower.replace(/\s+/g, '');
+
+  if (UTILITY_THAI_KEYWORDS.some((kw) => lower.includes(kw))) return true;
+  const joinedThaiHints = ['ค่าน้ำค่าไฟ', 'ค่าน้ำไฟ', 'น้ำค่าไฟ', 'น้ำไฟ'];
+  if (joinedThaiHints.some((kw) => collapsed.includes(kw))) return true;
+
+  if (UTILITY_EN_KEYWORDS.some((kw) => lower.includes(kw))) return true;
+  const englishPair = lower.includes('water') && (lower.includes('electric') || lower.includes('electricity'));
+  return englishPair;
 }
 
 function isCheckinChangeIntent(text) {
@@ -595,14 +631,24 @@ if (
 
           // (C) Rent payment trigger
           if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
-            ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
-            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{
-              type: 'text',
-              text: 'เริ่มขั้นตอนชำระค่าเช่า…\nโปรดพิมพ์เบอร์ห้อง (เช่น A101)',
-              quickReply: { items: [ { type:'action', action:{ type:'postback', label:'ยกเลิก', data:'act=rent_cancel', displayText:'ยกเลิก' } } ] }
-            }]).catch(console.error));
-            const fakeEv = { ...ev, type: 'postback', postback: { data: 'act=pay_rent' } };
-            ctx.waitUntil(forwardToGas(env, { events: [fakeEv] }));
+            if (chatId) {
+              ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
+            }
+
+            const notifyMsg = { type: 'text', text: 'กำลังเปิดขั้นตอนชำระค่าเช่าให้ค่ะ รอสักครู่…' };
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [notifyMsg]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
+            }
+
+            const rentUrl = getPayRentGas(env);
+            if (rentUrl) {
+              ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
+            } else {
+              console.warn('pay rent keyword detected but PAYRENT_GAS_URL missing, falling back to main GAS');
+              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+            }
             continue;
           }
 
@@ -954,6 +1000,28 @@ function quickKeywordReply(text, env) {
 
   const lower = normalized.toLowerCase();
   const includesAny = (haystack, keywords) => keywords.some((kw) => haystack.includes(kw));
+  const utilityReplyQuickActions = {
+    items: [
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ค่าเช่า',
+          data: 'act=ROOM_RENT',
+          displayText: 'ค่าเช่า'
+        }
+      },
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ภาพ + เรทราคา',
+          data: 'act=ROOM_RENT_IMG',
+          displayText: 'ภาพ + เรทราคา'
+        }
+      }
+    ]
+  };
 
   const contactQuickReply = {
     items: [
@@ -988,6 +1056,16 @@ function quickKeywordReply(text, env) {
       text: 'แม่บ้าน (พี่ก้อย) 080-649-0441 ตึก A\nแม่บ้าน (พี่ยุ) ………………………. ตึก B\nผู้จัดการ (พิม) 082-798-1676\nโทรได้ทุกวัน 08:00-20:00 น.',
     }
   ];
+
+  if (isUtilityInquiry(normalized)) {
+    const utilityText = roomDetailByKey('ROOM_UTIL');
+    const textMessage = {
+      type: 'text',
+      text: utilityText || '[ค่าน้ำ-ไฟ/เน็ต]\nน้ำ 18 | ไฟ 8\n🛜เน็ต: ฟรี',
+      quickReply: utilityReplyQuickActions
+    };
+    return [textMessage];
+  }
 
   if (normalized.includes('โปรโมชั่น') || includesAny(lower, ['promotion', 'promo', 'promotions', 'discount', 'special offer'])) {
     return [
