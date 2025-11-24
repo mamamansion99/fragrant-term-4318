@@ -646,7 +646,7 @@ if (
           if (handled) continue;
 
           // (C) Rent payment trigger
-          if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
+          if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|จ่ายค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
             if (chatId) {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
