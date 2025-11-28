@@ -15,7 +15,7 @@
     "N8N_PARKING_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-parking",
     "N8N_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/line-postback-notready",
     // PAY_RENT GAS redeployed @28 (receiver fallback fix)
-    "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbz5mAn2yReWqG59t7RxQmB598P2utrfFPUAmsK1mD_4SyrV1jEt2Jarhrc7G0oPMJLHjw/exec",
+    "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbwCGOrpAWck-XajTUvCzbBGQOQSdidzzDP9ttIkLediX-Pb5Cdmjd4GegxlnwhI0IhD/exec",
     "MOVEOUT_GAS_URL": "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec",
     "HOWTO_IMAGE_URL_1": "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ",
     "HOWTO_IMAGE_URL_2": "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3"
