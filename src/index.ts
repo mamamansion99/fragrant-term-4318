@@ -11,6 +11,14 @@ function getStateKey(ev) {
   return `${chat}:${uid}`;
 }
 
+function formatDateBangkok(date = new Date()) {
+  const inBkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+  const y = inBkk.getFullYear();
+  const m = String(inBkk.getMonth() + 1).padStart(2, '0');
+  const d = String(inBkk.getDate()).padStart(2, '0');
+  return `${d}/${m}/${y}`;
+}
+
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
 const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
 const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
@@ -49,6 +57,36 @@ const CHECKIN_CHANGE_KEYWORDS = [
   'เปลี่ยนเวลาเชคอิน',
   'changecheckindate',
   'changecheckintime'
+];
+
+const AVAILABILITY_REGEXES = [
+  /(ห้อง|ตึก)[\s\S]{0,10}(ยัง)?ว่าง/i,
+  /(ยัง)?มีห้อง/i,
+  /เหลือห้อง/i,
+  /ห้องเต็มไหม/i,
+  /เช็ค.*ห้อง/i,
+  /ว่างวันไหน/i,
+  /ห้อง(วันนี้|พรุ่งนี้)/i
+];
+
+const AVAILABILITY_EXCLUDE_KEYWORDS = [
+  'ห้องกี่คืน',
+  'ราคา',
+  'เรท',
+  'ห้องเดี่ยว',
+  'เตียงคู่',
+  'สูท',
+  'เช็คอิน',
+  'เช็คเอาท์',
+  'จองเลย',
+  'ขอเบอร์จอง'
+];
+
+const AVAILABILITY_EXCLUDE_REGEXES = [
+  /room\s*available/i,
+  /\bavailability\b/i,
+  /book\s*room/i,
+  /room\s*(tonight|tomorrow)/i
 ];
 
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
@@ -1011,6 +1049,20 @@ function quickKeywordReply(text, env) {
 
   const lower = normalized.toLowerCase();
   const includesAny = (haystack, keywords) => keywords.some((kw) => haystack.includes(kw));
+
+  const isAvailabilityExcluded =
+    AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
+    AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
+  const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
+  if (isAvailabilityAsk && !isAvailabilityExcluded) {
+    const today = formatDateBangkok();
+    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
+    return [
+      { type: 'text', text: `อัปเดตวันที่ ${today}` },
+      { type: 'text', text: `สถานะห้อง: ตึก A เต็มแล้วค่ะ ตึก B ยังมีห้องว่างอยู่ หากสนใจจองสามารถเช็กห้องว่างตอนนี้และจองผ่านเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
+    ];
+  }
+
   const utilityReplyQuickActions = {
     items: [
       {
@@ -1082,7 +1134,7 @@ function quickKeywordReply(text, env) {
     return [
       {
         type: 'text',
-        text: '🎁 โปรโมชั่นพิเศษ: ฟรีอินเทอร์เน็ต/ไวไฟ และค่าส่วนกลาง เมื่อจองก่อน 31 ธันวาคมนี้!'
+        text: '🎁 โปรโมชั่นพิเศษ: ฟรีค่าส่วนกลาง เมื่อจองก่อน 31 ธันวาคมนี้!'
       }
     ];
   }
