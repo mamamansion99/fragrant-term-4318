@@ -1,72 +1,70 @@
+// @ts-nocheck
 
-var __defProp = Object.defineProperty;
-var __name = (target, value) => __defProp(target, "name", { value, configurable: true });
-
-// src/index.ts
-function isIsoDate(str) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(str);
-}
-__name(isIsoDate, "isIsoDate");
-function getChatId(ev) {
-  return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || "";
-}
-__name(getChatId, "getChatId");
+/* =========================
+ * 0) Small utilities
+ * ========================= */
+function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(str); } // YYYY-MM-DD
+function getChatId(ev)  { return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || ''; }
 function getStateKey(ev) {
-  const chat = getChatId(ev) || "unknown";
-  const uid = ev?.source?.userId || "anon";
+  const chat = getChatId(ev) || 'unknown';
+  const uid  = ev?.source?.userId || 'anon';
   return `${chat}:${uid}`;
 }
-__name(getStateKey, "getStateKey");
-function formatDateBangkok(date = /* @__PURE__ */ new Date()) {
-  const inBkk = new Date(date.toLocaleString("en-US", { timeZone: "Asia/Bangkok" }));
+
+function formatDateBangkok(date = new Date()) {
+  const inBkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
   const y = inBkk.getFullYear();
-  const m = String(inBkk.getMonth() + 1).padStart(2, "0");
-  const d = String(inBkk.getDate()).padStart(2, "0");
+  const m = String(inBkk.getMonth() + 1).padStart(2, '0');
+  const d = String(inBkk.getDate()).padStart(2, '0');
   return `${d}/${m}/${y}`;
 }
-__name(formatDateBangkok, "formatDateBangkok");
-var PHONE_RE = /^0\d{9}$/;
-var maskPhone = /* @__PURE__ */ __name((p) => (p || "").replace(/^(\d{3})\d{4}(\d{3})$/, "$1\u2022\u2022\u2022\u2022$2"), "maskPhone");
-var QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
-var PARKING_KEYWORD_RE = /(ที่จอด|ลานจอด|จอดรถ|ค่าจอด|โรงจอด|ซองจอด)/i;
-var PARKING_INTENT_RE = /(บริการ|อยาก|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|กี่บาท|เท่าไหร่|ว่าง|เต็ม|เอารถมา|นำรถมา)/i;
-var PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่าง|เต็ม|มั้ย|ไหม)/i;
-var URGENT_CONTACT_RE = /(ด่วน|ฉุกเฉิน|ช่วยด้วย|ไฟไหม้|ตำรวจ|ขโมย|urgent|emergency|help|sos|call|phone|เบอร์|แอดมิน|admin|manager|ผู้จัดการ|นิติ|เจ้าหน้าที่|staff|human)/i;
-var FRIDGE_KEYWORD_RE = /(ตู้เย็น|fridge|refrigerator)/i;
-var FRIDGE_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|มี|ให้)/i;
-var UTILITY_THAI_KEYWORDS = [
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33",
-  "\u0E04\u0E48\u0E32\u0E44\u0E1F",
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33-\u0E44\u0E1F",
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E04\u0E48\u0E32\u0E44\u0E1F",
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E44\u0E1F",
-  "\u0E19\u0E49\u0E33\u0E44\u0E1F",
-  "\u0E04\u0E48\u0E32\u0E44\u0E1F\u0E1F\u0E49\u0E32",
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E1B\u0E23\u0E30\u0E1B\u0E32"
+
+const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
+const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
+const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
+const PARKING_KEYWORD_RE = /(ที่จอด|ลานจอด|จอดรถ|ค่าจอด|โรงจอด|ซองจอด)/i;
+const PARKING_INTENT_RE = /(บริการ|อยาก|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|กี่บาท|เท่าไหร่|ว่าง|เต็ม|เอารถมา|นำรถมา)/i;
+const PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่าง|เต็ม|มั้ย|ไหม)/i;
+const URGENT_CONTACT_RE = /(ด่วน|ฉุกเฉิน|ช่วยด้วย|ไฟไหม้|ตำรวจ|ขโมย|urgent|emergency|help|sos|call|phone|เบอร์|แอดมิน|admin|manager|ผู้จัดการ|นิติ|เจ้าหน้าที่|staff|human)/i;
+const WAIT_ROOM_STATE = 'WAIT_ROOM';
+const TENANT_CHANGE_KEY_PREFIX = 'changeLine:';
+const FRIDGE_KEYWORD_RE = /(ตู้เย็น|fridge|refrigerator)/i;
+const FRIDGE_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|มี|ให้)/i;
+const UTILITY_THAI_KEYWORDS = [
+  'ค่าน้ำ',
+  'ค่าไฟ',
+  'ค่าน้ำ-ไฟ',
+  'ค่าน้ำค่าไฟ',
+  'ค่าน้ำไฟ',
+  'น้ำไฟ',
+  'ค่าไฟฟ้า',
+  'ค่าน้ำประปา'
 ];
-var UTILITY_EN_KEYWORDS = [
-  "utility bill",
-  "utility fee",
-  "utilities",
-  "utility",
-  "water bill",
-  "electric bill",
-  "electricity bill",
-  "water & electric",
-  "water/electric"
+const UTILITY_EN_KEYWORDS = [
+  'utility bill',
+  'utility fee',
+  'utilities',
+  'utility',
+  'water bill',
+  'electric bill',
+  'electricity bill',
+  'water & electric',
+  'water/electric'
 ];
-var CHECKIN_CHANGE_KEYWORDS = [
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E27\u0E31\u0E19\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E27\u0E31\u0E19\u0E17\u0E35\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E27\u0E31\u0E19\u0E40\u0E0A\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E40\u0E27\u0E25\u0E32\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E1B\u0E25\u0E35\u0E48\u0E22\u0E19\u0E40\u0E27\u0E25\u0E32\u0E40\u0E0A\u0E04\u0E2D\u0E34\u0E19",
-  "changecheckindate",
-  "changecheckintime"
+const CHECKIN_CHANGE_KEYWORDS = [
+  'เปลี่ยนวันเช็คอิน',
+  'เปลี่ยนวันที่เช็คอิน',
+  'เปลี่ยนวันทีเช็คอิน',
+  'เปลี่ยนวันเชคอิน',
+  'เปลี่ยนเวลาเช็คอิน',
+  'เปลี่ยนเวลาเชคอิน',
+  'changecheckindate',
+  'changecheckintime'
 ];
-var RESERVE_FLOW_WINDOW_MS = 2 * 60 * 60 * 1e3;
-var AVAILABILITY_REGEXES = [
+
+const OWNER_APPROVAL_KEYWORD_RE = /^(?:อนุมัติ|ไม่อนุมัติ)\s*(?:เปลี่ยนไลน์|เปลี่ยนไอดีผู้เช่า|line\s*id\s*change)/i;
+
+const AVAILABILITY_REGEXES = [
   /(ห้อง|ตึก)[\s\S]{0,10}(ยัง)?ว่าง/i,
   /(ยัง)?มีห้อง/i,
   /เหลือห้อง/i,
@@ -75,26 +73,30 @@ var AVAILABILITY_REGEXES = [
   /ว่างวันไหน/i,
   /ห้อง(วันนี้|พรุ่งนี้)/i
 ];
-var AVAILABILITY_EXCLUDE_KEYWORDS = [
-  "\u0E2B\u0E49\u0E2D\u0E07\u0E01\u0E35\u0E48\u0E04\u0E37\u0E19",
-  "\u0E23\u0E32\u0E04\u0E32",
-  "\u0E40\u0E23\u0E17",
-  "\u0E2B\u0E49\u0E2D\u0E07\u0E40\u0E14\u0E35\u0E48\u0E22\u0E27",
-  "\u0E40\u0E15\u0E35\u0E22\u0E07\u0E04\u0E39\u0E48",
-  "\u0E2A\u0E39\u0E17",
-  "\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19",
-  "\u0E40\u0E0A\u0E47\u0E04\u0E40\u0E2D\u0E32\u0E17\u0E4C",
-  "\u0E08\u0E2D\u0E07\u0E40\u0E25\u0E22",
-  "\u0E02\u0E2D\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E08\u0E2D\u0E07"
+
+const AVAILABILITY_EXCLUDE_KEYWORDS = [
+  'ห้องกี่คืน',
+  'ราคา',
+  'เรท',
+  'ห้องเดี่ยว',
+  'เตียงคู่',
+  'สูท',
+  'เช็คอิน',
+  'เช็คเอาท์',
+  'จองเลย',
+  'ขอเบอร์จอง'
 ];
-var AVAILABILITY_EXCLUDE_REGEXES = [
+
+const AVAILABILITY_EXCLUDE_REGEXES = [
   /room\s*available/i,
   /\bavailability\b/i,
   /book\s*room/i,
   /room\s*(tonight|tomorrow)/i
 ];
-function isParkingIntent(text) {
-  const normalized = (text || "").trim();
+
+// Detects general parking interest by requiring the parking keyword plus a basic intent verb.
+function isParkingIntent(text){
+  const normalized = (text || '').trim();
   if (!normalized) return false;
   if (/^\s*บริการ\s*ที่จอดรถ\s*$/i.test(normalized)) return true;
   if (/^ขอเช่าที่จอด/i.test(normalized)) return true;
@@ -105,438 +107,507 @@ function isParkingIntent(text) {
   if (hasQuestionWord || hasAvailabilityWord) return true;
   return false;
 }
-__name(isParkingIntent, "isParkingIntent");
-function isFridgeIntent(text) {
-  const normalized = (text || "").trim();
+
+function isFridgeIntent(text){
+  const normalized = (text || '').trim();
   if (!normalized) return false;
   if (/^\s*บริการ\s*ตู้เย็น\s*$/i.test(normalized)) return true;
   if (!FRIDGE_KEYWORD_RE.test(normalized)) return false;
   if (FRIDGE_INTENT_RE.test(normalized)) return true;
   return QUESTION_WORD_RE.test(normalized);
 }
-__name(isFridgeIntent, "isFridgeIntent");
+
 function isUtilityInquiry(text) {
-  const normalized = (text || "").trim();
+  const normalized = (text || '').trim();
   if (!normalized) return false;
   const lower = normalized.toLowerCase();
-  const collapsed = lower.replace(/\s+/g, "");
+  const collapsed = lower.replace(/\s+/g, '');
+
   if (UTILITY_THAI_KEYWORDS.some((kw) => lower.includes(kw))) return true;
-  const joinedThaiHints = ["\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E04\u0E48\u0E32\u0E44\u0E1F", "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33\u0E44\u0E1F", "\u0E19\u0E49\u0E33\u0E04\u0E48\u0E32\u0E44\u0E1F", "\u0E19\u0E49\u0E33\u0E44\u0E1F"];
+  const joinedThaiHints = ['ค่าน้ำค่าไฟ', 'ค่าน้ำไฟ', 'น้ำค่าไฟ', 'น้ำไฟ'];
   if (joinedThaiHints.some((kw) => collapsed.includes(kw))) return true;
+
   if (UTILITY_EN_KEYWORDS.some((kw) => lower.includes(kw))) return true;
-  const englishPair = lower.includes("water") && (lower.includes("electric") || lower.includes("electricity"));
+  const englishPair = lower.includes('water') && (lower.includes('electric') || lower.includes('electricity'));
   return englishPair;
 }
-__name(isUtilityInquiry, "isUtilityInquiry");
+
 function isCheckinChangeIntent(text) {
-  const normalized = (text || "").toLowerCase().replace(/\s+/g, "");
+  const normalized = (text || '').toLowerCase().replace(/\s+/g, '');
   if (!normalized) return false;
-  return CHECKIN_CHANGE_KEYWORDS.some((keyword) => normalized.includes(keyword));
+  return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
 }
-__name(isCheckinChangeIntent, "isCheckinChangeIntent");
-function hasKV(env) {
-  return !!(env && env.KV && typeof env.KV.get === "function");
-}
-__name(hasKV, "hasKV");
-async function kvGet(env, k) {
-  try {
-    if (!hasKV(env)) return null;
-    return await env.KV.get(k, "json");
-  } catch (_) {
-    return null;
-  }
-}
-__name(kvGet, "kvGet");
-async function kvPut(env, k, v) {
-  try {
-    if (!hasKV(env)) return;
-    await env.KV.put(k, JSON.stringify(v), { expirationTtl: 7200 });
-  } catch (_) {
-  }
-}
-__name(kvPut, "kvPut");
-async function kvDel(env, k) {
-  try {
-    if (!hasKV(env)) return;
-    await env.KV.delete(k);
-  } catch (_) {
-  }
-}
-__name(kvDel, "kvDel");
+
+/* =========================
+ * 1) KV + Loading helpers
+ * ========================= */
+function hasKV(env){ return !!(env && env.KV && typeof env.KV.get === 'function'); }
+async function kvGet(env, k){ try{ if(!hasKV(env)) return null; return await env.KV.get(k, 'json'); }catch(_){ return null; } }
+async function kvPut(env, k, v){ try{ if(!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: 7200 }); }catch(_){ /* no-op */ } }
+async function kvDel(env, k){ try{ if(!hasKV(env)) return; await env.KV.delete(k); }catch(_){ /* no-op */ } }
+
 async function lineStartLoading(token, chatId, seconds = 7) {
   if (!chatId) return;
   const secs = Math.max(5, Math.min(seconds, 60));
-  await fetch("https://api.line.me/v2/bot/chat/loading/start", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+  await fetch('https://api.line.me/v2/bot/chat/loading/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
     body: JSON.stringify({ chatId, loadingSeconds: secs })
   }).catch(console.error);
 }
-__name(lineStartLoading, "lineStartLoading");
+
+// ---- LINE helpers ----
 async function linePushText(channelToken, to, text) {
-  const res = await fetch("https://api.line.me/v2/bot/message/push", {
-    method: "POST",
+  const res = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${channelToken}`
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelToken}`,
     },
     body: JSON.stringify({
-      to,
-      // userId, groupId, or roomId
-      messages: [{ type: "text", text }]
-    })
+      to,                     // userId, groupId, or roomId
+      messages: [{ type: 'text', text }],
+    }),
   });
+
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
   }
 }
-__name(linePushText, "linePushText");
+
 async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
   let currentUrl = url;
   let options = { ...init };
-  if (bodyString !== void 0) {
+  if (bodyString !== undefined) {
     options.body = bodyString;
   }
+
   for (let i = 0; i <= maxRedirects; i += 1) {
     const res = await fetch(currentUrl, options);
     if (![301, 302, 303, 307, 308].includes(res.status)) {
       return res;
     }
-    const location = res.headers.get("location");
+    const location = res.headers.get('location');
     if (!location) {
       return res;
     }
+
     currentUrl = new URL(location, currentUrl).toString();
     options = { ...options };
-    if (bodyString !== void 0) {
+    if (bodyString !== undefined) {
       options.body = bodyString;
     }
   }
+
   return fetch(currentUrl, options);
 }
-__name(fetchWithRedirect, "fetchWithRedirect");
-function getWebhookGas(env) {
-  return env.MM_WEBHOOK_URL || env.MM_GAS_WEBHOOK_URL || env.APPS_SCRIPT_URL || "";
+
+
+// GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
+function getWebhookGas(env){
+  return env.MM_WEBHOOK_URL || env.MM_GAS_WEBHOOK_URL || env.APPS_SCRIPT_URL || '';
 }
-__name(getWebhookGas, "getWebhookGas");
-function getMoveoutGas(env) {
-  return env.MOVEOUT_GAS_URL || "";
+
+// GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
+function getMoveoutGas(env){
+  return env.MOVEOUT_GAS_URL || '';
 }
-__name(getMoveoutGas, "getMoveoutGas");
-function corsHeaders(origin) {
+
+function getAutoImgGas(env){
+  return env.AUTO_IMG_URL || '';
+}
+
+
+function corsHeaders(origin){
   return {
-    "Access-Control-Allow-Origin": origin || "*",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Vary": "Origin"
+    'Access-Control-Allow-Origin': origin || '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Vary': 'Origin'
   };
 }
-__name(corsHeaders, "corsHeaders");
-function getPayRentGas(env) {
-  return env.PAYRENT_GAS_URL || "";
+
+function getPayRentGas(env){
+  return env.PAYRENT_GAS_URL || '';
 }
-__name(getPayRentGas, "getPayRentGas");
-function getAutoImgGas(env) {
-  return env.AUTO_IMG_URL || env.AUTO_IMG_GAS_URL || env.SLIP_SCAN_GAS_URL || env.SLIPSCAN_GAS_URL || env.SLIP_SCAN_URL || "";
-}
-__name(getAutoImgGas, "getAutoImgGas");
+
 async function forwardToSpecificGas(env, gasUrl, body) {
-  const secret = env.WORKER_SECRET || "";
+  const secret = env.WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret };
+
   if (!gasUrl || !secret) {
-    console.error("forwardToSpecificGas: missing config", { hasUrl: !!gasUrl, hasSecret: !!secret });
+    console.error('forwardToSpecificGas: missing config', { hasUrl: !!gasUrl, hasSecret: !!secret });
     return false;
   }
-  let ok = false, status = 0, text = "";
+
+  let ok = false, status = 0, text = '';
   try {
     const bodyString = JSON.stringify(payload);
     const res = await fetchWithRedirect(gasUrl, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "X-Worker-Secret": secret
+        'Content-Type': 'application/json',
+        'X-Worker-Secret': secret
       },
       body: bodyString
     }, bodyString);
     status = res.status;
-    const ct = (res.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      const j = await res.json().catch(() => ({}));
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      const j = await res.json().catch(()=>({}));
       ok = !!j.ok || res.ok;
       text = JSON.stringify(j);
     } else {
       text = await res.text();
-      ok = res.ok && text.trim() === "OK";
+      ok = res.ok && text.trim() === 'OK';
     }
   } catch (e) {
-    console.error("forwardToSpecificGas error", String(e));
+    console.error('forwardToSpecificGas error', String(e));
   }
-  console.log("forwardToSpecificGas result", { url: new URL(gasUrl).host, status, ok, text: ("" + text).slice(0, 200) });
+  console.log('forwardToSpecificGas result', { url: (new URL(gasUrl)).host, status, ok, text: (''+text).slice(0,200) });
   return ok;
 }
-__name(forwardToSpecificGas, "forwardToSpecificGas");
+
+/** Forward any payload to GAS with header+body secret. Returns boolean ok. */
 async function forwardToGas(env, body) {
   const gasUrl = getWebhookGas(env);
-  const secret = env.WORKER_SECRET || "";
-  const payload = { ...body, workerSecret: secret };
+  const secret = env.WORKER_SECRET || '';
+  const payload = { ...body, workerSecret: secret }; // body secret for edge calls
+
   if (!gasUrl || !secret) {
-    console.error("forwardToGas: missing config", { hasUrl: !!gasUrl, hasSecret: !!secret });
+    console.error('forwardToGas: missing config', { hasUrl: !!gasUrl, hasSecret: !!secret });
     return false;
   }
-  let ok = false, status = 0, text = "";
+
+  let ok = false, status = 0, text = '';
   try {
     const bodyString = JSON.stringify(payload);
     const res = await fetchWithRedirect(gasUrl, {
-      method: "POST",
+      method: 'POST',
       headers: {
-        "Content-Type": "application/json",
-        "X-Worker-Secret": secret
-        // header secret for forwarded LINE events
+        'Content-Type': 'application/json',
+        'X-Worker-Secret': secret // header secret for forwarded LINE events
       },
       body: bodyString
     }, bodyString);
     status = res.status;
-    const ct = (res.headers.get("content-type") || "").toLowerCase();
-    if (ct.includes("application/json")) {
-      const j = await res.json().catch(() => ({}));
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    if (ct.includes('application/json')) {
+      const j = await res.json().catch(()=>({}));
       ok = !!j.ok;
       text = JSON.stringify(j);
     } else {
       text = await res.text();
-      ok = res.ok && text.trim() === "OK";
+      ok = res.ok && text.trim() === 'OK';
     }
   } catch (e) {
-    console.error("forwardToGas fetch error", String(e));
+    console.error('forwardToGas fetch error', String(e));
   }
-  console.log("forwardToGas result", { status, ok, text: ("" + text).slice(0, 200) });
+  console.log('forwardToGas result', { status, ok, text: ('' + text).slice(0, 200) });
   return ok;
 }
-__name(forwardToGas, "forwardToGas");
+
+/* =========================
+ * 3) Move-out postback @ Edge
+ * ========================= */
 async function handleMoveoutPostback(env, event, data) {
   const chatId = getChatId(event);
-  const replyToken = event?.replyToken || "";
+  const replyToken = event?.replyToken || '';
   const stateKey = getStateKey(event);
-  const send = /* @__PURE__ */ __name(async (messages) => {
-    if (!replyToken) {
-      console.error("NO_REPLYTOKEN moveout; skip push");
-      return;
-    }
-    try {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages);
-    } catch (e) {
-      console.error("LINE_REPLY_FAIL", String(e));
-    }
-  }, "send");
-  if (data.act === "moveout_cancel") {
-    try {
-      await kvDel(env, stateKey + ":moveout_flow");
-    } catch {
-    }
-    await send([{ type: "text", text: "\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E41\u0E08\u0E49\u0E07\u0E2D\u0E2D\u0E01\u0E41\u0E25\u0E49\u0E27\u0E04\u0E48\u0E30" }]);
+
+  const send = async (messages) => {
+    if (!replyToken) { console.error('NO_REPLYTOKEN moveout; skip push'); return; }
+    try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages); }
+    catch (e) { console.error('LINE_REPLY_FAIL', String(e)); }
+  };
+
+  if (data.act === 'moveout_cancel') {
+    try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
+    await send([{ type:'text', text:'ยกเลิกขั้นตอนแจ้งออกแล้วค่ะ' }]);
     return true;
   }
-  if (data.act === "moveout_yes") {
-    const flow = await kvGet(env, stateKey + ":moveout_flow");
-    const room = String(flow?.room || "").toUpperCase().trim();
-    const iso = String(flow?.dateISO || "").trim();
-    const phone = String(flow?.phone || "").trim();
+
+  if (data.act === 'moveout_yes') {
+    // ❗ Don’t trust postback params. Read from KV.
+    const flow = await kvGet(env, stateKey + ':moveout_flow');
+    const room = String(flow?.room || '').toUpperCase().trim();
+    const iso  = String(flow?.dateISO || '').trim();
+    const phone= String(flow?.phone || '').trim();
+
     if (!room || !isIsoDate(iso) || !PHONE_RE.test(phone)) {
-      console.error("moveout_yes: invalid or missing KV state", { hasRoom: !!room, hasDate: isIsoDate(iso), hasPhone: PHONE_RE.test(phone) });
-      await send([{ type: "text", text: "\u0E44\u0E21\u0E48\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25\u0E44\u0E14\u0E49 \u0E01\u0E23\u0E38\u0E13\u0E32\u0E40\u0E23\u0E34\u0E48\u0E21\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E43\u0E2B\u0E21\u0E48\u0E2D\u0E35\u0E01\u0E04\u0E23\u0E31\u0E49\u0E07\u0E04\u0E48\u0E30" }]);
-      try {
-        await kvDel(env, stateKey + ":moveout_flow");
-      } catch {
-      }
+      console.error('moveout_yes: invalid or missing KV state', { hasRoom:!!room, hasDate:isIsoDate(iso), hasPhone:PHONE_RE.test(phone) });
+      await send([{ type:'text', text:'ไม่สามารถยืนยันข้อมูลได้ กรุณาเริ่มขั้นตอนใหม่อีกครั้งค่ะ' }]);
+      try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
       return true;
     }
+
+    // 1) show loading immediately (no text yet)
     await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 15);
-    const ok = await forwardToGas(env, { act: "moveout", roomId: room, dateISO: iso, phone, lineUserId: event?.source?.userId || "" });
-    try {
-      await kvDel(env, stateKey + ":moveout_flow");
-    } catch {
-    }
-    const finalMsg = ok ? `\u2705 \u0E23\u0E31\u0E1A\u0E41\u0E08\u0E49\u0E07\u0E2D\u0E2D\u0E01\u0E41\u0E25\u0E49\u0E27
-\u0E2B\u0E49\u0E2D\u0E07 ${room} \u0E08\u0E30\u0E27\u0E48\u0E32\u0E07\u0E15\u0E31\u0E49\u0E07\u0E41\u0E15\u0E48 ${iso.split("-").reverse().join("/")}
-\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D: ${maskPhone(phone)}` : "\u2757\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E44\u0E21\u0E48\u0E2A\u0E33\u0E40\u0E23\u0E47\u0E08 \u0E42\u0E1B\u0E23\u0E14\u0E25\u0E2D\u0E07\u0E43\u0E2B\u0E21\u0E48\u0E2B\u0E23\u0E37\u0E2D\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D\u0E1C\u0E39\u0E49\u0E14\u0E39\u0E41\u0E25\u0E04\u0E48\u0E30";
-    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: "text", text: finalMsg }]);
+
+    // 2) fire GAS synchronously (NO push used)
+    const ok = await forwardToGas(env, { act:'moveout', roomId:room, dateISO:iso, phone, lineUserId:(event?.source?.userId||'') });
+
+    // 3) clear flow state
+    try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
+
+    // 4) single reply with final result (within 1 minute)
+    const finalMsg = ok
+      ? `✅ รับแจ้งออกแล้ว\nห้อง ${room} จะว่างตั้งแต่ ${iso.split('-').reverse().join('/')}\nเบอร์ติดต่อ: ${maskPhone(phone)}`
+      : '❗บันทึกไม่สำเร็จ โปรดลองใหม่หรือติดต่อผู้ดูแลค่ะ';
+
+    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalMsg }]);
     return true;
   }
+
   return false;
 }
-__name(handleMoveoutPostback, "handleMoveoutPostback");
-var index_default = {
+
+/* =========================
+ * 4) Main Worker Entrypoint
+ * ========================= */
+export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
-    if (request.method === "OPTIONS") {
+
+    // CORS preflight for browser
+    if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(env.ALLOWED_ORIGIN) });
     }
-    if (url.pathname.startsWith("/api/moveout")) {
-      const base = new URL(getMoveoutGas(env));
-      const t = new URL(base);
-      t.search = url.search;
-      const ws = env.WORKER_SECRET || "";
-      if (ws) t.searchParams.set("ws", ws);
-      const init = { method: request.method, headers: {} };
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        const raw = await request.text();
-        let body = {};
-        try {
-          body = JSON.parse(raw || "{}");
-        } catch (_) {
-        }
-        if (ws) body.workerSecret = ws;
-        init.headers["Content-Type"] = "application/json";
-        init.body = JSON.stringify(body);
+
+// Frontend API → proxy to GAS #2
+if (url.pathname.startsWith('/api/moveout')) {
+  // base GAS #2 URL (must be your Web App /exec)
+  const base = new URL(getMoveoutGas(env));
+
+  // Start with the browser’s query string, then add ws (if any)
+  const t = new URL(base);
+  t.search = url.search; // keep ?action=...&lineId=...
+  const ws = env.WORKER_SECRET || '';
+  if (ws) t.searchParams.set('ws', ws); // optional GET auth
+
+  // Build fetch init
+  const init = { method: request.method, headers: {} };
+
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    const raw = await request.text();
+    let body = {};
+    try { body = JSON.parse(raw || '{}'); } catch (_) {}
+    if (ws) body.workerSecret = ws; // optional body auth
+    init.headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+
+  // Call GAS and pass through content-type as-is
+  const res = await fetch(t.toString(), init);
+  const bodyText = await res.text();
+  const ct = res.headers.get('content-type') || 'application/json';
+
+  return new Response(bodyText, {
+    status: res.status,
+    headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
+  });
+}
+
+
+    // Custom callback for tenant ID change completion
+    if (request.method === 'POST' && url.pathname === '/tenant-change-complete') {
+      const secret = env.WORKER_SECRET || '';
+      if (!secret || request.headers.get('x-worker-secret') !== secret) {
+        return new Response('Unauthorized', { status: 401 });
       }
-      const res = await fetch(t.toString(), init);
-      const bodyText2 = await res.text();
-      const ct = res.headers.get("content-type") || "application/json";
-      return new Response(bodyText2, {
-        status: res.status,
-        headers: { ...corsHeaders(env.ALLOWED_ORIGIN), "Content-Type": ct }
-      });
+      let body = {};
+      try { body = await request.json(); } catch (_) { body = {}; }
+      const userId = String(body?.userId || '').trim();
+      if (userId) {
+        await kvDel(env, TENANT_CHANGE_KEY_PREFIX + userId);
+      }
+      return new Response(JSON.stringify({ cleared: !!userId }), { status: 200 });
     }
-    if (request.method !== "POST") return new Response("OK", { status: 200 });
+
+    // Everything else is the LINE webhook:
+    if (request.method !== 'POST') return new Response('OK', { status: 200 });
+
     const bodyText = await request.text();
-    const sig = request.headers.get("x-line-signature") || "";
-    if (!await verifySig(bodyText, sig, env.LINE_CHANNEL_SECRET)) {
-      return new Response("Unauthorized", { status: 401 });
+    // Verify LINE signature ...
+
+    const sig = request.headers.get('x-line-signature') || '';
+    if (!(await verifySig(bodyText, sig, env.LINE_CHANNEL_SECRET))) {
+      return new Response('Unauthorized', { status: 401 });
     }
-    const payload = JSON.parse(bodyText || "{}");
+
+    const payload = JSON.parse(bodyText || '{}');
     const events = Array.isArray(payload.events) ? payload.events : [];
+
     if (events.length > 0 && env.N8N_POSTBACK_URL) {
       const firstEvent = events[0];
-      if (firstEvent?.type === "postback" && firstEvent?.postback?.data) {
+      if (firstEvent?.type === 'postback' && firstEvent?.postback?.data) {
         let fridgePostback = null;
         try {
           fridgePostback = JSON.parse(firstEvent.postback.data);
         } catch (_) {
           fridgePostback = null;
         }
-        if (fridgePostback?.type === "fridge" && fridgePostback?.action === "not_ready") {
+
+        if (fridgePostback?.type === 'fridge' && fridgePostback?.action === 'not_ready') {
           ctx.waitUntil(
             fetch(env.N8N_POSTBACK_URL, {
-              method: "POST",
-              headers: { "content-type": "application/json" },
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
               body: JSON.stringify(payload)
-            }).catch((err) => console.error("forward fridge not_ready failed", err))
+            }).catch((err) => console.error('forward fridge not_ready failed', err))
           );
         }
       }
     }
+
     for (const ev of events) {
       const replyToken = ev?.replyToken;
-      if (ev.type === "postback") {
-        const data = parsePostbackData(ev.postback?.data || "");
-        if (data.act === "moveout_yes" || data.act === "moveout_cancel") {
+
+      /* -----------------------
+       * POSTBACK HANDLER
+       * --------------------- */
+      if (ev.type === 'postback') {
+        const data = parsePostbackData(ev.postback?.data || '');
+
+        // Move-out postbacks handled at Edge
+        if (data.act === 'moveout_yes' || data.act === 'moveout_cancel') {
           const handled = await handleMoveoutPostback(env, ev, data);
           if (handled) continue;
         }
-        if (data.act === "mgr_approve" || data.act === "mgr_reject") {
-          const txt = data.act === "mgr_approve" ? "\u0E23\u0E31\u0E1A\u0E17\u0E23\u0E32\u0E1A \u2713 \u0E01\u0E33\u0E25\u0E31\u0E07\u0E1A\u0E31\u0E19\u0E17\u0E36\u0E01\u0E41\u0E25\u0E30\u0E41\u0E08\u0E49\u0E07\u0E1C\u0E39\u0E49\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23\u2026" : "\u0E23\u0E31\u0E1A\u0E17\u0E23\u0E32\u0E1A \u2713 \u0E2A\u0E48\u0E07\u0E40\u0E02\u0E49\u0E32 Review Queue \u0E41\u0E25\u0E49\u0E27\u2026";
-          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: "text", text: txt }]).catch(console.error));
+
+        // Group approve/reject → instant ack, then forward to GAS
+        if (data.act === 'mgr_approve' || data.act === 'mgr_reject') {
+          const txt = data.act === 'mgr_approve'
+            ? 'รับทราบ ✓ กำลังบันทึกและแจ้งผู้จัดการ…'
+            : 'รับทราบ ✓ ส่งเข้า Review Queue แล้ว…';
+          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: txt }]).catch(console.error));
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
-        if (data.act === "pay_rent") {
+
+        // Pay rent postback → forward to GAS
+        if (data.act === 'pay_rent') {
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
-        if (data.act === "rent_cancel") {
+
+        // Cancel rent quick action
+        if (data.act === 'rent_cancel') {
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type: "text", text: "\u274C \u0E22\u0E01\u0E40\u0E25\u0E34\u0E01\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E0A\u0E33\u0E23\u0E30\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32\u0E41\u0E25\u0E49\u0E27\u0E04\u0E23\u0E31\u0E1A/\u0E04\u0E48\u0E30" }
+            { type: 'text', text: '❌ ยกเลิกขั้นตอนชำระค่าเช่าแล้วครับ/ค่ะ' }
           ]).catch(console.error));
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
-        if (data.act === "fridge_rent_request") {
+
+        if (data.act === 'fridge_rent_request') {
           const sanitizedData = {
             ...data,
             lineUserId: ev?.source?.userId || data.lineUserId || null,
             chatId: getChatId(ev) || data.chatId || null
           };
+
           const fridgePayload = {
-            source: "line_postback",
-            channel: "fridge",
+            source: 'line_postback',
+            channel: 'fridge',
             event: ev,
             data: sanitizedData,
-            receivedAt: (/* @__PURE__ */ new Date()).toISOString()
+            receivedAt: new Date().toISOString()
           };
+
           ctx.waitUntil(
-            notifyN8nFridge(env, fridgePayload).catch((err) => console.error("fridge notify failed", err))
+            notifyN8nFridge(env, fridgePayload)
+              .catch((err) => console.error('fridge notify failed', err))
           );
+
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: "text", text: "\u0E23\u0E31\u0E1A\u0E04\u0E33\u0E02\u0E2D\u0E40\u0E0A\u0E48\u0E32\u0E15\u0E39\u0E49\u0E40\u0E22\u0E47\u0E19\u0E41\u0E25\u0E49\u0E27\u0E04\u0E48\u0E30 \u0E01\u0E33\u0E25\u0E31\u0E07\u0E41\u0E08\u0E49\u0E07\u0E40\u0E08\u0E49\u0E32\u0E2B\u0E19\u0E49\u0E32\u0E17\u0E35\u0E48\u0E15\u0E48\u0E2D\u0E43\u0E2B\u0E49\u0E17\u0E31\u0E19\u0E17\u0E35" }
+              { type: 'text', text: 'รับคำขอเช่าตู้เย็นแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ต่อให้ทันที' }
             ]).catch(console.error);
           }
           continue;
         }
-        if (data.act === "parking_rent_request") {
+
+        if (data.act === 'parking_rent_request') {
           const sanitizedParking = {
             ...data,
-            type: "parking",
-            plan: data.plan === "roofed" ? "roofed" : "open",
+            type: 'parking',
+            plan: data.plan === 'roofed' ? 'roofed' : 'open',
             lineUserId: ev?.source?.userId || data.lineUserId || null,
             chatId: getChatId(ev) || data.chatId || null
           };
           const parkingPayload = {
-            source: "line_postback",
-            channel: "parking",
+            source: 'line_postback',
+            channel: 'parking',
             event: ev,
             data: sanitizedParking,
-            receivedAt: (/* @__PURE__ */ new Date()).toISOString()
+            receivedAt: new Date().toISOString()
           };
+
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: "text", text: "\u0E23\u0E31\u0E1A\u0E04\u0E33\u0E02\u0E2D\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16\u0E41\u0E25\u0E49\u0E27\u0E04\u0E23\u0E31\u0E1A \u0E01\u0E33\u0E25\u0E31\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u0E04\u0E27\u0E32\u0E21\u0E27\u0E48\u0E32\u0E07\u0E43\u0E2B\u0E49\u0E17\u0E31\u0E19\u0E17\u0E35" }
+              { type: 'text', text: 'รับคำขอที่จอดรถแล้วครับ กำลังตรวจสอบความว่างให้ทันที' }
             ]).catch(console.error);
           }
+
           ctx.waitUntil(
-            notifyN8nParking(env, parkingPayload).catch((err) => console.error("parking notify failed", err))
+            notifyN8nParking(env, parkingPayload).catch((err) => console.error('parking notify failed', err))
           );
+
           ctx.waitUntil(
             forwardToGas(env, { events: [ev], parking: parkingPayload })
           );
           continue;
         }
+
+        // Ultra-fast postbacks handled here (no GAS)
+// Ultra-fast postbacks handled here (no GAS)
         if (isRoomAct(data.act)) {
           const text = roomDetailByKey(data.act);
-          if (data.act === "ROOM_RENT_IMG") {
+
+          // Special branch: ROOM_RENT_IMG → send 3 images
+          if (data.act === 'ROOM_RENT_IMG') {
             const out = [
-              { type: "text", text: text || "[\u0E23\u0E32\u0E04\u0E32 + \u0E20\u0E32\u0E1E]" },
+              { type:'text', text: text || '[ราคา + ภาพ]' },
+
               {
-                type: "image",
-                originalContentUrl: "https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht",
-                previewImageUrl: "https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht"
+                type: 'image',
+                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht',
+                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht'
               },
               {
-                type: "image",
-                originalContentUrl: "https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r",
-                previewImageUrl: "https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r"
+                type: 'image',
+                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r',
+                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r'
               },
               {
-                type: "image",
-                originalContentUrl: "https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o",
-                previewImageUrl: "https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o"
-              }
+                type: 'image',
+                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o',
+                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o'
+              },
             ];
+
             ctx.waitUntil(
-              lineReply(env.LINE_ACCESS_TOKEN, replyToken, out).catch(console.error)
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, out)
+                .catch(console.error)
             );
             continue;
           }
+
+          // Default branch → other ROOM_* keys
           ctx.waitUntil(
-            lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: "text", text }]).catch(console.error)
-          );
+            lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }])
+              .catch(console.error)
+            );
           continue;
         }
         if (isFixAct(data.act)) {
           const text = fixDetailByKey(data.act);
-          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: "text", text }]).catch(console.error));
+          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error));
           continue;
         }
+
         if (isResAct(data.act)) {
           const messages = resDetailByKey(data.act);
           if (messages && messages.length) {
@@ -544,78 +615,146 @@ var index_default = {
           }
           continue;
         }
-        const stateKey = getStateKey(ev);
-        if (data.scope === "payrent" || ["pick_month", "quick_month", "upload", "status", "faq", "howto"].includes(data.act)) {
-          const chatId = getChatId(ev);
-          const rentUrl = getPayRentGas(env);
-          try {
-            await linePushText(env.LINE_ACCESS_TOKEN, chatId, "\u0E42\u0E1B\u0E23\u0E14\u0E23\u0E2D\u0E2A\u0E31\u0E01\u0E04\u0E23\u0E39\u0E48\u2026");
-          } catch (e) {
-            console.error("push wait msg failed", e);
-          }
-          try {
-            await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6);
-          } catch (e) {
-            console.warn("lineStartLoading failed", e);
-          }
-          await forwardToSpecificGas(env, rentUrl, { events: [ev] });
-          continue;
-        }
+
+const stateKey = getStateKey(ev);
+// Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
+// Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
+if (
+  data.scope === 'payrent' ||
+  ['pick_month', 'quick_month', 'upload', 'status', 'faq', 'howto'].includes(data.act)
+) {
+  const chatId = getChatId(ev);
+  const rentUrl = getPayRentGas(env);
+
+  // 1) show a quick "please wait" (PUSH so we don't consume replyToken)
+  try {
+    await linePushText(env.LINE_ACCESS_TOKEN, chatId, 'โปรดรอสักครู่…');
+  } catch (e) {
+    console.error('push wait msg failed', e);
+  }
+
+  // 2) optional: start LINE loading right away
+  try {
+    await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6);
+  } catch (e) {
+    console.warn('lineStartLoading failed', e);
+  }
+
+  // 3) forward the original postback to PAYRENT GAS (await for snappiest UX)
+  await forwardToSpecificGas(env, rentUrl, { events: [ev] });
+
+  continue;
+}
+
+
+
+        // Heavy postbacks → quick ack then forward
         ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-          { type: "text", text: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u2026" }
+          { type: 'text', text: 'กำลังตรวจสอบ…' }
         ]).catch(console.error));
         ctx.waitUntil(forwardToGas(env, { events: [ev] }));
         continue;
       }
-      if (ev.type === "message") {
+
+      
+      
+      /* -----------------------
+       * MESSAGE HANDLER
+       * --------------------- */
+      if (ev.type === 'message') {
         const m = ev.message || {};
-        if (m.type === "text") {
-          const textIn = (m.text || "").trim();
-          const chatId = getChatId(ev);
-          const stateKey = getStateKey(ev);
-          const userId = ev?.source?.userId || "";
-          const fridgeServiceKeyword = isFridgeIntent(textIn);
-          const parkingServiceKeyword = isParkingIntent(textIn);
-          const payRentKey = stateKey + ":payrent_flow";
-          const payRentFlow = await kvGet(env, payRentKey);
-          const payRentActive = !!(payRentFlow && payRentFlow.ts && Date.now() - payRentFlow.ts < 15 * 60 * 1e3);
-          const reserveKey = stateKey + ":reserve_flow";
-          const reserveFlow = await kvGet(env, reserveKey);
-          const reserveActive = !!(reserveFlow && reserveFlow.ts && Date.now() - reserveFlow.ts < RESERVE_FLOW_WINDOW_MS);
-          const forwardPayRent = /* @__PURE__ */ __name(() => {
-            const rentUrl = getPayRentGas(env);
-            if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
-            console.warn("pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS");
-            return forwardToGas(env, { events: [ev] });
-          }, "forwardPayRent");
-          if (payRentActive) {
-            ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
-            ctx.waitUntil(forwardPayRent());
-            continue;
+
+        // === TEXT ===
+        if (m.type === 'text') {
+        const textIn  = (m.text || '').trim();
+        const chatId  = getChatId(ev);
+        const stateKey= getStateKey(ev);
+        const userId  = ev?.source?.userId || '';
+        const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
+        const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
+        const fridgeServiceKeyword = isFridgeIntent(textIn);
+        const parkingServiceKeyword = isParkingIntent(textIn);
+        const payRentKey = stateKey + ':payrent_flow';
+        const payRentFlow = await kvGet(env, payRentKey);
+        const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
+
+        const forwardPayRent = () => {
+          const rentUrl = getPayRentGas(env);
+          if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
+          console.warn('pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS');
+          return forwardToGas(env, { events: [ev] });
+        };
+
+        const notifyTenantChange = (intent) => {
+          const payload = {
+            source: 'line_message',
+            intent,
+            text: textIn,
+            userId: userId || null,
+            chatId: chatId || null,
+            state: changeLineState?.state || null,
+            receivedAt: new Date().toISOString()
+          };
+          ctx.waitUntil(
+            notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
+          );
+        };
+
+        if (payRentActive) {
+          ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
+          ctx.waitUntil(forwardPayRent());
+          continue;
+        }
+
+        if (/^\s*เปลี่ยนไอดีผู้เช่า\s*$/i.test(textIn)) {
+          if (userId) {
+            await kvPut(env, changeLineKey, { state: WAIT_ROOM_STATE, ts: Date.now(), chatId, userId });
           }
-          if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: "text", text: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E2A\u0E23\u0E49\u0E32\u0E07\u0E25\u0E34\u0E07\u0E01\u0E4C\u0E41\u0E08\u0E49\u0E07\u0E2D\u0E2D\u0E01\u0E43\u0E2B\u0E49\u0E04\u0E38\u0E13\u2026 \u0E01\u0E23\u0E38\u0E13\u0E32\u0E23\u0E2D\u0E2A\u0E31\u0E01\u0E04\u0E23\u0E39\u0E48" }
-            ]).catch(console.error);
-            await forwardToGas(env, { events: [ev] });
-            continue;
-          }
+          notifyTenantChange('tenant_id_change_request');
+          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+            { type:'text', text:'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ' }
+          ]).catch(console.error);
+          continue;
+        }
+
+
+        // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
+        if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
+          // quick acknowledge so user sees immediate response
+          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+            { type:'text', text:'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่' }
+          ]).catch(console.error);
+
+          // forward the original LINE event to GAS
+          // (your GAS doPost will detect text === แจ้งออก and call _issueAndSendMoveOutMagicLink_)
+          await forwardToGas(env, { events: [ev] });
+
+          continue;
+        }
+
+          // (B) While inside move-out flow (รวม confirm)
           const handled = await moveoutTextGate(env, stateKey, textIn, replyToken);
           if (handled) continue;
+
+          // (C) Rent payment trigger
           if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|จ่ายค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
             if (chatId) {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
-            const notifyMsg = { type: "text", text: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E40\u0E1B\u0E34\u0E14\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E0A\u0E33\u0E23\u0E30\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32\u0E43\u0E2B\u0E49\u0E04\u0E48\u0E30 \u0E23\u0E2D\u0E2A\u0E31\u0E01\u0E04\u0E23\u0E39\u0E48\u2026" };
+
+            const notifyMsg = { type: 'text', text: 'กำลังเปิดขั้นตอนชำระค่าเช่าให้ค่ะ รอสักครู่…' };
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [notifyMsg]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
             }
+
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
             ctx.waitUntil(forwardPayRent());
             continue;
           }
+
+          // (C.1) Fridge service button → link to n8n automation
           if (fridgeServiceKeyword) {
             const replies = [
               fridgeInfoReply(env, {
@@ -627,6 +766,7 @@ var index_default = {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
             continue;
           }
+
           if (parkingServiceKeyword) {
             const commonOptions = {
               lineUserId: ev?.source?.userId || null,
@@ -634,287 +774,333 @@ var index_default = {
             };
             const replies = [
               parkingButtonsMessage(
-                buildParkingPostbackPayload("open", commonOptions),
-                buildParkingPostbackPayload("roofed", commonOptions)
+                buildParkingPostbackPayload('open', commonOptions),
+                buildParkingPostbackPayload('roofed', commonOptions)
               )
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
             continue;
           }
+
+          if (changeLineState?.state === WAIT_ROOM_STATE) {
+            notifyTenantChange('tenant_id_change_room');
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type:'text', text:'รับรหัสห้องแล้วค่ะ เจ้าหน้าที่แจ้งกลับให้เร็วที่สุด' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (OWNER_APPROVAL_KEYWORD_RE.test(textIn)) {
+            const intent = textIn.trim().startsWith('ไม่') ? 'tenant_id_change_reject' : 'tenant_id_change_approve';
+            notifyTenantChange(intent);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type:'text', text:'ส่งสถานะไปยังเจ้าหน้าที่เรียบร้อยแล้วค่ะ' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (/เปลี่ยนไอดีผู้เช่า/i.test(textIn)) {
+            const payload = {
+              source: 'line_message',
+              intent: 'tenant_id_change',
+              text: textIn,
+              userId: ev?.source?.userId || null,
+              chatId: getChatId(ev) || null,
+              receivedAt: new Date().toISOString()
+            };
+            ctx.waitUntil(
+              notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant id change notify failed', err))
+            );
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้วค่ะ เจ้าหน้าที่จะติดต่อกลับโดยเร็วที่สุด' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          // (D) Quick keyword replies
           const fast = quickKeywordReply(textIn, env);
           if (fast) {
             ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
             continue;
           }
+
           if (isCheckinChangeIntent(textIn)) {
-            const notifyMsg = "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E2A\u0E48\u0E07\u0E1B\u0E38\u0E48\u0E21\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E27\u0E31\u0E19\u2013\u0E40\u0E27\u0E25\u0E32\u0E40\u0E0A\u0E47\u0E04\u0E2D\u0E34\u0E19\u0E43\u0E2B\u0E49\u0E04\u0E48\u0E30 \u0E23\u0E2D\u0E2A\u0E31\u0E01\u0E04\u0E23\u0E39\u0E48\u2026";
+            const notifyMsg = 'กำลังส่งปุ่มเลือกวัน–เวลาเช็คอินให้ค่ะ รอสักครู่…';
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: "text", text: notifyMsg }
+                { type: 'text', text: notifyMsg }
               ]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg).catch(console.error));
             }
+            // Forward the original event so GAS can run the regular check-in picker flow
             ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
-          const mappedAct = ROOM_LABEL_MAP[textIn] ? ROOM_LABEL_MAP[textIn] : FIX_LABEL_MAP[textIn] ? FIX_LABEL_MAP[textIn] : null;
-          const bookingMatch = textIn.match(/#?\s*MM\d{3,}/i);
-          if (bookingMatch) {
-            const bookingCode = bookingMatch[0].replace(/#/g, "").replace(/\s+/g, "").toUpperCase();
-            ctx.waitUntil(kvPut(env, reserveKey, { ts: Date.now(), chatId, userId, code: bookingCode }));
-            const ack = { type: "text", text: "\u0E01\u0E33\u0E25\u0E31\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u0E23\u0E2B\u0E31\u0E2A\u0E08\u0E2D\u0E07\u2026" };
-            if (replyToken) {
-              ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [ack]).catch(console.error));
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ack.text).catch(console.error));
-            }
+
+          // (E) Label → act mapping
+          const mappedAct =
+            ROOM_LABEL_MAP[textIn] ? ROOM_LABEL_MAP[textIn] :
+            FIX_LABEL_MAP[textIn]  ? FIX_LABEL_MAP[textIn]  :
+            null;
+
+
+          // (F) Booking code → ack + forward
+          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'กำลังตรวจสอบรหัสจอง…' }
+            ]).catch(console.error));
             ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
+
+          // (G) Looks like room → only if flow exists
           const looksLikeRoom = /^[A-Z]?\d{3,4}$/i.test(textIn);
           if (looksLikeRoom) {
-            const key = stateKey + ":moveout_flow";
+            const key  = stateKey + ':moveout_flow';
             const flow = await kvGet(env, key);
             if (flow && flow.step) {
               const h = await moveoutTextGate(env, stateKey, textIn, replyToken);
               if (h) continue;
             }
           }
+
+          // (H) Forward everything else to GAS
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
-        if (m.type === "image") {
+
+        // === IMAGE ===
+        if (m.type === 'image') {
+          // Optional quick ack
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type: "text", text: "\u0E23\u0E31\u0E1A\u0E44\u0E1F\u0E25\u0E4C\u0E41\u0E25\u0E49\u0E27 \u0E01\u0E33\u0E25\u0E31\u0E07\u0E15\u0E23\u0E27\u0E08\u0E2A\u0E2D\u0E1A\u2026" }
+            { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
           ]).catch(console.error));
+
           const autoImgUrl = getAutoImgGas(env);
           if (autoImgUrl) {
-            ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev], source: "image_scan" }));
+            ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev] }));
           }
+
           const stateKey = getStateKey(ev);
-          const flow = await kvGet(env, stateKey + ":payrent_flow");
-          const active = !!(flow && flow.ts && Date.now() - flow.ts < 15 * 60 * 1e3);
-          const reserveFlow = await kvGet(env, stateKey + ":reserve_flow");
-          const reserveActive = !!(reserveFlow && reserveFlow.ts && Date.now() - reserveFlow.ts < RESERVE_FLOW_WINDOW_MS);
+          const flow = await kvGet(env, stateKey + ':payrent_flow');
+          const active = !!(flow && flow.ts && (Date.now() - flow.ts < 15 * 60 * 1000)); // 15 min window
+
           if (active) {
+            // Route to PAYRENT only while flow is active
             const rentUrl = getPayRentGas(env);
             ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
-            ctx.waitUntil(kvDel(env, stateKey + ":payrent_flow"));
-          } else if (reserveActive) {
-            ctx.waitUntil(kvPut(env, stateKey + ":reserve_flow", { ...reserveFlow, ts: Date.now(), chatId: getChatId(ev), userId: ev?.source?.userId || "" }));
-            ctx.waitUntil(forwardToGas(env, {
-              events: [ev],
-              reservationFlow: true,
-              reserve: {
-                code: reserveFlow?.code || null,
-                chatId: getChatId(ev) || null,
-                userId: ev?.source?.userId || null
-              }
-            }));
+            // clear the flag after handing off (optional; keeps it one-shot)
+            ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
           } else {
+            // Not in payrent flow → keep your default behavior
             ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           }
           continue;
         }
+
       }
     }
-    return new Response("OK", { status: 200 });
-  }
-};
-var ROOM_LABEL_MAP = {
-  "\u0E02\u0E19\u0E32\u0E14/\u0E40\u0E25\u0E22\u0E4C\u0E40\u0E2D\u0E32\u0E15\u0E4C": "ROOM_SIZE",
-  "\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E19\u0E34\u0E40\u0E08\u0E2D\u0E23\u0E4C": "ROOM_FURNITURE",
-  "\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E44\u0E1F\u0E1F\u0E49\u0E32": "ROOM_APPLIANCE",
-  "\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32": "ROOM_RENT",
-  "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33-\u0E44\u0E1F/\u0E40\u0E19\u0E47\u0E15": "ROOM_UTIL",
-  "\u0E40\u0E07\u0E34\u0E19\u0E1B\u0E23\u0E30\u0E01\u0E31\u0E19/\u0E2A\u0E31\u0E0D\u0E0D\u0E32": "ROOM_DEPOSIT",
-  "\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16": "ROOM_PARKING",
-  "\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48\u0E40\u0E23\u0E47\u0E27\u0E2A\u0E38\u0E14": "ROOM_EARLIEST"
-};
-var FIX_LABEL_MAP = {
-  "\u0E19\u0E49\u0E33/\u0E17\u0E48\u0E2D\u0E23\u0E31\u0E48\u0E27": "FIX_WATER",
-  "\u0E44\u0E1F/\u0E1B\u0E25\u0E31\u0E4A\u0E01/\u0E40\u0E1A\u0E23\u0E01\u0E40\u0E01\u0E2D\u0E23\u0E4C": "FIX_ELECTRIC",
-  "\u0E41\u0E2D\u0E23\u0E4C\u0E44\u0E21\u0E48\u0E40\u0E22\u0E47\u0E19/\u0E19\u0E49\u0E33\u0E2B\u0E22\u0E14": "FIX_AC",
-  "\u0E2B\u0E49\u0E2D\u0E07\u0E19\u0E49\u0E33/\u0E2A\u0E38\u0E02\u0E20\u0E31\u0E13\u0E11\u0E4C": "FIX_BATH",
-  "\u0E1B\u0E23\u0E30\u0E15\u0E39/\u0E01\u0E38\u0E0D\u0E41\u0E08": "FIX_DOOR",
-  "\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E19\u0E34\u0E40\u0E08\u0E2D\u0E23\u0E4C/\u0E2D\u0E38\u0E1B\u0E01\u0E23\u0E13\u0E4C": "FIX_FURN",
-  "\u0E01\u0E25\u0E34\u0E48\u0E19/\u0E40\u0E2A\u0E35\u0E22\u0E07\u0E23\u0E1A\u0E01\u0E27\u0E19": "FIX_SMELL",
-  "\u0E2D\u0E37\u0E48\u0E19 \u0E46": "FIX_OTHER"
-};
-function isRoomAct(a) {
-  return typeof a === "string" && a.startsWith("ROOM_");
-}
-__name(isRoomAct, "isRoomAct");
-function isFixAct(a) {
-  return typeof a === "string" && a.startsWith("FIX_");
-}
-__name(isFixAct, "isFixAct");
-function isResAct(a) {
-  return typeof a === "string" && a.startsWith("RES_");
-}
-__name(isResAct, "isResAct");
-function roomDetailByKey(key) {
-  const map = {
-    ROOM_SIZE: `[\u0E02\u0E19\u0E32\u0E14/\u0E40\u0E25\u0E22\u0E4C\u0E40\u0E2D\u0E32\u0E15\u0E4C]
-\u2022 Standard: ~22 \u0E15\u0E23.\u0E21. \u0E23\u0E30\u0E40\u0E1A\u0E35\u0E22\u0E07
-\u2022 Corner Plus: ~23 \u0E15\u0E23.\u0E21. \u0E2B\u0E19\u0E49\u0E32\u0E15\u0E48\u0E32\u0E07\u0E21\u0E38\u0E21 + \u0E23\u0E30\u0E40\u0E1A\u0E35\u0E22\u0E07
-\u2022 Starter: ~22 \u0E15\u0E23.\u0E21. \u0E23\u0E30\u0E40\u0E1A\u0E35\u0E22\u0E07`,
-    ROOM_FURNITURE: `[\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E19\u0E34\u0E40\u0E08\u0E2D\u0E23\u0E4C]
-\u{1F6CF}\uFE0F\u0E40\u0E15\u0E35\u0E22\u0E07 5 \u0E1F\u0E38\u0E15 + \u0E17\u0E35\u0E48\u0E19\u0E2D\u0E19
-\u{1F6AA}\u0E15\u0E39\u0E49\u0E40\u0E2A\u0E37\u0E49\u0E2D\u0E1C\u0E49\u0E32
-\u{1FA91}\u0E42\u0E15\u0E4A\u0E30\u0E17\u0E33\u0E07\u0E32\u0E19 + \u0E40\u0E01\u0E49\u0E32\u0E2D\u0E35\u0E49
-\u{1FA9F}\u0E1C\u0E49\u0E32\u0E21\u0E48\u0E32\u0E19`,
-    ROOM_APPLIANCE: `[\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E44\u0E1F\u0E1F\u0E49\u0E32]
-\u2744\uFE0F\u0E41\u0E2D\u0E23\u0E4C, \u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E17\u0E33\u0E19\u0E49\u0E33\u0E2D\u0E38\u0E48\u0E19
-\u0E15\u0E39\u0E49\u0E40\u0E22\u0E47\u0E19 200 \u0E1A\u0E32\u0E17/\u0E40\u0E14\u0E37\u0E2D\u0E19`,
-    ROOM_RENT: `[\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32]
-\u2022 Standard (\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E04\u0E23\u0E1A): 3,800\u20134,000 \u0E1A./\u0E14.
-\u2022 Corner Plus (\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E04\u0E23\u0E1A): 4,100\u20134,300 \u0E1A./\u0E14.
-\u2022 Starter (\u0E44\u0E21\u0E48\u0E21\u0E35\u0E40\u0E1F\u0E2D\u0E23\u0E4C): 3,500 \u0E1A./\u0E14.`,
-    ROOM_UTIL: `[\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33-\u0E44\u0E1F/\u0E40\u0E19\u0E47\u0E15]
-\u0E19\u0E49\u0E33 18 | \u0E44\u0E1F 8 
-\u{1F6DC}\u0E40\u0E19\u0E47\u0E15: \u0E1F\u0E23\u0E35`,
-    ROOM_RENT_IMG: `[\u0E40\u0E23\u0E17\u0E23\u0E32\u0E04\u0E32 + \u0E20\u0E32\u0E1E]`,
-    // 👈 new entry
-    ROOM_DEPOSIT: `[\u0E40\u0E07\u0E34\u0E19\u0E1B\u0E23\u0E30\u0E01\u0E31\u0E19/\u0E2A\u0E31\u0E0D\u0E0D\u0E32]
-\u0E2A\u0E31\u0E0D\u0E0D\u0E32\u0E02\u0E31\u0E49\u0E19\u0E15\u0E48\u0E33 1 \u0E1B\u0E35
-\u0E2B\u0E32\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E01\u0E32\u0E23\u0E40\u0E0A\u0E48\u0E32 6 \u0E40\u0E14\u0E37\u0E2D\u0E19 \u0E40\u0E1E\u0E34\u0E48\u0E21\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32 200 \u0E1A./\u0E40\u0E14\u0E37\u0E2D\u0E19
-(\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E40\u0E07\u0E34\u0E19\u0E1B\u0E23\u0E30\u0E01\u0E31\u0E19/\u0E25\u0E48\u0E27\u0E07\u0E2B\u0E19\u0E49\u0E32 \u0E23\u0E30\u0E1A\u0E38\u0E43\u0E19\u0E27\u0E31\u0E19\u0E17\u0E33\u0E2A\u0E31\u0E0D\u0E0D\u0E32)`,
-    ROOM_PARKING: `[\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16]
-\u{1F697}\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32 800/\u0E40\u0E14\u0E37\u0E2D\u0E19
-\u{1F697}\u0E44\u0E21\u0E48\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32 500/\u0E40\u0E14\u0E37\u0E2D\u0E19
-\u{1F3CD}\uFE0F\u0E21\u0E2D\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E0B\u0E15\u0E4C\u0E1F\u0E23\u0E35 (\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32)`,
-    ROOM_EARLIEST: `[\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48\u0E40\u0E23\u0E47\u0E27\u0E2A\u0E38\u0E14]
-    \u0E15\u0E36\u0E01 A \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48 1 \u0E1E.\u0E22. 
-    \u0E15\u0E36\u0E01 B \u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48 1 \u0E18.\u0E04. 
 
-(\u0E40\u0E0A\u0E47\u0E01\u0E2B\u0E49\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07\u0E44\u0E14\u0E49\u0E17\u0E35\u0E48 \u201C\u0E27\u0E34\u0E18\u0E35\u0E08\u0E2D\u0E07\u201D)`
-  };
-  return map[key] || "\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E2B\u0E31\u0E27\u0E02\u0E49\u0E2D\u0E08\u0E32\u0E01 Quick Reply \u0E44\u0E14\u0E49\u0E04\u0E48\u0E30";
-}
-__name(roomDetailByKey, "roomDetailByKey");
-function fixDetailByKey(key) {
+    return new Response('OK', { status: 200 });
+  }
+};
+
+/* =======================================================
+ * 5) Maps & Predicates
+ * ===================================================== */
+const ROOM_LABEL_MAP = {
+  'ขนาด/เลย์เอาต์':'ROOM_SIZE','เฟอร์นิเจอร์':'ROOM_FURNITURE','เครื่องใช้ไฟฟ้า':'ROOM_APPLIANCE',
+  'ค่าเช่า':'ROOM_RENT','ค่าน้ำ-ไฟ/เน็ต':'ROOM_UTIL','เงินประกัน/สัญญา':'ROOM_DEPOSIT',
+  'ที่จอดรถ':'ROOM_PARKING','เข้าอยู่เร็วสุด':'ROOM_EARLIEST'
+};
+const FIX_LABEL_MAP = {
+  'น้ำ/ท่อรั่ว':'FIX_WATER','ไฟ/ปลั๊ก/เบรกเกอร์':'FIX_ELECTRIC','แอร์ไม่เย็น/น้ำหยด':'FIX_AC',
+  'ห้องน้ำ/สุขภัณฑ์':'FIX_BATH','ประตู/กุญแจ':'FIX_DOOR','เฟอร์นิเจอร์/อุปกรณ์':'FIX_FURN',
+  'กลิ่น/เสียงรบกวน':'FIX_SMELL','อื่น ๆ':'FIX_OTHER'
+};
+function isRoomAct(a){ return typeof a==='string' && a.startsWith('ROOM_'); }
+function isFixAct(a){ return typeof a==='string' && a.startsWith('FIX_'); }
+function isResAct(a){ return typeof a==='string' && a.startsWith('RES_'); }
+
+/* =========================================
+ * 6) Message builders
+ * ========================================= */
+function roomDetailByKey(key){
   const map = {
-    FIX_WATER: "[\u0E19\u0E49\u0E33/\u0E17\u0E48\u0E2D\u0E23\u0E31\u0E48\u0E27]\n\u0E1B\u0E34\u0E14\u0E27\u0E32\u0E25\u0E4C\u0E27\u0E19\u0E49\u0E33\u0E0A\u0E31\u0E48\u0E27\u0E04\u0E23\u0E32\u0E27 (\u0E16\u0E49\u0E32\u0E40\u0E02\u0E49\u0E32\u0E16\u0E36\u0E07\u0E44\u0E14\u0E49) \u0E41\u0E25\u0E30\u0E16\u0E48\u0E32\u0E22\u0E23\u0E39\u0E1B\u0E08\u0E38\u0E14\u0E23\u0E31\u0E48\u0E27 \u0E41\u0E08\u0E49\u0E07\u0E40\u0E25\u0E02\u0E2B\u0E49\u0E2D\u0E07+\u0E40\u0E27\u0E25\u0E32\u0E2A\u0E30\u0E14\u0E27\u0E01 \u0E17\u0E35\u0E21\u0E0A\u0E48\u0E32\u0E07\u0E08\u0E30\u0E19\u0E31\u0E14\u0E40\u0E02\u0E49\u0E32\u0E0B\u0E48\u0E2D\u0E21\u0E04\u0E23\u0E31\u0E1A/\u0E04\u0E48\u0E30",
-    FIX_ELECTRIC: "[\u0E44\u0E1F\u0E1F\u0E49\u0E32/\u0E23\u0E30\u0E1A\u0E1A\u0E44\u0E1F]\n\u0E1B\u0E25\u0E31\u0E4A\u0E01\u0E2B\u0E23\u0E37\u0E2D\u0E44\u0E1F\u0E14\u0E31\u0E1A? \u0E41\u0E08\u0E49\u0E07\u0E40\u0E25\u0E02\u0E2B\u0E49\u0E2D\u0E07\u0E1E\u0E23\u0E49\u0E2D\u0E21\u0E2D\u0E18\u0E34\u0E1A\u0E32\u0E22\u0E2D\u0E32\u0E01\u0E32\u0E23\u0E04\u0E23\u0E31\u0E1A/\u0E04\u0E48\u0E30",
-    FIX_OTHER: "[\u0E2D\u0E37\u0E48\u0E19 \u0E46]\n\u0E40\u0E1E\u0E34\u0E48\u0E21\u0E40\u0E15\u0E34\u0E21\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E43\u0E2B\u0E49\u0E40\u0E23\u0E32 \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23\u0E44\u0E14\u0E49\u0E40\u0E23\u0E47\u0E27\u0E02\u0E36\u0E49\u0E19"
+    ROOM_SIZE:`[ขนาด/เลย์เอาต์]
+• Standard: ~22 ตร.ม. ระเบียง
+• Corner Plus: ~23 ตร.ม. หน้าต่างมุม + ระเบียง
+• Starter: ~22 ตร.ม. ระเบียง`,
+    ROOM_FURNITURE:`[เฟอร์นิเจอร์]
+🛏️เตียง 5 ฟุต + ที่นอน
+🚪ตู้เสื้อผ้า
+🪑โต๊ะทำงาน + เก้าอี้
+🪟ผ้าม่าน`,
+    ROOM_APPLIANCE:`[เครื่องใช้ไฟฟ้า]
+❄️แอร์, เครื่องทำน้ำอุ่น
+ตู้เย็น 200 บาท/เดือน`,
+    ROOM_RENT:`[ค่าเช่า]
+• Standard (เฟอร์ครบ): 3,800–4,000 บ./ด.
+• Corner Plus (เฟอร์ครบ): 4,100–4,300 บ./ด.
+• Starter (ไม่มีเฟอร์): 3,500 บ./ด.`,
+    ROOM_UTIL:`[ค่าน้ำ-ไฟ/เน็ต]
+น้ำ 18 | ไฟ 8 
+🛜เน็ต: ฟรี`,
+    ROOM_RENT_IMG:`[เรทราคา + ภาพ]`,   // 👈 new entry
+    ROOM_DEPOSIT:`[เงินประกัน/สัญญา]
+สัญญาขั้นต่ำ 1 ปี
+หากต้องการเช่า 6 เดือน เพิ่มค่าเช่า 200 บ./เดือน
+(รายละเอียดเงินประกัน/ล่วงหน้า ระบุในวันทำสัญญา)`,
+    ROOM_PARKING:`[ที่จอดรถ]
+🚗มีหลังคา 800/เดือน
+🚗ไม่มีหลังคา 500/เดือน
+🏍️มอเตอร์ไซต์ฟรี (มีหลังคา)`,
+    ROOM_EARLIEST:`[เข้าอยู่เร็วสุด]
+    ตึก A พร้อมเข้าอยู่ 1 พ.ย. 
+    ตึก B พร้อมเข้าอยู่ 1 ธ.ค. 
+
+(เช็กห้องว่างได้ที่ “วิธีจอง”)`
   };
-  return map[key] || "\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E2B\u0E31\u0E27\u0E02\u0E49\u0E2D\u0E08\u0E32\u0E01 Quick Reply \u0E44\u0E14\u0E49\u0E40\u0E25\u0E22\u0E04\u0E23\u0E31\u0E1A/\u0E04\u0E48\u0E30";
+  return map[key] || 'เลือกรายละเอียดหัวข้อจาก Quick Reply ได้ค่ะ';
 }
-__name(fixDetailByKey, "fixDetailByKey");
-function resDetailByKey(key) {
-  if (key === "RES_COMMUTE_AIRPORT") {
+function fixDetailByKey(key){
+  const map = {
+    FIX_WATER:'[น้ำ/ท่อรั่ว]\nปิดวาล์วน้ำชั่วคราว (ถ้าเข้าถึงได้) และถ่ายรูปจุดรั่ว แจ้งเลขห้อง+เวลาสะดวก ทีมช่างจะนัดเข้าซ่อมครับ/ค่ะ',
+    FIX_ELECTRIC:'[ไฟฟ้า/ระบบไฟ]\nปลั๊กหรือไฟดับ? แจ้งเลขห้องพร้อมอธิบายอาการครับ/ค่ะ',
+    FIX_OTHER:'[อื่น ๆ]\nเพิ่มเติมรายละเอียดให้เรา เพื่อจัดการได้เร็วขึ้น'
+  };
+  return map[key] || 'เลือกหัวข้อจาก Quick Reply ได้เลยครับ/ค่ะ';
+}
+
+function resDetailByKey(key){
+  if (key === 'RES_COMMUTE_AIRPORT') {
     const airportText = [
-      "\u2708\uFE0F \u0E27\u0E34\u0E18\u0E35\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E1B\u0E2A\u0E19\u0E32\u0E21\u0E1A\u0E34\u0E19\u0E2A\u0E38\u0E27\u0E23\u0E23\u0E13\u0E20\u0E39\u0E21\u0E34 (\u0E44\u0E21\u0E48\u0E21\u0E35\u0E23\u0E16\u0E2A\u0E48\u0E27\u0E19\u0E15\u0E31\u0E27)",
-      "",
-      "\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E17\u0E35\u0E48 1: \u0E2B\u0E2D\u0E1E\u0E31\u0E01 \u279C \u0E41\u0E22\u0E01\u0E2A\u0E38\u0E02\u0E2A\u0E21\u0E32\u0E19",
-      "\u2022 \u0E40\u0E14\u0E34\u0E19\u0E2D\u0E2D\u0E01\u0E44\u0E1B\u0E17\u0E35\u0E48\u0E1B\u0E49\u0E32\u0E22\u0E23\u0E16\u0E40\u0E21\u0E25\u0E4C \u0E16\u0E19\u0E19\u0E09\u0E25\u0E2D\u0E07\u0E01\u0E23\u0E38\u0E07",
-      "\u2022 \u0E02\u0E36\u0E49\u0E19\u0E23\u0E16\u0E2A\u0E2D\u0E07\u0E41\u0E16\u0E27\u0E2A\u0E35\u0E41\u0E14\u0E07 (\u0E15\u0E25\u0E32\u0E14\u0E2B\u0E31\u0E27\u0E15\u0E30\u0E40\u0E02\u0E49/\u0E25\u0E32\u0E14\u0E01\u0E23\u0E30\u0E1A\u0E31\u0E07) \u0E2B\u0E23\u0E37\u0E2D\u0E23\u0E16\u0E40\u0E21\u0E25\u0E4C\u0E40\u0E25\u0E47\u0E01\u0E2A\u0E32\u0E22 1013",
-      "\u2022 \u0E1A\u0E2D\u0E01\u0E25\u0E07\u0E17\u0E35\u0E48 \u201C\u0E41\u0E22\u0E01\u0E2A\u0E38\u0E02\u0E2A\u0E21\u0E32\u0E19\u201D",
-      "\u2022 \u0E40\u0E27\u0E25\u0E32\u0E43\u0E2B\u0E49\u0E1A\u0E23\u0E34\u0E01\u0E32\u0E23 ~06:00\u201321:40 \u0E19. \u0E04\u0E27\u0E32\u0E21\u0E16\u0E35\u0E48 10\u201325 \u0E19\u0E32\u0E17\u0E35",
-      "",
-      "\u0E02\u0E31\u0E49\u0E19\u0E15\u0E2D\u0E19\u0E17\u0E35\u0E48 2: \u0E41\u0E22\u0E01\u0E2A\u0E38\u0E02\u0E2A\u0E21\u0E32\u0E19 \u279C \u0E2A\u0E19\u0E32\u0E21\u0E1A\u0E34\u0E19",
-      "\u0E15\u0E31\u0E27\u0E40\u0E25\u0E37\u0E2D\u0E01 A (\u0E41\u0E19\u0E30\u0E19\u0E33): \u0E23\u0E16\u0E15\u0E39\u0E49/\u0E21\u0E34\u0E19\u0E34\u0E1A\u0E31\u0E2A 549 \u2014 \u0E40\u0E02\u0E49\u0E32\u0E16\u0E36\u0E07\u0E2D\u0E32\u0E04\u0E32\u0E23\u0E1C\u0E39\u0E49\u0E42\u0E14\u0E22\u0E2A\u0E32\u0E23\u0E42\u0E14\u0E22\u0E15\u0E23\u0E07 (~12\u201315 \u0E1A\u0E32\u0E17)",
-      "\u0E15\u0E31\u0E27\u0E40\u0E25\u0E37\u0E2D\u0E01 B: \u0E23\u0E16\u0E40\u0E21\u0E25\u0E4C S4 (549) \u2014 \u0E25\u0E07\u0E28\u0E39\u0E19\u0E22\u0E4C\u0E02\u0E19\u0E2A\u0E48\u0E07\u0E2A\u0E32\u0E18\u0E32\u0E23\u0E13\u0E30 \u0E15\u0E48\u0E2D Shuttle Bus \u0E1F\u0E23\u0E35",
-      "\u0E15\u0E31\u0E27\u0E40\u0E25\u0E37\u0E2D\u0E01 C: \u0E23\u0E16\u0E40\u0E27\u0E35\u0E22\u0E19\u0E2A\u0E32\u0E22 C (\u0E1F\u0E23\u0E35) \u2014 \u0E25\u0E07\u0E28\u0E39\u0E19\u0E22\u0E4C\u0E02\u0E19\u0E2A\u0E48\u0E07\u0E2A\u0E32\u0E18\u0E32\u0E23\u0E13\u0E30 \u0E15\u0E48\u0E2D Shuttle Bus \u0E1F\u0E23\u0E35",
-      "",
-      "\u2728 \u0E2A\u0E23\u0E38\u0E1B: \u0E2A\u0E2D\u0E07\u0E41\u0E16\u0E27\u0E41\u0E14\u0E07 \u279C \u0E23\u0E16\u0E15\u0E39\u0E49/\u0E21\u0E34\u0E19\u0E34\u0E1A\u0E31\u0E2A 549 \u0E04\u0E37\u0E2D\u0E27\u0E34\u0E18\u0E35\u0E17\u0E35\u0E48\u0E23\u0E27\u0E14\u0E40\u0E23\u0E47\u0E27\u0E41\u0E25\u0E30\u0E2A\u0E30\u0E14\u0E27\u0E01\u0E17\u0E35\u0E48\u0E2A\u0E38\u0E14"
-    ].join("\n");
-    return [{ type: "text", text: airportText }];
+      '✈️ วิธีเดินทางไปสนามบินสุวรรณภูมิ (ไม่มีรถส่วนตัว)',
+      '',
+      'ขั้นตอนที่ 1: หอพัก ➜ แยกสุขสมาน',
+      '• เดินออกไปที่ป้ายรถเมล์ ถนนฉลองกรุง',
+      '• ขึ้นรถสองแถวสีแดง (ตลาดหัวตะเข้/ลาดกระบัง) หรือรถเมล์เล็กสาย 1013',
+      '• บอกลงที่ “แยกสุขสมาน”',
+      '• เวลาให้บริการ ~06:00–21:40 น. ความถี่ 10–25 นาที',
+      '',
+      'ขั้นตอนที่ 2: แยกสุขสมาน ➜ สนามบิน',
+      'ตัวเลือก A (แนะนำ): รถตู้/มินิบัส 549 — เข้าถึงอาคารผู้โดยสารโดยตรง (~12–15 บาท)',
+      'ตัวเลือก B: รถเมล์ S4 (549) — ลงศูนย์ขนส่งสาธารณะ ต่อ Shuttle Bus ฟรี',
+      'ตัวเลือก C: รถเวียนสาย C (ฟรี) — ลงศูนย์ขนส่งสาธารณะ ต่อ Shuttle Bus ฟรี',
+      '',
+      '✨ สรุป: สองแถวแดง ➜ รถตู้/มินิบัส 549 คือวิธีที่รวดเร็วและสะดวกที่สุด'
+    ].join('\n');
+    return [{ type: 'text', text: airportText }];
   }
-  if (key === "RES_COMMUTE_KMITL") {
+
+  if (key === 'RES_COMMUTE_KMITL') {
     const kmitlText = [
-      "\u{1F3EB} \u0E27\u0E34\u0E18\u0E35\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E1B KMITL (\u22485.6 \u0E01\u0E21.)",
-      "",
-      "\u2022 \u0E21\u0E2D\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E0B\u0E04\u0E4C\u0E23\u0E31\u0E1A\u0E08\u0E49\u0E32\u0E07 ~15 \u0E19\u0E32\u0E17\u0E35 (\u0E02\u0E36\u0E49\u0E19\u0E04\u0E34\u0E27\u0E2B\u0E19\u0E49\u0E32\u0E2B\u0E2D\u0E2B\u0E23\u0E37\u0E2D\u0E1B\u0E32\u0E01\u0E0B\u0E2D\u0E22)",
-      "\u2022 \u0E23\u0E16\u0E2A\u0E2D\u0E07\u0E41\u0E16\u0E27\u0E2A\u0E35\u0E41\u0E14\u0E07\u0E40\u0E2A\u0E49\u0E19\u0E25\u0E32\u0E14\u0E01\u0E23\u0E30\u0E1A\u0E31\u0E07 \u2014 \u0E25\u0E07\u0E2B\u0E19\u0E49\u0E32\u0E21\u0E2B\u0E32\u0E27\u0E34\u0E17\u0E22\u0E32\u0E25\u0E31\u0E22",
-      "\u2022 \u0E23\u0E16\u0E40\u0E21\u0E25\u0E4C\u0E2A\u0E32\u0E22 552 (\u0E1B\u0E23\u0E31\u0E1A\u0E2D\u0E32\u0E01\u0E32\u0E28) \u0E02\u0E36\u0E49\u0E19\u0E23\u0E34\u0E21\u0E16\u0E19\u0E19\u0E09\u0E25\u0E2D\u0E07\u0E01\u0E23\u0E38\u0E07",
-      "",
-      "Tip: \u0E0A\u0E48\u0E27\u0E07\u0E40\u0E23\u0E48\u0E07\u0E14\u0E48\u0E27\u0E19\u0E04\u0E27\u0E23\u0E40\u0E1C\u0E37\u0E48\u0E2D\u0E40\u0E27\u0E25\u0E32\u0E40\u0E25\u0E47\u0E01\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E48\u0E2D\u0E19\u0E40\u0E02\u0E49\u0E32\u0E40\u0E23\u0E35\u0E22\u0E19"
-    ].join("\n");
-    return [{ type: "text", text: kmitlText }];
+      '🏫 วิธีเดินทางไป KMITL (≈5.6 กม.)',
+      '',
+      '• มอเตอร์ไซค์รับจ้าง ~15 นาที (ขึ้นคิวหน้าหอหรือปากซอย)',
+      '• รถสองแถวสีแดงเส้นลาดกระบัง — ลงหน้ามหาวิทยาลัย',
+      '• รถเมล์สาย 552 (ปรับอากาศ) ขึ้นริมถนนฉลองกรุง',
+      '',
+      'Tip: ช่วงเร่งด่วนควรเผื่อเวลาเล็กน้อยก่อนเข้าเรียน'
+    ].join('\n');
+    return [{ type: 'text', text: kmitlText }];
   }
-  if (key === "RES_CONTACT_BIKE") {
+
+  if (key === 'RES_CONTACT_BIKE') {
     const motoText = [
-      "\u{1F6F5} \u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E1E\u0E35\u0E48\u0E27\u0E34\u0E19\u0E21\u0E2D\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E0B\u0E04\u0E4C (\u0E2B\u0E19\u0E49\u0E32\u0E1B\u0E32\u0E01\u0E0B\u0E2D\u0E22) \u0E2A\u0E30\u0E14\u0E27\u0E01 \u0E23\u0E27\u0E14\u0E40\u0E23\u0E47\u0E27 \u0E42\u0E17\u0E23\u0E40\u0E23\u0E35\u0E22\u0E01\u0E40\u0E02\u0E49\u0E32\u0E21\u0E32\u0E23\u0E31\u0E1A\u0E17\u0E35\u0E48\u0E15\u0E36\u0E01\u0E44\u0E14\u0E49\u0E40\u0E25\u0E22\u0E04\u0E23\u0E31\u0E1A",
-      "",
-      "\u{1F4DE} \u0E23\u0E32\u0E22\u0E0A\u0E37\u0E48\u0E2D\u0E1E\u0E35\u0E48\u0E27\u0E34\u0E19\u0E1B\u0E23\u0E30\u0E08\u0E33\u0E08\u0E38\u0E14",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 18 : 086-113-2734",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 1 : 061-608-2523",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 24 : 094-419-8652",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 38 : 098-636-7991",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 3 : 063-520-6658",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 10 : 083-908-1127",
-      "\u0E40\u0E1A\u0E2D\u0E23\u0E4C 34 : 080-063-9128",
-      "",
-      "\u{1F4A1} \u0E02\u0E49\u0E2D\u0E41\u0E19\u0E30\u0E19\u0E33:",
-      '\u0E41\u0E08\u0E49\u0E07\u0E27\u0E48\u0E32 "\u0E21\u0E32\u0E23\u0E31\u0E1A\u0E17\u0E35\u0E48 Mama Mansion"',
-      "\u0E2A\u0E2D\u0E1A\u0E16\u0E32\u0E21\u0E23\u0E32\u0E04\u0E32\u0E01\u0E48\u0E2D\u0E19\u0E43\u0E0A\u0E49\u0E1A\u0E23\u0E34\u0E01\u0E32\u0E23\u0E19\u0E30\u0E04\u0E23\u0E31\u0E1A",
-      "\u0E01\u0E25\u0E32\u0E07\u0E04\u0E37\u0E19\u0E14\u0E36\u0E01 \u0E46 \u0E2D\u0E32\u0E08\u0E08\u0E30\u0E21\u0E35\u0E23\u0E16\u0E19\u0E49\u0E2D\u0E22\u0E01\u0E27\u0E48\u0E32\u0E1B\u0E01\u0E15\u0E34\u0E19\u0E30\u0E04\u0E23\u0E31\u0E1A",
-      "\u{1F3E0} \u0E14\u0E49\u0E27\u0E22\u0E04\u0E27\u0E32\u0E21\u0E2B\u0E48\u0E27\u0E07\u0E43\u0E22\u0E08\u0E32\u0E01 Mama Mansion"
-    ].join("\n");
-    return [{ type: "text", text: motoText }];
+      '🛵 เบอร์พี่วินมอเตอร์ไซค์ (หน้าปากซอย) สะดวก รวดเร็ว โทรเรียกเข้ามารับที่ตึกได้เลยครับ',
+      '',
+      '📞 รายชื่อพี่วินประจำจุด',
+      'เบอร์ 18 : 086-113-2734',
+      'เบอร์ 1 : 061-608-2523',
+      'เบอร์ 24 : 094-419-8652',
+      'เบอร์ 38 : 098-636-7991',
+      'เบอร์ 3 : 063-520-6658',
+      'เบอร์ 10 : 083-908-1127',
+      'เบอร์ 34 : 080-063-9128',
+      '',
+      '💡 ข้อแนะนำ:',
+      'แจ้งว่า "มารับที่ Mama Mansion"',
+      'สอบถามราคาก่อนใช้บริการนะครับ',
+      'กลางคืนดึก ๆ อาจจะมีรถน้อยกว่าปกตินะครับ',
+      '🏠 ด้วยความห่วงใยจาก Mama Mansion'
+    ].join('\n');
+    return [{ type: 'text', text: motoText }];
   }
+
   return null;
 }
-__name(resDetailByKey, "resDetailByKey");
+
+/* =========================================
+ * 7) LINE helpers (missing utilities)
+ * ========================================= */
 async function lineReply(channelToken, replyToken, messages) {
   if (!channelToken || !replyToken) {
-    throw new Error("lineReply: missing token or replyToken");
+    throw new Error('lineReply: missing token or replyToken');
   }
-  const res = await fetch("https://api.line.me/v2/bot/message/reply", {
-    method: "POST",
+
+  const res = await fetch('https://api.line.me/v2/bot/message/reply', {
+    method: 'POST',
     headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${channelToken}`
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelToken}`,
     },
     body: JSON.stringify({ replyToken, messages })
   });
+
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`LINE reply failed ${res.status} ${res.statusText}: ${body}`);
   }
 }
-__name(lineReply, "lineReply");
+
 async function verifySig(bodyText, signature, channelSecret) {
   if (!channelSecret || !signature) return false;
+
   const encoder = new TextEncoder();
   const keyData = encoder.encode(channelSecret);
-  const bodyData = encoder.encode(bodyText || "");
+  const bodyData = encoder.encode(bodyText || '');
+
   const key = await crypto.subtle.importKey(
-    "raw",
+    'raw',
     keyData,
-    { name: "HMAC", hash: "SHA-256" },
+    { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ["sign", "verify"]
+    ['sign', 'verify']
   );
+
   let sigBytes;
   try {
     const binary = atob(signature);
-    sigBytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+    sigBytes = Uint8Array.from(binary, c => c.charCodeAt(0));
   } catch (_) {
     return false;
   }
-  const signatureBuffer = await crypto.subtle.sign("HMAC", key, bodyData);
+
+  const signatureBuffer = await crypto.subtle.sign('HMAC', key, bodyData);
   const expected = new Uint8Array(signatureBuffer);
+
   if (expected.length !== sigBytes.length) return false;
+
   let diff = 0;
   for (let i = 0; i < expected.length; i += 1) {
     diff |= expected[i] ^ sigBytes[i];
   }
+
   return diff === 0;
 }
-__name(verifySig, "verifySig");
+
 function parseKv(data) {
   const out = {};
   if (!data) return out;
-  const parts = String(data).split("&");
+
+  const parts = String(data).split('&');
   for (const part of parts) {
     if (!part) continue;
-    const [rawKey, rawVal = ""] = part.split("=");
-    const key = decodeURIComponent(rawKey || "").trim();
-    const val = decodeURIComponent(rawVal || "").trim();
+    const [rawKey, rawVal = ''] = part.split('=');
+    const key = decodeURIComponent(rawKey || '').trim();
+    const val = decodeURIComponent(rawVal || '').trim();
     if (!key) continue;
     if (Object.prototype.hasOwnProperty.call(out, key)) {
       const prev = out[key];
@@ -925,208 +1111,77 @@ function parseKv(data) {
   }
   return out;
 }
-__name(parseKv, "parseKv");
+
 function parsePostbackData(raw) {
-  const input = (raw || "").trim();
+  const input = (raw || '').trim();
   if (!input) return {};
-  if (input.startsWith("{")) {
+
+  if (input.startsWith('{')) {
     try {
       const parsed = JSON.parse(input);
-      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
         return parsed;
       }
     } catch (err) {
-      console.warn("parsePostbackData JSON parse failed", err);
+      console.warn('parsePostbackData JSON parse failed', err);
     }
   }
+
   return parseKv(input);
 }
-__name(parsePostbackData, "parsePostbackData");
+
 async function moveoutTextGate(env, stateKey, textIn, replyToken) {
+  // Fallback implementation: forward all handling to GAS by returning false.
+  // Existing MOVEOUT flows handled in GAS will continue to work.
   return false;
 }
-__name(moveoutTextGate, "moveoutTextGate");
+
 function quickKeywordReply(text, env) {
-  const normalized = (text || "").trim();
+  const normalized = (text || '').trim();
   if (!normalized) return null;
+
   const lower = normalized.toLowerCase();
-  const includesAny = /* @__PURE__ */ __name((haystack, keywords) => keywords.some((kw) => haystack.includes(kw)), "includesAny");
-  const isUrgent = URGENT_CONTACT_RE.test(normalized) || normalized.includes("\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D") && !normalized.includes("\u0E2A\u0E2D\u0E1A\u0E16\u0E32\u0E21");
+  const includesAny = (haystack, keywords) => keywords.some((kw) => haystack.includes(kw));
+
+  const wantsParkingInfo = normalized.includes('ที่จอดรถ');
+  const isUrgent =
+    URGENT_CONTACT_RE.test(normalized) ||
+    (normalized.includes('ติดต่อ') && !normalized.includes('สอบถาม'));
+  if (wantsParkingInfo && !isUrgent) {
+    return [
+      { type: 'text', text: 'ที่จอดรถยนต์มีให้เช่าทั้งแบบไม่มีหลังคา 500 บ./เดือน และแบบมีหลังคา 800 บ./เดือน' },
+      { type: 'text', text: 'พิมพ์ "ขอเช่าที่จอด" หรือกดปุ่มในเมนูเพื่อเลือกแบบที่ต้องการได้เลยครับ/ค่ะ' }
+    ];
+  }
+
   if (isUrgent) {
     return [
-      { type: "text", text: "\u{1F4DE} \u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D" },
       {
-        type: "template",
-        altText: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E42\u0E17\u0E23\u0E09\u0E38\u0E01\u0E40\u0E09\u0E34\u0E19",
+        type: 'template',
+        altText: 'เบอร์ที่ต้องการติดต่อ',
         template: {
-          type: "buttons",
-          text: "\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E40\u0E08\u0E49\u0E32\u0E2B\u0E19\u0E49\u0E32\u0E17\u0E35\u0E48\u0E17\u0E35\u0E48\u0E15\u0E49\u0E2D\u0E07\u0E01\u0E32\u0E23\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D",
+          type: 'buttons',
+          text: 'เลือกเจ้าหน้าที่ที่ต้องการติดต่อ',
           actions: [
-            { type: "uri", label: "\u{1F4DE} \u0E1C\u0E39\u0E49\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23 (\u0E21\u0E32)", uri: "tel:0827981676" },
-            { type: "uri", label: "\u{1F4DE} \u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 \u0E15\u0E36\u0E01 A (\u0E01\u0E49\u0E2D\u0E22)", uri: "tel:0806490441" },
-            { type: "uri", label: "\u{1F4DE} \u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 \u0E15\u0E36\u0E01 B (\u0E1E\u0E35\u0E48\u0E22\u0E38)", uri: "tel:0837420760" },
-            { type: "postback", label: "\u{1F4DE} \u0E27\u0E34\u0E19\u0E21\u0E2D\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E0B\u0E04\u0E4C (\u0E23\u0E32\u0E22\u0E01\u0E32\u0E23)", data: "act=RES_CONTACT_BIKE", displayText: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E27\u0E34\u0E19\u0E21\u0E2D\u0E40\u0E15\u0E2D\u0E23\u0E4C\u0E44\u0E0B\u0E04\u0E4C" }
+            { type: 'uri', label: '📞 ผู้จัดการ (มา)', uri: 'tel:0827981676' },
+            { type: 'uri', label: '📞 แม่บ้าน ตึก A (ก้อย)', uri: 'tel:0806490441' },
+            { type: 'uri', label: '📞 แม่บ้าน ตึก B (พี่ยุ)', uri: 'tel:0837420760' },
+            { type: 'postback', label: '📞 วินมอเตอร์ไซค์', data: 'act=RES_CONTACT_BIKE', displayText: 'เบอร์วินมอเตอร์ไซค์' }
           ]
-        }
-      }
-    ];
-  }
-  const isAvailabilityExcluded = AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) || AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
-  const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
-  if (isAvailabilityAsk && !isAvailabilityExcluded) {
-    const today = formatDateBangkok();
-    const bookingUrl = String((env?.BOOKING_URL || "").trim() || "https://mamamansion-ar2.pages.dev/");
-    return [
-      { type: "text", text: `\u0E2D\u0E31\u0E1B\u0E40\u0E14\u0E15\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48 ${today}` },
-      { type: "text", text: `\u0E2A\u0E16\u0E32\u0E19\u0E30\u0E2B\u0E49\u0E2D\u0E07: \u0E15\u0E36\u0E01 A \u0E40\u0E15\u0E47\u0E21\u0E41\u0E25\u0E49\u0E27\u0E04\u0E48\u0E30 \u0E15\u0E36\u0E01 B \u0E22\u0E31\u0E07\u0E21\u0E35\u0E2B\u0E49\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07\u0E2D\u0E22\u0E39\u0E48 \u0E2B\u0E32\u0E01\u0E2A\u0E19\u0E43\u0E08\u0E08\u0E2D\u0E07\u0E2A\u0E32\u0E21\u0E32\u0E23\u0E16\u0E40\u0E0A\u0E47\u0E01\u0E2B\u0E49\u0E2D\u0E07\u0E27\u0E48\u0E32\u0E07\u0E15\u0E2D\u0E19\u0E19\u0E35\u0E49\u0E41\u0E25\u0E30\u0E08\u0E2D\u0E07\u0E1C\u0E48\u0E32\u0E19\u0E40\u0E27\u0E47\u0E1A\u0E44\u0E0B\u0E15\u0E4C\u0E44\u0E14\u0E49\u0E40\u0E25\u0E22\u0E04\u0E23\u0E31\u0E1A
-${bookingUrl}` }
-    ];
-  }
-  const utilityReplyQuickActions = {
-    items: [
-      {
-        type: "action",
-        action: {
-          type: "postback",
-          label: "\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32",
-          data: "act=ROOM_RENT",
-          displayText: "\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32"
         }
       },
       {
-        type: "action",
-        action: {
-          type: "postback",
-          label: "\u0E20\u0E32\u0E1E + \u0E40\u0E23\u0E17\u0E23\u0E32\u0E04\u0E32",
-          data: "act=ROOM_RENT_IMG",
-          displayText: "\u0E20\u0E32\u0E1E + \u0E40\u0E23\u0E17\u0E23\u0E32\u0E04\u0E32"
-        }
-      }
-    ]
-  };
-  const contactQuickReply = {
-    items: [
-      {
-        type: "action",
-        action: {
-          type: "postback",
-          label: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E1E\u0E35\u0E48\u0E27\u0E34\u0E19\u0E2B\u0E19\u0E49\u0E32\u0E1B\u0E32\u0E01\u0E0B\u0E2D\u0E22",
-          data: "act=RES_CONTACT_BIKE",
-          displayText: "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E1E\u0E35\u0E48\u0E27\u0E34\u0E19"
-        }
-      }
-    ]
-  };
-  const contactMenu = [
-    {
-      type: "text",
-      text: [
-        "\u{1F4DE} \u0E0A\u0E48\u0E2D\u0E07\u0E17\u0E32\u0E07\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D\u0E2B\u0E25\u0E31\u0E01",
-        "\u2022 \u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 (\u0E1E\u0E35\u0E48\u0E01\u0E49\u0E2D\u0E22) 080-649-0441 \u0E15\u0E36\u0E01 A",
-        "\u2022 \u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 (\u0E1E\u0E35\u0E48\u0E22\u0E38) 083-742-0760 \u0E15\u0E36\u0E01 B",
-        "\u2022 \u0E1C\u0E39\u0E49\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23 (\u0E21\u0E32) 082-798-1676"
-      ].join("\n"),
-      quickReply: contactQuickReply
-    }
-  ];
-  const maidContact = [
-    {
-      type: "text",
-      text: "\u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 (\u0E1E\u0E35\u0E48\u0E01\u0E49\u0E2D\u0E22) 080-649-0441 \u0E15\u0E36\u0E01 A\n\u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19 (\u0E1E\u0E35\u0E48\u0E22\u0E38) 083-742-0760 \u0E15\u0E36\u0E01 B\n\u0E1C\u0E39\u0E49\u0E08\u0E31\u0E14\u0E01\u0E32\u0E23 (\u0E21\u0E32) 082-798-1676\n\u0E42\u0E17\u0E23\u0E44\u0E14\u0E49\u0E17\u0E38\u0E01\u0E27\u0E31\u0E19 08:00-20:00 \u0E19."
-    }
-  ];
-  if (isUtilityInquiry(normalized)) {
-    const utilityText = roomDetailByKey("ROOM_UTIL");
-    const textMessage = {
-      type: "text",
-      text: utilityText || "[\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33-\u0E44\u0E1F/\u0E40\u0E19\u0E47\u0E15]\n\u0E19\u0E49\u0E33 18 | \u0E44\u0E1F 8\n\u{1F6DC}\u0E40\u0E19\u0E47\u0E15: \u0E1F\u0E23\u0E35",
-      quickReply: utilityReplyQuickActions
-    };
-    return [textMessage];
-  }
-  if (normalized.includes("\u0E42\u0E1B\u0E23\u0E42\u0E21\u0E0A\u0E31\u0E48\u0E19") || includesAny(lower, ["promotion", "promo", "promotions", "discount", "special offer"])) {
-    return [
-      {
-        type: "text",
-        text: "\u{1F381} \u0E42\u0E1B\u0E23\u0E42\u0E21\u0E0A\u0E31\u0E48\u0E19\u0E1E\u0E34\u0E40\u0E28\u0E29: \u0E1F\u0E23\u0E35\u0E04\u0E48\u0E32\u0E2A\u0E48\u0E27\u0E19\u0E01\u0E25\u0E32\u0E07 \u0E40\u0E21\u0E37\u0E48\u0E2D\u0E08\u0E2D\u0E07\u0E01\u0E48\u0E2D\u0E19 31 \u0E18\u0E31\u0E19\u0E27\u0E32\u0E04\u0E21\u0E19\u0E35\u0E49!"
-      }
-    ];
-  }
-  const contactTriggers = ["\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D", "\u0E40\u0E1A\u0E2D\u0E23\u0E4C\u0E42\u0E17\u0E23", "\u0E0A\u0E48\u0E2D\u0E07\u0E17\u0E32\u0E07\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D", "\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D", "contact", "phone"];
-  if (includesAny(lower, contactTriggers) || normalized.includes("\u0E40\u0E1A\u0E2D\u0E23\u0E4C") && normalized.includes("\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D")) {
-    return contactMenu;
-  }
-  const addressRegex = /(ขอ)?ที่อยู่|ส่ง(ของ|พัสดุ)|จัดส่ง|ส่งมาที่|ส่งหา|shipping|address|deliver|delivery|ส่งไปรษณีย์/i;
-  if (addressRegex.test(normalized) || addressRegex.test(lower)) {
-    const templateAddress = [
-      "\u0E21\u0E32\u0E21\u0E32 \u0E41\u0E21\u0E19\u0E0A\u0E31\u0E48\u0E19 \u0E15\u0E36\u0E01 A/B \u0E2B\u0E49\u0E2D\u0E07 A000",
-      "45 \u0E0B\u0E2D\u0E22\u0E09\u0E25\u0E2D\u0E07\u0E01\u0E23\u0E38\u0E07 37 \u0E41\u0E02\u0E27\u0E07\u0E25\u0E33\u0E1B\u0E25\u0E32\u0E17\u0E34\u0E27 \u0E40\u0E02\u0E15\u0E25\u0E32\u0E14\u0E01\u0E23\u0E30\u0E1A\u0E31\u0E07 \u0E01\u0E23\u0E38\u0E07\u0E40\u0E17\u0E1E\u0E2F 10520"
-    ].join("\n");
-    return [
-      { type: "text", text: templateAddress },
-      { type: "text", text: "\u0E42\u0E1B\u0E23\u0E14\u0E23\u0E30\u0E1A\u0E38\u0E40\u0E25\u0E02\u0E15\u0E36\u0E01\u0E41\u0E25\u0E30\u0E40\u0E25\u0E02\u0E2B\u0E49\u0E2D\u0E07\u0E08\u0E23\u0E34\u0E07\u0E02\u0E2D\u0E07\u0E04\u0E38\u0E13\u0E17\u0E38\u0E01\u0E04\u0E23\u0E31\u0E49\u0E07 \u0E40\u0E1E\u0E37\u0E48\u0E2D\u0E43\u0E2B\u0E49\u0E1E\u0E31\u0E2A\u0E14\u0E38\u0E2A\u0E48\u0E07\u0E16\u0E36\u0E07\u0E2D\u0E22\u0E48\u0E32\u0E07\u0E16\u0E39\u0E01\u0E15\u0E49\u0E2D\u0E07\u0E19\u0E30\u0E04\u0E30" }
-    ];
-  }
-  if (normalized.includes("\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14") || includesAny(lower, ["room detail", "room details", "details", "detail"])) {
-    const quickItems = [
-      { label: "\u0E02\u0E19\u0E32\u0E14/\u0E40\u0E25\u0E22\u0E4C\u0E40\u0E2D\u0E32\u0E15\u0E4C", act: "ROOM_SIZE" },
-      { label: "\u0E40\u0E1F\u0E2D\u0E23\u0E4C\u0E19\u0E34\u0E40\u0E08\u0E2D\u0E23\u0E4C", act: "ROOM_FURNITURE" },
-      { label: "\u0E40\u0E04\u0E23\u0E37\u0E48\u0E2D\u0E07\u0E43\u0E0A\u0E49\u0E44\u0E1F\u0E1F\u0E49\u0E32", act: "ROOM_APPLIANCE" },
-      { label: "\u0E04\u0E48\u0E32\u0E40\u0E0A\u0E48\u0E32", act: "ROOM_RENT" },
-      { label: "\u0E04\u0E48\u0E32\u0E19\u0E49\u0E33-\u0E44\u0E1F/\u0E40\u0E19\u0E47\u0E15", act: "ROOM_UTIL" },
-      { label: "\u0E40\u0E07\u0E34\u0E19\u0E1B\u0E23\u0E30\u0E01\u0E31\u0E19/\u0E2A\u0E31\u0E0D\u0E0D\u0E32", act: "ROOM_DEPOSIT" },
-      { label: "\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16", act: "ROOM_PARKING" },
-      { label: "\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48\u0E40\u0E23\u0E47\u0E27\u0E2A\u0E38\u0E14", act: "ROOM_EARLIEST" },
-      { label: "\u0E20\u0E32\u0E1E + \u0E40\u0E23\u0E17\u0E23\u0E32\u0E04\u0E32", act: "ROOM_RENT_IMG" }
-    ].filter(Boolean).map(({ label, act }) => ({
-      type: "action",
-      action: {
-        type: "postback",
-        label,
-        data: `act=${act}`,
-        displayText: label
-      }
-    }));
-    return [
-      {
-        type: "text",
-        text: "\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E2B\u0E31\u0E27\u0E02\u0E49\u0E2D\u0E23\u0E32\u0E22\u0E25\u0E30\u0E40\u0E2D\u0E35\u0E22\u0E14\u0E2B\u0E49\u0E2D\u0E07\u0E17\u0E35\u0E48\u0E2D\u0E22\u0E32\u0E01\u0E14\u0E39\u0E44\u0E14\u0E49\u0E40\u0E25\u0E22\u0E04\u0E48\u0E30 \u{1F447}",
-        quickReply: { items: quickItems }
-      }
-    ];
-  }
-  const locationThaiTriggers = ["\u0E17\u0E35\u0E48\u0E15\u0E31\u0E49\u0E07", "\u0E41\u0E1C\u0E19\u0E17\u0E35\u0E48", "\u0E2D\u0E22\u0E39\u0E48\u0E41\u0E16\u0E27", "\u0E2D\u0E22\u0E39\u0E48\u0E15\u0E23\u0E07\u0E44\u0E2B\u0E19", "\u0E2D\u0E22\u0E39\u0E48\u0E44\u0E2B\u0E19", "\u0E41\u0E16\u0E27\u0E44\u0E2B\u0E19", "\u0E0B\u0E2D\u0E22\u0E44\u0E2B\u0E19", "\u0E1E\u0E34\u0E01\u0E31\u0E14", "\u0E44\u0E1B\u0E22\u0E31\u0E07\u0E44\u0E07", "\u0E44\u0E1B\u0E22\u0E31\u0E07\u0E44\u0E2B\u0E19", "\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E22\u0E31\u0E07\u0E44\u0E07", "\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E1B", "\u0E17\u0E32\u0E07\u0E44\u0E1B"];
-  const locationEnglishTriggers = ["location", "map", "where is", "how to get", "how do i get", "how to go"];
-  const locationRegex = /(ไป|เดินทาง).*(ยังไง|อย่างไร|ทางไหน)/i;
-  if (includesAny(normalized, locationThaiTriggers) || includesAny(lower, locationEnglishTriggers) || locationRegex.test(normalized)) {
-    const mapUrl = String((env?.MAPS_URL || "").trim() || "https://maps.app.goo.gl/Qktm2mDGPappQ8EZA");
-    const mapMessage = [
-      "\u{1F4CD} \u0E15\u0E33\u0E41\u0E2B\u0E19\u0E48\u0E07 Mama Mansion",
-      mapUrl
-    ].join("\n");
-    return [
-      { type: "text", text: mapMessage },
-      {
-        type: "text",
-        text: "\u0E40\u0E25\u0E37\u0E2D\u0E01\u0E14\u0E39\u0E27\u0E34\u0E18\u0E35\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E14\u0E49\u0E40\u0E25\u0E22\u0E04\u0E48\u0E30",
+        type: 'text',
+        text: 'อยากดูเบอร์วินมอเตอร์ไซค์ทั้งหมด กดปุ่มลัดด้านล่างได้เลยค่ะ',
         quickReply: {
           items: [
             {
-              type: "action",
+              type: 'action',
               action: {
-                type: "postback",
-                label: "\u0E44\u0E1B KMITL",
-                data: "act=RES_COMMUTE_KMITL",
-                displayText: "\u0E27\u0E34\u0E18\u0E35\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E1B KMITL"
-              }
-            },
-            {
-              type: "action",
-              action: {
-                type: "postback",
-                label: "\u0E44\u0E1B\u0E2A\u0E19\u0E32\u0E21\u0E1A\u0E34\u0E19\u0E2A\u0E38\u0E27\u0E23\u0E23\u0E13\u0E20\u0E39\u0E21\u0E34",
-                data: "act=RES_COMMUTE_AIRPORT",
-                displayText: "\u0E27\u0E34\u0E18\u0E35\u0E40\u0E14\u0E34\u0E19\u0E17\u0E32\u0E07\u0E44\u0E1B\u0E2A\u0E19\u0E32\u0E21\u0E1A\u0E34\u0E19\u0E2A\u0E38\u0E27\u0E23\u0E23\u0E13\u0E20\u0E39\u0E21\u0E34"
+                type: 'postback',
+                label: 'เบอร์วินมอเตอร์ไซค์',
+                data: 'act=RES_CONTACT_BIKE',
+                displayText: 'เบอร์วินมอเตอร์ไซค์'
               }
             }
           ]
@@ -1134,137 +1189,330 @@ ${bookingUrl}` }
       }
     ];
   }
-  const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
-  const bookingInterest = normalized.includes("\u0E2A\u0E19\u0E43\u0E08\u0E08\u0E2D\u0E07") || normalized.includes("\u0E2A\u0E19\u0E43\u0E08") && normalized.includes("\u0E08\u0E2D\u0E07");
-  if (normalized.includes("\u0E27\u0E34\u0E18\u0E35\u0E08\u0E2D\u0E07") || normalized.includes("\u0E2D\u0E22\u0E32\u0E01\u0E08\u0E2D\u0E07") || bookingInterest || includesAny(lower, ["book", "booking"]) || bookingRegex.test(normalized)) {
-    const bookingStepsText = [
-      "[\u{1F4C5} \u0E27\u0E34\u0E18\u0E35\u0E08\u0E2D\u0E07\u0E2B\u0E49\u0E2D\u0E07\u0E1E\u0E31\u0E01]",
-      "",
-      "1) \u0E40\u0E02\u0E49\u0E32 \u201C\u0E23\u0E30\u0E1A\u0E1A\u0E08\u0E2D\u0E07\u201D \u0E17\u0E35\u0E48\u0E25\u0E34\u0E07\u0E01\u0E4C\u0E19\u0E35\u0E49: https://mamamansion-ar2.pages.dev/",
-      "2) \u0E01\u0E23\u0E2D\u0E01\u0E02\u0E49\u0E2D\u0E21\u0E39\u0E25 \u0E40\u0E25\u0E37\u0E2D\u0E01\u0E2B\u0E49\u0E2D\u0E07\u0E41\u0E25\u0E30\u0E27\u0E31\u0E19\u0E17\u0E35\u0E48\u0E40\u0E02\u0E49\u0E32\u0E2D\u0E22\u0E39\u0E48 \u0E41\u0E25\u0E49\u0E27\u0E2A\u0E48\u0E07\u0E1F\u0E2D\u0E23\u0E4C\u0E21",
-      "3) \u0E23\u0E30\u0E1A\u0E1A\u0E2D\u0E2D\u0E01\u0E40\u0E25\u0E02\u0E23\u0E2B\u0E31\u0E2A #MMxxx",
-      "4) \u0E1E\u0E34\u0E21\u0E1E\u0E4C\u0E23\u0E2B\u0E31\u0E2A #MMxxx \u0E43\u0E19\u0E41\u0E0A\u0E17\u0E19\u0E35\u0E49",
-      "5) \u0E0A\u0E33\u0E23\u0E30\u0E04\u0E48\u0E32\u0E08\u0E2D\u0E07\u0E41\u0E25\u0E30\u0E23\u0E2D\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E08\u0E32\u0E01\u0E40\u0E08\u0E49\u0E32\u0E2B\u0E19\u0E49\u0E32\u0E17\u0E35\u0E48",
-      "6) \u26A0\uFE0F \u0E2B\u0E25\u0E31\u0E07\u0E08\u0E2D\u0E07\u0E43\u0E19\u0E40\u0E27\u0E47\u0E1A\u0E44\u0E0B\u0E15\u0E4C \u0E15\u0E49\u0E2D\u0E07\u0E22\u0E37\u0E19\u0E22\u0E31\u0E19\u0E41\u0E25\u0E30\u0E0A\u0E33\u0E23\u0E30\u0E04\u0E48\u0E32\u0E08\u0E2D\u0E07\u0E17\u0E32\u0E07 LINE \u0E19\u0E35\u0E49\u0E20\u0E32\u0E22\u0E43\u0E19 2 \u0E0A\u0E31\u0E48\u0E27\u0E42\u0E21\u0E07 \u0E21\u0E34\u0E09\u0E30\u0E19\u0E31\u0E49\u0E19\u0E23\u0E30\u0E1A\u0E1A\u0E08\u0E30\u0E22\u0E01\u0E40\u0E25\u0E34\u0E01\u0E2D\u0E31\u0E15\u0E42\u0E19\u0E21\u0E31\u0E15\u0E34"
-    ].join("\n");
-    const defaultBookingImageUrls = [
-      "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ",
-      "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3"
-    ];
-    const bookingImages = defaultBookingImageUrls.map((fallbackUrl, idx) => {
-      const override = idx === 0 ? env?.HOWTO_IMAGE_URL_1 : env?.HOWTO_IMAGE_URL_2;
-      const url = String((override || "").trim() || fallbackUrl);
-      if (!url) return null;
-      return {
-        type: "image",
-        originalContentUrl: url,
-        previewImageUrl: url
-      };
-    }).filter(Boolean);
+
+  const isAvailabilityExcluded =
+    AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
+    AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
+  const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
+  if (isAvailabilityAsk && !isAvailabilityExcluded) {
+    const today = formatDateBangkok();
+    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
     return [
-      { type: "text", text: bookingStepsText },
+      { type: 'text', text: `อัปเดตวันที่ ${today}` },
+      { type: 'text', text: `สถานะห้อง: ตึก A เต็มแล้วค่ะ ตึก B ยังมีห้องว่างอยู่ หากสนใจจองสามารถเช็กห้องว่างตอนนี้และจองผ่านเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
+    ];
+  }
+
+  const utilityReplyQuickActions = {
+    items: [
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ค่าเช่า',
+          data: 'act=ROOM_RENT',
+          displayText: 'ค่าเช่า'
+        }
+      },
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ภาพ + เรทราคา',
+          data: 'act=ROOM_RENT_IMG',
+          displayText: 'ภาพ + เรทราคา'
+        }
+      }
+    ]
+  };
+
+  const contactQuickReply = {
+    items: [
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'เบอร์พี่วินหน้าปากซอย',
+          data: 'act=RES_CONTACT_BIKE',
+          displayText: 'เบอร์พี่วิน'
+        }
+      }
+    ]
+  };
+
+  const contactMenu = [
+    {
+      type: 'text',
+      text: [
+        '📞 ช่องทางติดต่อหลัก',
+        '• แม่บ้าน (พี่ก้อย) 080-649-0441 ตึก A',
+        '• แม่บ้าน (พี่ยุ) 083-742-0760 ตึก B',
+        '• ผู้จัดการ (มา) 082-798-1676'
+      ].join('\n'),
+      quickReply: contactQuickReply
+    }
+  ];
+
+  const maidContact = [
+    {
+      type: 'text',
+      text: 'แม่บ้าน (พี่ก้อย) 080-649-0441 ตึก A\nแม่บ้าน (พี่ยุ) 083-742-0760 ตึก B\nผู้จัดการ (มา) 082-798-1676\nโทรได้ทุกวัน 08:00-20:00 น.',
+    }
+  ];
+
+  if (isUtilityInquiry(normalized)) {
+    const utilityText = roomDetailByKey('ROOM_UTIL');
+    const textMessage = {
+      type: 'text',
+      text: utilityText || '[ค่าน้ำ-ไฟ/เน็ต]\nน้ำ 18 | ไฟ 8\n🛜เน็ต: ฟรี',
+      quickReply: utilityReplyQuickActions
+    };
+    return [textMessage];
+  }
+
+  if (normalized.includes('โปรโมชั่น') || includesAny(lower, ['promotion', 'promo', 'promotions', 'discount', 'special offer'])) {
+    return [
+      {
+        type: 'text',
+        text: '🎁 โปรโมชั่นพิเศษ: ฟรีค่าส่วนกลาง เมื่อจองก่อน 31 ธันวาคมนี้!'
+      }
+    ];
+  }
+
+  const contactTriggers = ['เบอร์ติดต่อ', 'เบอร์โทร', 'ช่องทางติดต่อ', 'ติดต่อ', 'contact', 'phone'];
+  if (includesAny(lower, contactTriggers) || (normalized.includes('เบอร์') && normalized.includes('ติดต่อ'))) {
+    return contactMenu;
+  }
+
+  const addressRegex = /(ขอ)?ที่อยู่|ส่ง(ของ|พัสดุ)|จัดส่ง|ส่งมาที่|ส่งหา|shipping|address|deliver|delivery|ส่งไปรษณีย์/i;
+  if (addressRegex.test(normalized) || addressRegex.test(lower)) {
+    const templateAddress = [
+      'มามา แมนชั่น ตึก A/B ห้อง A000',
+      '45 ซอยฉลองกรุง 37 แขวงลำปลาทิว เขตลาดกระบัง กรุงเทพฯ 10520'
+    ].join('\n');
+
+    return [
+      { type: 'text', text: templateAddress },
+      { type: 'text', text: 'โปรดระบุเลขตึกและเลขห้องจริงของคุณทุกครั้ง เพื่อให้พัสดุส่งถึงอย่างถูกต้องนะคะ' }
+    ];
+  }
+
+  if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
+    const quickItems = [
+      { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
+      { label: 'เฟอร์นิเจอร์', act: 'ROOM_FURNITURE' },
+      { label: 'เครื่องใช้ไฟฟ้า', act: 'ROOM_APPLIANCE' },
+      { label: 'ค่าเช่า', act: 'ROOM_RENT' },
+      { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
+      { label: 'เงินประกัน/สัญญา', act: 'ROOM_DEPOSIT' },
+      { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
+      { label: 'เข้าอยู่เร็วสุด', act: 'ROOM_EARLIEST' },
+      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' }
+    ]
+      .filter(Boolean)
+      .map(({ label, act }) => ({
+        type: 'action',
+        action: {
+          type: 'postback',
+          label,
+          data: `act=${act}`,
+          displayText: label
+        }
+      }));
+
+    return [
+      {
+        type: 'text',
+        text: 'เลือกหัวข้อรายละเอียดห้องที่อยากดูได้เลยค่ะ 👇',
+        quickReply: { items: quickItems }
+      }
+    ];
+  }
+
+  const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];
+  const locationEnglishTriggers = ['location', 'map', 'where is', 'how to get', 'how do i get', 'how to go'];
+  const locationRegex = /(ไป|เดินทาง).*(ยังไง|อย่างไร|ทางไหน)/i;
+  if (includesAny(normalized, locationThaiTriggers) || includesAny(lower, locationEnglishTriggers) || locationRegex.test(normalized)) {
+    const mapUrl = String((env?.MAPS_URL || '').trim() || 'https://maps.app.goo.gl/Qktm2mDGPappQ8EZA');
+    const mapMessage = [
+      '📍 ตำแหน่ง Mama Mansion',
+      mapUrl
+    ].join('\n');
+
+    return [
+      { type: 'text', text: mapMessage },
+      {
+        type: 'text',
+        text: 'เลือกดูวิธีเดินทางได้เลยค่ะ',
+        quickReply: {
+          items: [
+            {
+              type: 'action',
+              action: {
+                type: 'postback',
+                label: 'ไป KMITL',
+                data: 'act=RES_COMMUTE_KMITL',
+                displayText: 'วิธีเดินทางไป KMITL'
+              }
+            },
+            {
+              type: 'action',
+              action: {
+                type: 'postback',
+                label: 'ไปสนามบินสุวรรณภูมิ',
+                data: 'act=RES_COMMUTE_AIRPORT',
+                displayText: 'วิธีเดินทางไปสนามบินสุวรรณภูมิ'
+              }
+            }
+          ]
+        }
+      }
+    ];
+  }
+
+  const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
+  const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
+  if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
+    const bookingStepsText = [
+      '[📅 วิธีจองห้องพัก]',
+      '',
+      '1) เข้า “ระบบจอง” ที่ลิงก์นี้: https://mamamansion-ar2.pages.dev/',
+      '2) กรอกข้อมูล เลือกห้องและวันที่เข้าอยู่ แล้วส่งฟอร์ม',
+      '3) ระบบออกเลขรหัส #MMxxx',
+      '4) พิมพ์รหัส #MMxxx ในแชทนี้',
+      '5) ชำระค่าจองและรอยืนยันจากเจ้าหน้าที่',
+      '6) ⚠️ หลังจองในเว็บไซต์ ต้องยืนยันและชำระค่าจองทาง LINE นี้ภายใน 2 ชั่วโมง มิฉะนั้นระบบจะยกเลิกอัตโนมัติ'
+    ].join('\n');
+
+    const defaultBookingImageUrls = [
+      'https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ',
+      'https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3'
+    ];
+
+    const bookingImages = defaultBookingImageUrls
+      .map((fallbackUrl, idx) => {
+        const override = idx === 0 ? env?.HOWTO_IMAGE_URL_1 : env?.HOWTO_IMAGE_URL_2;
+        const url = String((override || '').trim() || fallbackUrl);
+        if (!url) return null;
+        return {
+          type: 'image',
+          originalContentUrl: url,
+          previewImageUrl: url
+        };
+      })
+      .filter(Boolean);
+
+    return [
+      { type: 'text', text: bookingStepsText },
       ...bookingImages
     ];
   }
-  if (normalized.includes("\u0E41\u0E21\u0E48\u0E1A\u0E49\u0E32\u0E19") || lower.includes("maid")) {
+
+  if (normalized.includes('แม่บ้าน') || lower.includes('maid')) {
     return maidContact;
   }
+
   return null;
 }
-__name(quickKeywordReply, "quickKeywordReply");
+
 function fridgeInfoReply(env, options = {}) {
   const fridgeWebhook = getN8nFridgeWebhook(env);
   if (options.includeN8nButton && fridgeWebhook) {
     return fridgeButtonMessage(buildFridgePostbackPayload(options));
   }
-  console.warn("fridgeInfoReply: missing fridge webhook or button disabled");
-  return { type: "text", text: "\u0E21\u0E35\u0E02\u0E49\u0E2D\u0E1C\u0E34\u0E14\u0E1E\u0E25\u0E32\u0E14 \u0E01\u0E23\u0E38\u0E13\u0E32\u0E15\u0E34\u0E14\u0E15\u0E48\u0E2D\u0E40\u0E08\u0E49\u0E32\u0E2B\u0E19\u0E49\u0E32\u0E17\u0E35\u0E48" };
+
+  console.warn('fridgeInfoReply: missing fridge webhook or button disabled');
+  return { type: 'text', text: 'มีข้อผิดพลาด กรุณาติดต่อเจ้าหน้าที่' };
 }
-__name(fridgeInfoReply, "fridgeInfoReply");
+
 function buildFridgePostbackPayload(options = {}) {
   return {
-    act: "fridge_rent_request",
+    act: 'fridge_rent_request',
     lineUserId: options.lineUserId || null,
     roomHint: options.roomHint || null,
     chatId: options.chatId || null
   };
 }
-__name(buildFridgePostbackPayload, "buildFridgePostbackPayload");
+
 function fridgeButtonMessage(postbackData) {
-  let dataString = "{}";
+  let dataString = '{}';
   try {
     dataString = JSON.stringify(postbackData);
   } catch (err) {
-    console.error("fridgeButtonMessage stringify error", err);
+    console.error('fridgeButtonMessage stringify error', err);
   }
+
   return {
-    type: "template",
-    altText: "\u0E40\u0E0A\u0E48\u0E32\u0E15\u0E39\u0E49\u0E40\u0E22\u0E47\u0E19",
+    type: 'template',
+    altText: 'เช่าตู้เย็น',
     template: {
-      type: "buttons",
-      text: "\u0E21\u0E35\u0E43\u0E2B\u0E49\u0E40\u0E0A\u0E48\u0E32\u0E40\u0E14\u0E37\u0E2D\u0E19\u0E25\u0E30 200 \u0E1A\u0E32\u0E17",
+      type: 'buttons',
+      text: 'มีให้เช่าเดือนละ 200 บาท',
       actions: [
         {
-          type: "postback",
-          label: "\u0E40\u0E0A\u0E48\u0E32\u0E15\u0E39\u0E49\u0E40\u0E22\u0E47\u0E19",
+          type: 'postback',
+          label: 'เช่าตู้เย็น',
           data: dataString,
-          displayText: "\u0E02\u0E2D\u0E40\u0E0A\u0E48\u0E32\u0E15\u0E39\u0E49\u0E40\u0E22\u0E47\u0E19"
+          displayText: 'ขอเช่าตู้เย็น'
         }
       ]
     }
   };
 }
-__name(fridgeButtonMessage, "fridgeButtonMessage");
+
 function buildParkingPostbackPayload(plan, options = {}) {
   return {
-    act: "parking_rent_request",
-    type: "parking",
+    act: 'parking_rent_request',
+    type: 'parking',
     plan,
     lineUserId: options.lineUserId || null,
     chatId: options.chatId || null
   };
 }
-__name(buildParkingPostbackPayload, "buildParkingPostbackPayload");
+
 function parkingButtonsMessage(payloadOpen, payloadCovered) {
-  let dataOpen = "{}";
-  let dataCovered = "{}";
+  let dataOpen = '{}';
+  let dataCovered = '{}';
+
   try {
     dataOpen = JSON.stringify(payloadOpen);
   } catch (err) {
-    console.error("parkingButtonsMessage stringify open error", err);
+    console.error('parkingButtonsMessage stringify open error', err);
   }
+
   try {
     dataCovered = JSON.stringify(payloadCovered);
   } catch (err) {
-    console.error("parkingButtonsMessage stringify covered error", err);
+    console.error('parkingButtonsMessage stringify covered error', err);
   }
+
   return {
-    type: "template",
-    altText: "\u0E40\u0E0A\u0E48\u0E32\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16",
+    type: 'template',
+    altText: 'เช่าที่จอดรถ',
     template: {
-      type: "carousel",
+      type: 'carousel',
       columns: [
         {
-          title: "\u0E44\u0E21\u0E48\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32",
-          text: "500 \u0E1A\u0E32\u0E17/\u0E40\u0E14\u0E37\u0E2D\u0E19",
+          title: 'ไม่มีหลังคา',
+          text: '500 บาท/เดือน',
           actions: [
             {
-              type: "postback",
-              label: "\u0E40\u0E0A\u0E48\u0E32\u0E40\u0E25\u0E22",
+              type: 'postback',
+              label: 'เช่าเลย',
               data: dataOpen,
-              displayText: "\u0E40\u0E0A\u0E48\u0E32\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16 (\u0E44\u0E21\u0E48\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32)"
+              displayText: 'เช่าที่จอดรถ (ไม่มีหลังคา)'
             }
           ]
         },
         {
-          title: "\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32",
-          text: "800 \u0E1A\u0E32\u0E17/\u0E40\u0E14\u0E37\u0E2D\u0E19",
+          title: 'มีหลังคา',
+          text: '800 บาท/เดือน',
           actions: [
             {
-              type: "postback",
-              label: "\u0E40\u0E0A\u0E48\u0E32\u0E40\u0E25\u0E22",
+              type: 'postback',
+              label: 'เช่าเลย',
               data: dataCovered,
-              displayText: "\u0E40\u0E0A\u0E48\u0E32\u0E17\u0E35\u0E48\u0E08\u0E2D\u0E14\u0E23\u0E16 (\u0E21\u0E35\u0E2B\u0E25\u0E31\u0E07\u0E04\u0E32)"
+              displayText: 'เช่าที่จอดรถ (มีหลังคา)'
             }
           ]
         }
@@ -1272,74 +1520,108 @@ function parkingButtonsMessage(payloadOpen, payloadCovered) {
     }
   };
 }
-__name(parkingButtonsMessage, "parkingButtonsMessage");
+
 function getN8nFridgeWebhook(env) {
-  return env.N8N_FRIDGE_WEBHOOK_URL || "";
+  return env.N8N_FRIDGE_WEBHOOK_URL || '';
 }
-__name(getN8nFridgeWebhook, "getN8nFridgeWebhook");
+
 function getN8nParkingWebhook(env) {
-  return env.N8N_PARKING_WEBHOOK_URL || "";
+  return env.N8N_PARKING_WEBHOOK_URL || '';
 }
-__name(getN8nParkingWebhook, "getN8nParkingWebhook");
+
 async function notifyN8nFridge(env, payload) {
   const url = getN8nFridgeWebhook(env);
   if (!url) {
-    console.warn("notifyN8nFridge: missing webhook URL");
+    console.warn('notifyN8nFridge: missing webhook URL');
     return false;
   }
-  const headers = { "Content-Type": "application/json" };
-  const secret = env.WORKER_SECRET || "";
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
   if (secret) {
-    headers["x-worker-secret"] = secret;
+    headers['x-worker-secret'] = secret;
   } else {
-    console.warn("notifyN8nFridge: missing WORKER_SECRET");
+    console.warn('notifyN8nFridge: missing WORKER_SECRET');
   }
+
   try {
     const res = await fetch(url, {
-      method: "POST",
+      method: 'POST',
       headers,
       body: JSON.stringify(payload)
     });
     if (!res.ok) {
-      console.error("notifyN8nFridge: non-200 response", res.status);
+      console.error('notifyN8nFridge: non-200 response', res.status);
     }
     return res.ok;
   } catch (err) {
-    console.error("notifyN8nFridge error", err);
+    console.error('notifyN8nFridge error', err);
     return false;
   }
 }
-__name(notifyN8nFridge, "notifyN8nFridge");
+
 async function notifyN8nParking(env, payload) {
   const url = getN8nParkingWebhook(env);
   if (!url) {
-    console.warn("notifyN8nParking: missing webhook URL");
+    console.warn('notifyN8nParking: missing webhook URL');
     return false;
   }
-  const headers = { "Content-Type": "application/json" };
-  const secret = env.WORKER_SECRET || "";
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
   if (secret) {
-    headers["x-worker-secret"] = secret;
+    headers['x-worker-secret'] = secret;
   } else {
-    console.warn("notifyN8nParking: missing WORKER_SECRET");
+    console.warn('notifyN8nParking: missing WORKER_SECRET');
   }
+
   try {
     const res = await fetch(url, {
-      method: "POST",
+      method: 'POST',
       headers,
       body: JSON.stringify(payload)
     });
     if (!res.ok) {
-      console.error("notifyN8nParking: non-200 response", res.status);
+      console.error('notifyN8nParking: non-200 response', res.status);
     }
     return res.ok;
   } catch (err) {
-    console.error("notifyN8nParking error", err);
+    console.error('notifyN8nParking error', err);
     return false;
   }
 }
-__name(notifyN8nParking, "notifyN8nParking");
-export {
-  index_default as default
-};
-//# sourceMappingURL=index.js.map
+
+function getN8nTenantIdChangeWebhook(env) {
+  return env.N8N_TENANT_ID_CHANGE_URL || env.N8N_POSTBACK_URL || '';
+}
+
+async function notifyN8nTenantIdChange(env, payload) {
+  const url = getN8nTenantIdChangeWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nTenantIdChange: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nTenantIdChange: missing WORKER_SECRET');
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.error('notifyN8nTenantIdChange: non-200 response', res.status);
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nTenantIdChange error', err);
+    return false;
+  }
+}
