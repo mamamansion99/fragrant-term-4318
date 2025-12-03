@@ -533,7 +533,7 @@ if (url.pathname.startsWith('/api/moveout')) {
           const sanitizedParking = {
             ...data,
             type: 'parking',
-            plan: data.plan === 'roofed' ? 'roofed' : 'open',
+            plan: 'parking',
             lineUserId: ev?.source?.userId || data.lineUserId || null,
             chatId: getChatId(ev) || data.chatId || null
           };
@@ -773,10 +773,7 @@ if (
               chatId: getChatId(ev) || null
             };
             const replies = [
-              parkingButtonsMessage(
-                buildParkingPostbackPayload('open', commonOptions),
-                buildParkingPostbackPayload('roofed', commonOptions)
-              )
+              parkingButtonsMessage(buildParkingPostbackPayload(commonOptions))
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
             continue;
@@ -1474,61 +1471,38 @@ function fridgeButtonMessage(postbackData) {
   };
 }
 
-function buildParkingPostbackPayload(plan, options = {}) {
+function buildParkingPostbackPayload(options = {}) {
   return {
     act: 'parking_rent_request',
     type: 'parking',
-    plan,
+    plan: 'parking',
     lineUserId: options.lineUserId || null,
     chatId: options.chatId || null
   };
 }
 
-function parkingButtonsMessage(payloadOpen, payloadCovered) {
-  let dataOpen = '{}';
-  let dataCovered = '{}';
+function parkingButtonsMessage(payloadRoofed) {
+  let dataRoofed = '{}';
 
   try {
-    dataOpen = JSON.stringify(payloadOpen);
+    dataRoofed = JSON.stringify(payloadRoofed);
   } catch (err) {
-    console.error('parkingButtonsMessage stringify open error', err);
-  }
-
-  try {
-    dataCovered = JSON.stringify(payloadCovered);
-  } catch (err) {
-    console.error('parkingButtonsMessage stringify covered error', err);
+    console.error('parkingButtonsMessage stringify error', err);
   }
 
   return {
     type: 'template',
     altText: 'เช่าที่จอดรถ',
     template: {
-      type: 'carousel',
-      columns: [
+      type: 'buttons',
+      title: 'ที่จอดรถ',
+      text: '800 บาท/เดือน ',
+      actions: [
         {
-          title: 'ไม่มีหลังคา',
-          text: '500 บาท/เดือน',
-          actions: [
-            {
-              type: 'postback',
-              label: 'เช่าเลย',
-              data: dataOpen,
-              displayText: 'เช่าที่จอดรถ (ไม่มีหลังคา)'
-            }
-          ]
-        },
-        {
-          title: 'มีหลังคา',
-          text: '800 บาท/เดือน',
-          actions: [
-            {
-              type: 'postback',
-              label: 'เช่าเลย',
-              data: dataCovered,
-              displayText: 'เช่าที่จอดรถ (มีหลังคา)'
-            }
-          ]
+          type: 'postback',
+          label: 'เช่าเลย',
+          data: dataRoofed,
+          displayText: 'เช่าที่จอดรถ'
         }
       ]
     }
