@@ -1147,6 +1147,20 @@ function quickKeywordReply(text, env) {
   const isUrgent =
     URGENT_CONTACT_RE.test(normalized) ||
     (normalized.includes('ติดต่อ') && !normalized.includes('สอบถาม'));
+
+  const mentionsWifi = /(wifi|wi[-\s]?fi|ไว[-\s]?ไฟ|ไวฟาย|วายฟาย|วายไฟ)/i.test(normalized);
+  const wifiPassHint = /(password|pass|รหัส|รหัสผ่าน|พาสเวิร์ด|พาส)/i.test(normalized);
+  const shortWifiAsk = mentionsWifi && normalized.length <= 20;
+
+  if (mentionsWifi && (wifiPassHint || shortWifiAsk)) {
+    const wifiText = [
+      '🛜 WiFi หอพัก',
+      'รหัสผ่าน: 5021150660',
+      'ถ้าเชื่อมต่อไม่ได้ ลองปิด–เปิด WiFi หรือรีสตาร์ทเครื่องแล้วลองใหม่ได้เลยครับ/ค่ะ'
+    ].join('\n');
+
+    return [{ type: 'text', text: wifiText }];
+  }
   if (wantsParkingInfo && !isUrgent) {
     return [
       { type: 'text', text: 'ที่จอดรถยนต์มีให้เช่าทั้งแบบไม่มีหลังคา 500 บ./เดือน และแบบมีหลังคา 800 บ./เดือน' },
