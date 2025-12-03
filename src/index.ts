@@ -1155,8 +1155,8 @@ function quickKeywordReply(text, env) {
   if (mentionsWifi && (wifiPassHint || shortWifiAsk)) {
     const wifiText = [
       '🛜 WiFi หอพัก',
-      'รหัสผ่าน: 5021150660',
-      'ถ้าเชื่อมต่อไม่ได้ ลองปิด–เปิด WiFi หรือรีสตาร์ทเครื่องแล้วลองใหม่ได้เลยครับ/ค่ะ'
+      'รหัส: 5021150660',
+      'เชื่อมไม่ได้ให้ปิด/เปิด WiFi แล้วลองใหม่'
     ].join('\n');
 
     return [{ type: 'text', text: wifiText }];
