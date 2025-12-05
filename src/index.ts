@@ -28,8 +28,26 @@ const PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่า�
 const URGENT_CONTACT_RE = /(ด่วน|ฉุกเฉิน|ช่วยด้วย|ไฟไหม้|ตำรวจ|ขโมย|urgent|emergency|help|sos|call|phone|เบอร์|แอดมิน|admin|manager|ผู้จัดการ|นิติ|เจ้าหน้าที่|staff|human)/i;
 const WAIT_ROOM_STATE = 'WAIT_ROOM';
 const TENANT_CHANGE_KEY_PREFIX = 'changeLine:';
-const FRIDGE_KEYWORD_RE = /(ตู้เย็น|fridge|refrigerator)/i;
-const FRIDGE_INTENT_RE = /(บริการ|อยาก(?:ได้)?|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|มี|ให้)/i;
+// คำหลักเกี่ยวกับ "ตู้เย็น"
+const FRIDGE_KEYWORD_RE = /(ตู้เย็น|ตู้แช่เย็น|ตู้แช่|fridge|refrigerator)/i;
+
+// กลุ่มคำว่า "เพิ่ม/ขอเช่า/อยากใช้" → เจตนาขอใช้/เพิ่มตู้เย็น
+const FRIDGE_ADD_VERB_RE =
+  /(เพิ่ม|ขอเพิ่ม|อยาก(?:ได้|ใช้)?|เอาด้วย|เอาเพิ่ม|ขอใช้|ขอเช่า|เช่า|เปิดใช้|ใช้(?:ตู้เย็น)?)/i;
+
+// กลุ่มคำว่า "ยกเลิก/ไม่เอาแล้ว/คืน" → เจตนายกเลิกตู้เย็น
+const FRIDGE_CANCEL_VERB_RE =
+  /(ไม่เอา(?:แล้ว)?|ไม่เอาตู้เย็น|ยกเลิก|เลิก(?:ใช้|เช่า)?|เอาออก|คืน(?:ตู้เย็น)?|หยุดใช้)/i;
+
+// ถามข้อมูล/ราคา
+const FRIDGE_QUESTION_RE =
+  /(ราคา|เท่าไหร่|คิดยังไง|คิดเงินยังไง|คิดตังยังไง|มี(?:ไหม|มั้ย|มั๊ย)|มีหรือเปล่า|พร้อมไหม|ว่างไหม|ว่างมั้ย)/i;
+
+const DEFAULT_FRIDGE_CANCEL_NOTIFY_ID = 'Ue90558b73d62863e2287ac32e69541a3';
+
+function getFridgeCancelNotifyId(env) {
+  return env.FRIDGE_CANCEL_NOTIFY_ID || DEFAULT_FRIDGE_CANCEL_NOTIFY_ID;
+}
 const UTILITY_THAI_KEYWORDS = [
   'ค่าน้ำ',
   'ค่าไฟ',
@@ -108,13 +126,75 @@ function isParkingIntent(text){
   return false;
 }
 
-function isFridgeIntent(text){
-  const normalized = (text || '').trim();
-  if (!normalized) return false;
-  if (/^\s*บริการ\s*ตู้เย็น\s*$/i.test(normalized)) return true;
-  if (!FRIDGE_KEYWORD_RE.test(normalized)) return false;
-  if (FRIDGE_INTENT_RE.test(normalized)) return true;
-  return QUESTION_WORD_RE.test(normalized);
+function detectFridgeIntent(text) {
+  const raw = (text || '').trim();
+  if (!raw) {
+    return { matches: false, isAdd: false, isCancel: false, isQuestion: false, isShort: false, hasFridgeWord: false };
+  }
+
+  if (/^\s*บริการ\s*ตู้เย็น\s*$/i.test(raw)) {
+    return { matches: true, isAdd: false, isCancel: false, isQuestion: true, isShort: false, hasFridgeWord: true };
+  }
+
+  const lower = raw.toLowerCase();
+  const collapsed = lower.replace(/\s+/g, '');
+  const hasFridgeWord =
+    FRIDGE_KEYWORD_RE.test(raw) ||
+    FRIDGE_KEYWORD_RE.test(lower) ||
+    FRIDGE_KEYWORD_RE.test(collapsed);
+  if (!hasFridgeWord) {
+    return { matches: false, isAdd: false, isCancel: false, isQuestion: false, isShort: false, hasFridgeWord: false };
+  }
+
+  const addNearFridge =
+    /(เพิ่ม|ขอเพิ่ม|อยากได้|อยากใช้|เอาด้วย|เอาเพิ่ม).{0,12}(ตู้เย็น|ตู้แช่เย็น|ตู้แช่)/i.test(raw) ||
+    /(ตู้เย็น|ตู้แช่เย็น|ตู้แช่).{0,12}(เพิ่ม|เอาเพิ่ม|เอาด้วย)/i.test(raw);
+
+  const hasAddVerb = FRIDGE_ADD_VERB_RE.test(raw) || addNearFridge;
+  const hasCancelVerb = FRIDGE_CANCEL_VERB_RE.test(raw);
+  const hasQuestionVerb = QUESTION_WORD_RE.test(raw) || FRIDGE_QUESTION_RE.test(raw);
+  const isShort = raw.length <= 25;
+
+  const matches = hasAddVerb || hasCancelVerb || hasQuestionVerb || isShort;
+
+  return {
+    matches,
+    isAdd: hasAddVerb,
+    isCancel: hasCancelVerb,
+    isQuestion: hasQuestionVerb,
+    isShort,
+    hasFridgeWord
+  };
+}
+
+function isFridgeIntent(text) {
+  return detectFridgeIntent(text).matches;
+}
+
+async function pushFridgeCancelNotification(env, ev, text) {
+  const to = getFridgeCancelNotifyId(env);
+  if (!to) {
+    console.warn('pushFridgeCancelNotification: missing target id');
+    return false;
+  }
+
+  const userId = ev?.source?.userId || 'unknown';
+  const chatId = getChatId(ev) || 'unknown';
+  const chatType = ev?.source?.type || 'unknown';
+  const messageLines = [
+    'ผู้เช่าขอยกเลิกตู้เย็น',
+    text || '[ไม่ระบุข้อความ]',
+    `ผู้ส่ง: ${userId}`,
+    `แชท: ${chatId} (${chatType})`
+  ].filter(Boolean);
+
+  try {
+    await linePushText(env.LINE_ACCESS_TOKEN, to, messageLines.join('\n'));
+    return true;
+  } catch (err) {
+    console.error('pushFridgeCancelNotification error', err);
+    return false;
+  }
 }
 
 function isUtilityInquiry(text) {
@@ -672,7 +752,7 @@ if (
         const userId  = ev?.source?.userId || '';
         const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
         const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
-        const fridgeServiceKeyword = isFridgeIntent(textIn);
+        const fridgeIntent = detectFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
@@ -755,7 +835,23 @@ if (
           }
 
           // (C.1) Fridge service button → link to n8n automation
-          if (fridgeServiceKeyword) {
+          if (fridgeIntent.matches) {
+            if (fridgeIntent.isCancel && !fridgeIntent.isAdd) {
+              const cancelAck = 'ได้รับคำขอยกเลิกตู้เย็นแล้ว เจ้าหน้าที่จะแจ้งกลับโดยเร็วที่สุดนะคะ';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: cancelAck }
+                ]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, cancelAck).catch(console.error));
+              }
+
+              ctx.waitUntil(
+                pushFridgeCancelNotification(env, ev, textIn)
+                  .catch((err) => console.error('fridge cancel notify failed', err))
+              );
+              continue;
+            }
             const replies = [
               fridgeInfoReply(env, {
                 includeN8nButton: true,
