@@ -79,6 +79,24 @@ const CHECKIN_CHANGE_KEYWORDS = [
   'changecheckindate',
   'changecheckintime'
 ];
+const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
+const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
+const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
+function buildCheckinFlowKey(userId, chatId) {
+  if (userId) {
+    return `checkin_flow:${userId}`;
+  }
+  if (chatId) {
+    return `checkin_flow:${chatId}`;
+  }
+  return 'checkin_flow:unknown';
+}
+function parseCheckinCommand(text) {
+  if (!text) return null;
+  const match = CHECKIN_COMMAND_RE.exec(text);
+  if (!match) return null;
+  return match[1].toUpperCase();
+}
 
 const OWNER_APPROVAL_KEYWORD_RE = /^(?:อนุมัติ|ไม่อนุมัติ)\s*(?:เปลี่ยนไลน์|เปลี่ยนไอดีผู้เช่า|line\s*id\s*change)/i;
 
@@ -754,6 +772,7 @@ if (
         const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
         const fridgeIntent = detectFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
+        const checkinRoomCode = parseCheckinCommand(textIn);
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
@@ -875,6 +894,50 @@ if (
             continue;
           }
 
+          if (checkinRoomCode) {
+            const payload = {
+              source: 'line_message',
+              intent: 'checkin_start',
+              channel: 'checkin',
+              event: ev,
+              text: textIn,
+              roomId: checkinRoomCode,
+              lineUserId: userId || null,
+              chatId,
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              notifyN8nCheckinFlow(env, payload).catch((err) => console.error('checkin notify failed', err))
+            );
+
+            if (hasKV(env)) {
+              const checkinFlowKey = buildCheckinFlowKey(userId, chatId);
+              const checkinFlowState = {
+                roomId: checkinRoomCode,
+                chatId,
+                lineUserId: userId || null,
+                ts: Date.now()
+              };
+              const ttl = CHECKIN_FLOW_TTL_SECONDS;
+              try {
+                await env.KV.put(checkinFlowKey, JSON.stringify(checkinFlowState), { expirationTtl: ttl });
+              } catch (err) {
+                console.error('checkin flow kv put failed', err);
+              }
+            }
+
+            const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${checkinRoomCode} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackMsg }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+            }
+            continue;
+          }
+
           if (changeLineState?.state === WAIT_ROOM_STATE) {
             notifyTenantChange('tenant_id_change_room');
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -965,6 +1028,7 @@ if (
 
         // === IMAGE ===
         if (m.type === 'image') {
+          const chatId = getChatId(ev);
           // Optional quick ack
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
             { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
@@ -976,10 +1040,54 @@ if (
           }
 
           const stateKey = getStateKey(ev);
-          const flow = await kvGet(env, stateKey + ':payrent_flow');
-          const active = !!(flow && flow.ts && (Date.now() - flow.ts < 15 * 60 * 1000)); // 15 min window
+          const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
+          const checkinFlowState = await kvGet(env, checkinFlowKey);
+          console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
+          const checkinActive = !!(
+            checkinFlowState &&
+            checkinFlowState.ts &&
+            (Date.now() - checkinFlowState.ts < CHECKIN_FLOW_TTL_MS)
+          );
 
-          if (active) {
+          if (checkinActive) {
+            const slipPayload = {
+              source: 'line_message',
+              intent: 'checkin_slip',
+              channel: 'checkin',
+              event: ev,
+              roomId: checkinFlowState.roomId,
+              lineUserId: ev?.source?.userId || null,
+              chatId,
+              imageMessageId: ev?.message?.id || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              notifyN8nCheckinFlow(env, slipPayload).catch((err) => console.error('checkin slip notify failed', err))
+            );
+
+            ctx.waitUntil(kvDel(env, checkinFlowKey));
+
+            const slipAck = `ได้รับสลิปเช็คอินห้อง ${checkinFlowState.roomId} แล้ว กำลังส่งทีมงานตรวจสอบสรุปผลให้เร็วที่สุด`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: slipAck }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
+            }
+
+            continue;
+          }
+
+          const payRentFlow = await kvGet(env, stateKey + ':payrent_flow');
+          const payRentActive = !!(
+            payRentFlow &&
+            payRentFlow.ts &&
+            (Date.now() - payRentFlow.ts < 15 * 60 * 1000)
+          ); // 15 min window
+
+          if (payRentActive) {
             // Route to PAYRENT only while flow is active
             const rentUrl = getPayRentGas(env);
             ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
@@ -1706,6 +1814,52 @@ async function notifyN8nTenantIdChange(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nTenantIdChange error', err);
+    return false;
+  }
+}
+
+function getN8nCheckinFlowWebhook(env) {
+  return env.N8N_CHECKIN_FLOW_URL || env.N8N_CHECKINFLOW_URL || '';
+}
+
+async function notifyN8nCheckinFlow(env, payload) {
+  const url = getN8nCheckinFlowWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nCheckinFlow: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nCheckinFlow: missing WORKER_SECRET');
+  }
+
+  try {
+    const body = JSON.stringify(payload);
+    console.log('notifyN8nCheckinFlow send', {
+      url,
+      intent: payload?.intent || '',
+      roomId: payload?.roomId || '',
+      hasEvent: !!payload?.event,
+      hasImage: !!payload?.imageMessageId
+    });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCheckinFlow: non-200 response', res.status, text.slice(0, 200));
+    } else {
+      console.log('notifyN8nCheckinFlow ok', { status: res.status, text: text.slice(0, 200) });
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCheckinFlow error', err);
     return false;
   }
 }
