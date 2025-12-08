@@ -17,7 +17,7 @@
     "N8N_TENANT_ID_CHANGE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/3a8f2c12-aa30-4118-9352-e78108bb0bc0",
     "N8N_CHECKIN_FLOW_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e",
     // PAY_RENT GAS redeployed @35 (OCR robustness + fallbacks)
-    "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbxZYRIRx_UEBFhIJ-_Lur3HmF4oi2t-uLC9gA1lcdpPw_zbRz-uhYCoyRsbIibJWTDiRA/exec",
+    "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbxK-DDrED6EW5vZLaeDIrr47KRS_YAGSyXvdkx2sBVv/exec",
     "MOVEOUT_GAS_URL": "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec",
     "AUTO_IMG_URL": "https://script.google.com/macros/s/AKfycbzg9w9zg92s9VNvTZ7JRxKJWX5VHMlYUYASsTGUdhTMWlJWDfLpjixWKuPK4J82rZTttA/exec",
     "HOWTO_IMAGE_URL_1": "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ",
