@@ -19,6 +19,13 @@ function formatDateBangkok(date = new Date()) {
   return `${d}/${m}/${y}`;
 }
 
+function formatTimeBangkok(date = new Date()) {
+  const inBkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
+  const h = String(inBkk.getHours()).padStart(2, '0');
+  const m = String(inBkk.getMinutes()).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
 const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
 const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
@@ -82,6 +89,14 @@ const CHECKIN_CHANGE_KEYWORDS = [
 const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
+
+const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
+const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
+const BOOKING_ID_TTL_SECONDS = 6 * 60 * 60;     // 6 hours to send ID after slip
+const BOOKING_ID_TTL_MS = BOOKING_ID_TTL_SECONDS * 1000;
+const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
+const PENALTY_FLOW_TTL_MS = PENALTY_FLOW_TTL_SECONDS * 1000;
+
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
     return `checkin_flow:${userId}`;
@@ -96,6 +111,19 @@ function parseCheckinCommand(text) {
   const match = CHECKIN_COMMAND_RE.exec(text);
   if (!match) return null;
   return match[1].toUpperCase();
+}
+
+function buildBookingFlowKey(userId, chatId) {
+  if (userId) return `booking_flow:${userId}`;
+  if (chatId) return `booking_flow:${chatId}`;
+  return 'booking_flow:unknown';
+}
+
+function extractBookingCode(text) {
+  const match = /MM\d{3,}/i.exec(text || '');
+  if (!match) return null;
+  const code = match[0].toUpperCase();
+  return code.startsWith('#') ? code : `#${code}`;
 }
 
 const OWNER_APPROVAL_KEYWORD_RE = /^(?:อนุมัติ|ไม่อนุมัติ)\s*(?:เปลี่ยนไลน์|เปลี่ยนไอดีผู้เช่า|line\s*id\s*change)/i;
@@ -241,7 +269,7 @@ function isCheckinChangeIntent(text) {
  * ========================= */
 function hasKV(env){ return !!(env && env.KV && typeof env.KV.get === 'function'); }
 async function kvGet(env, k){ try{ if(!hasKV(env)) return null; return await env.KV.get(k, 'json'); }catch(_){ return null; } }
-async function kvPut(env, k, v){ try{ if(!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: 7200 }); }catch(_){ /* no-op */ } }
+async function kvPut(env, k, v, ttlSeconds){ try{ if(!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 }); }catch(_){ /* no-op */ } }
 async function kvDel(env, k){ try{ if(!hasKV(env)) return; await env.KV.delete(k); }catch(_){ /* no-op */ } }
 
 async function lineStartLoading(token, chatId, seconds = 7) {
@@ -773,6 +801,20 @@ if (
         const fridgeIntent = detectFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
         const checkinRoomCode = parseCheckinCommand(textIn);
+        const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+        const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+        const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
+        const isPenaltyPayment = !!penaltyMatch;
+        const penaltyType = penaltyMatch
+          ? (penaltyMatch[1].includes('อื่น') ? 'Others_payment' : 'penalty')
+          : null;
+        const penaltyKey = stateKey + ':penalty_flow';
+        const penaltyFlow = await kvGet(env, penaltyKey);
+        const penaltyActive = !!(
+          penaltyFlow &&
+          penaltyFlow.ts &&
+          (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
+        );
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
@@ -798,12 +840,6 @@ if (
             notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
           );
         };
-
-        if (payRentActive) {
-          ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
-          ctx.waitUntil(forwardPayRent());
-          continue;
-        }
 
         if (/^\s*เปลี่ยนไอดีผู้เช่า\s*$/i.test(textIn)) {
           if (userId) {
@@ -835,6 +871,17 @@ if (
           const handled = await moveoutTextGate(env, stateKey, textIn, replyToken);
           if (handled) continue;
 
+          // Payment menu entry point (rich menu: จ่ายเงินมามาแมนชั่น) + override keyword จ่ายค่าเช่ามามาแมนชั่น
+          if (isPaymentMenu || isPaymentMenuBypass) {
+            const flex = buildPaymentOptionsFlex();
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [flex]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [flex]).catch(console.error));
+            }
+            continue;
+          }
+
           // (C) Rent payment trigger
           if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|จ่ายค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
             if (chatId) {
@@ -848,8 +895,68 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
             }
 
+            ctx.waitUntil(kvDel(env, penaltyKey)); // switch to rent flow, clear penalty flag
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
             ctx.waitUntil(forwardPayRent());
+            continue;
+          }
+
+          // (C.2) Penalty payment trigger
+          if (isPenaltyPayment) {
+            if (chatId) {
+              ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
+            }
+
+            const typeLabel = penaltyType === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
+            const penaltyAck = `🧾 ส่งสลิปชำระ${typeLabel}ได้เลยค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: penaltyAck }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, penaltyAck).catch(console.error));
+            }
+
+            ctx.waitUntil(kvDel(env, payRentKey)); // switch to penalty flow, clear rent flag
+            ctx.waitUntil(
+              kvPut(
+                env,
+                penaltyKey,
+                {
+                  ts: Date.now(),
+                  chatId,
+                  userId,
+                  type: penaltyType || 'penalty'
+                },
+                PENALTY_FLOW_TTL_SECONDS
+              )
+            );
+            continue;
+          }
+
+          if (payRentActive && !isPaymentMenuBypass) {
+            const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: reminder }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
+            }
+            ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
+            continue;
+          }
+
+          if (penaltyActive && !penaltyMatch && !isPaymentMenuBypass) {
+            const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: reminder }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
+            }
+            ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now(), chatId, userId }, PENALTY_FLOW_TTL_SECONDS));
             continue;
           }
 
@@ -1003,9 +1110,30 @@ if (
 
           // (F) Booking code → ack + forward
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
-            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'กำลังตรวจสอบรหัสจอง…' }
-            ]).catch(console.error));
+            const bookingCode = extractBookingCode(textIn);
+            const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
+            const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
+            const flow = {
+              phase: 'await_slip',
+              code: bookingCode,
+              ts: Date.now(),
+              expiresAt
+            };
+            ctx.waitUntil(kvPut(env, bookingFlowKey, flow, BOOKING_SLIP_TTL_SECONDS));
+
+            const expireText = formatTimeBangkok(new Date(expiresAt));
+            const reply = [
+              `รับรหัสจอง ${bookingCode} แล้ว`,
+              `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`,
+              'ถ้าหมดเวลาแล้วให้พิมพ์รหัสอีกครั้ง เช่น #MM123'
+            ].join('\n');
+
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reply }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reply).catch(console.error));
+            }
+
             ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
@@ -1040,6 +1168,13 @@ if (
           }
 
           const stateKey = getStateKey(ev);
+          const penaltyKey = stateKey + ':penalty_flow';
+          const penaltyFlow = await kvGet(env, penaltyKey);
+          const penaltyActive = !!(
+            penaltyFlow &&
+            penaltyFlow.ts &&
+            (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
+          );
           const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
           const checkinFlowState = await kvGet(env, checkinFlowKey);
           console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
@@ -1080,6 +1215,36 @@ if (
             continue;
           }
 
+          if (penaltyActive) {
+            const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
+            const slipPayload = {
+              source: 'line_message',
+              intent: 'penalty_payment_slip',
+              channel: 'penalty',
+              event: ev,
+              lineUserId: ev?.source?.userId || null,
+              chatId,
+              imageMessageId: ev?.message?.id || null,
+              type: penaltyFlow?.type || 'penalty',
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              Penalty_webhook(env, slipPayload).catch((err) => console.error('Penalty_webhook failed', err))
+            );
+            ctx.waitUntil(kvDel(env, penaltyKey));
+
+            const slipAck = `รับสลิปชำระ${typeLabel}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: slipAck }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
+            }
+            continue;
+          }
+
           const payRentFlow = await kvGet(env, stateKey + ':payrent_flow');
           const payRentActive = !!(
             payRentFlow &&
@@ -1093,9 +1258,75 @@ if (
             ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
             // clear the flag after handing off (optional; keeps it one-shot)
             ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
-          } else {
-            // Not in payrent flow → keep your default behavior
-            ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+            continue;
+          }
+
+          // Booking flow gates (slip -> ID)
+          const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
+          const bookingFlow = await kvGet(env, bookingFlowKey);
+
+          if (bookingFlow && bookingFlow.phase) {
+            const phase = bookingFlow.phase || 'await_slip';
+            const age = Date.now() - (bookingFlow.ts || 0);
+            const ttlMs = phase === 'await_id' ? BOOKING_ID_TTL_MS : BOOKING_SLIP_TTL_MS;
+            const expired = age > ttlMs;
+
+            const bookingCode = bookingFlow.code || '#MMxxx';
+            const codeHint = bookingCode.toUpperCase();
+            const retryText = `หมดเวลาส่งไฟล์แล้ว โปรดพิมพ์รหัสจอง เช่น ${codeHint} เพื่อเริ่มใหม่`;
+
+            if (expired) {
+              ctx.waitUntil(kvDel(env, bookingFlowKey));
+              const message = phase === 'await_id'
+                ? `หมดเวลาส่งบัตรแล้ว โปรดพิมพ์รหัสจอง เช่น ${codeHint} เพื่อเริ่มใหม่`
+                : retryText;
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: message }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, message).catch(console.error));
+              }
+              continue;
+            }
+
+            if (phase === 'await_slip') {
+              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+              const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
+              const nextFlow = { phase: 'await_id', code: bookingCode, ts: Date.now(), expiresAt };
+              ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
+
+              const expireText = formatTimeBangkok(new Date(expiresAt));
+              const msg = [
+                `รับสลิปจอง ${bookingCode} แล้ว`,
+                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`,
+                `หากหมดเวลาแล้วให้พิมพ์รหัสอีกครั้ง เช่น ${bookingCode}`
+              ].join('\n');
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              }
+              continue;
+            }
+
+            if (phase === 'await_id') {
+              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+              ctx.waitUntil(kvDel(env, bookingFlowKey));
+              const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              }
+              continue;
+            }
+          }
+
+          // Not in any known flow
+          const noFlowMsg = 'ตอนนี้ยังไม่ได้อยู่ในสเต็ปใดเลย ต้องการทำขั้นตอนใดครับ? หากเป็นการจองให้พิมพ์รหัส เช่น #MM123';
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: noFlowMsg }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, noFlowMsg).catch(console.error));
           }
           continue;
         }
@@ -1675,6 +1906,50 @@ function fridgeButtonMessage(postbackData) {
   };
 }
 
+function buildPaymentOptionsFlex() {
+  const primaryColor = '#0F62FE';
+  return {
+    type: 'flex',
+    altText: 'เลือกการชำระเงิน',
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'lg',
+        contents: [
+          { type: 'text', text: 'เลือกสิ่งที่ต้องการชำระ', weight: 'bold', size: 'lg' },
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'md',
+            contents: [
+              {
+                type: 'button',
+                style: 'primary',
+                color: primaryColor,
+                action: { type: 'message', label: 'ชำระค่าเช่า', text: 'ชำระค่าเช่า' }
+              },
+              {
+                type: 'button',
+                style: 'primary',
+                color: primaryColor,
+                action: { type: 'message', label: 'ชำระค่าปรับ', text: 'ชำระค่าปรับ' }
+              },
+              {
+                type: 'button',
+                style: 'primary',
+                color: primaryColor,
+                action: { type: 'message', label: 'อื่นๆ', text: 'ชำระค่าอื่นๆ' }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  };
+}
+
 function buildParkingPostbackPayload(options = {}) {
   return {
     act: 'parking_rent_request',
@@ -1860,6 +2135,40 @@ async function notifyN8nCheckinFlow(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nCheckinFlow error', err);
+    return false;
+  }
+}
+
+function getPenaltyWebhook(env) {
+  return env.PENALTY_WEBHOOK_URL || 'https://n8n.srv1112305.hstgr.cloud/webhook-test/9bc40121-6fbe-4aa9-918c-a8b04cc88740';
+}
+
+async function Penalty_webhook(env, payload) {
+  const url = getPenaltyWebhook(env);
+  if (!url) {
+    console.warn('Penalty_webhook: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('Penalty_webhook: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('Penalty_webhook error', err);
     return false;
   }
 }
