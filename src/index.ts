@@ -2212,7 +2212,7 @@ async function notifyN8nCheckinFlow(env, payload) {
 }
 
 function getPenaltyWebhook(env) {
-  return env.PENALTY_WEBHOOK_URL || 'https://n8n.srv1112305.hstgr.cloud/webhook-test/9bc40121-6fbe-4aa9-918c-a8b04cc88740';
+  return env.PENALTY_WEBHOOK_URL || '';
 }
 
 async function Penalty_webhook(env, payload) {
