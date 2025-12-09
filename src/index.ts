@@ -815,6 +815,7 @@ if (
           penaltyFlow.ts &&
           (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
         );
+        const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
@@ -908,13 +909,15 @@ if (
             }
 
             const typeLabel = penaltyType === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
-            const penaltyAck = `🧾 ส่งสลิปชำระ${typeLabel}ได้เลยค่ะ`;
+            const askReason = penaltyType === 'Others_payment'
+              ? 'เป็นค่าอะไรคะ เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม, ค่าผ้า ฯลฯ'
+              : 'ค่าปรับเรื่องอะไรคะ เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: penaltyAck }
+                { type: 'text', text: askReason }
               ]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, penaltyAck).catch(console.error));
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askReason).catch(console.error));
             }
 
             ctx.waitUntil(kvDel(env, payRentKey)); // switch to penalty flow, clear rent flag
@@ -926,7 +929,8 @@ if (
                   ts: Date.now(),
                   chatId,
                   userId,
-                  type: penaltyType || 'penalty'
+                  type: penaltyType || 'penalty',
+                  reason: null
                 },
                 PENALTY_FLOW_TTL_SECONDS
               )
@@ -947,7 +951,7 @@ if (
             continue;
           }
 
-          if (penaltyActive && !penaltyMatch && !isPaymentMenuBypass) {
+          if (penaltyActive && !penaltyMatch && !isPaymentMenuBypass && !penaltyReasonNeeded) {
             const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -957,6 +961,44 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
             }
             ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now(), chatId, userId }, PENALTY_FLOW_TTL_SECONDS));
+            continue;
+          }
+
+          if (penaltyReasonNeeded) {
+            const reason = (textIn || '').trim();
+            if (!reason) {
+              const askAgain = (penaltyFlow?.type || '') === 'Others_payment'
+                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
+                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: askAgain }
+                ]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
+              }
+              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
+              continue;
+            }
+
+            const updated = {
+              ...penaltyFlow,
+              reason,
+              ts: Date.now(),
+              chatId,
+              userId
+            };
+            ctx.waitUntil(kvPut(env, penaltyKey, updated, PENALTY_FLOW_TTL_SECONDS));
+
+            const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
+            const askSlip = `บันทึก${typeLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: askSlip }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
+            }
             continue;
           }
 
@@ -1175,6 +1217,7 @@ if (
             penaltyFlow.ts &&
             (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
           );
+          const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
           const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
           const checkinFlowState = await kvGet(env, checkinFlowKey);
           console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
@@ -1216,6 +1259,21 @@ if (
           }
 
           if (penaltyActive) {
+            if (penaltyReasonNeeded) {
+              const askReason = (penaltyFlow?.type || '') === 'Others_payment'
+                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
+                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: askReason }
+                ]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askReason).catch(console.error));
+              }
+              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
+              continue;
+            }
+
             const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
             const slipPayload = {
               source: 'line_message',
@@ -1226,21 +1284,35 @@ if (
               chatId,
               imageMessageId: ev?.message?.id || null,
               type: penaltyFlow?.type || 'penalty',
+              reason: penaltyFlow?.reason || '',
               receivedAt: new Date().toISOString()
             };
 
-            ctx.waitUntil(
-              Penalty_webhook(env, slipPayload).catch((err) => console.error('Penalty_webhook failed', err))
-            );
-            ctx.waitUntil(kvDel(env, penaltyKey));
+            let ok = false;
+            try {
+              ok = await Penalty_webhook(env, slipPayload);
+            } catch (err) {
+              console.error('Penalty_webhook failed', err);
+            }
 
-            const slipAck = `รับสลิปชำระ${typeLabel}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`;
+            if (ok) {
+              ctx.waitUntil(kvDel(env, penaltyKey));
+            }
+
+            const slipAck = ok
+              ? `รับสลิปชำระ${typeLabel}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`
+              : `ส่งสลิปชำระ${typeLabel}ไม่สำเร็จ กรุณาลองส่งอีกครั้งค่ะ`;
+
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
                 { type: 'text', text: slipAck }
               ]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
+            }
+
+            if (!ok) {
+              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
             }
             continue;
           }
