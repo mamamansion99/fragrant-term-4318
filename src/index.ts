@@ -264,6 +264,41 @@ function isCheckinChangeIntent(text) {
   return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
 }
 
+function parseKeyKeyword(text) {
+  const raw = (text || '').trim();
+  if (!raw) return null;
+  if (!/^(คีย์|key)/i.test(raw)) return null;
+
+  const remainder = raw.replace(/^(คีย์|key)/i, '').trim();
+  if (!remainder) return null;
+
+  const tokens = remainder.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+
+  const amountToken = tokens[tokens.length - 1];
+  if (!/^\d+$/.test(amountToken)) return null;
+  const amount = parseInt(amountToken, 10);
+  if (!Number.isFinite(amount)) return null;
+
+  const buildingRoomRaw = tokens.slice(0, -1).join('');
+  const match = buildingRoomRaw.match(/^((?:a|b)|(?:เอ)|(?:บี))(\d{1,4})$/i);
+  if (!match) return null;
+
+  const buildingToken = match[1] || '';
+  let building = null;
+  if (/^a$/i.test(buildingToken) || /^เอ$/i.test(buildingToken)) {
+    building = 'A';
+  } else if (/^b$/i.test(buildingToken) || /^บี$/i.test(buildingToken)) {
+    building = 'B';
+  }
+  if (!building) return null;
+
+  const room = match[2];
+  if (!room) return null;
+
+  return { building, room, amount };
+}
+
 /* =========================
  * 1) KV + Loading helpers
  * ========================= */
@@ -819,6 +854,7 @@ if (
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
+        const keyKeyword = parseKeyKeyword(textIn);
 
         const forwardPayRent = () => {
           const rentUrl = getPayRentGas(env);
@@ -841,6 +877,30 @@ if (
             notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
           );
         };
+
+        if (keyKeyword) {
+          const timestamp = new Date().toISOString();
+          const keyPayload = {
+            ...keyKeyword,
+            text: textIn,
+            userId: userId || null,
+            chatId: chatId || null,
+            sourceType: ev?.source?.type || null,
+            messageId: m?.id || null,
+            receivedAt: timestamp
+          };
+          ctx.waitUntil(
+            notifyN8nKeyWebhook(env, keyPayload).catch((err) => console.error('key webhook failed', err))
+          );
+
+          const ackText = `ส่งข้อมูลคีย์ตึก ${keyKeyword.building} ห้อง ${keyKeyword.room} จำนวน ${keyKeyword.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+          continue;
+        }
 
         if (/^\s*เปลี่ยนไอดีผู้เช่า\s*$/i.test(textIn)) {
           if (userId) {
@@ -2018,6 +2078,18 @@ function buildPaymentOptionsFlex() {
           }
         ]
       }
+    },
+    quickReply: {
+      items: [
+        {
+          type: 'action',
+          action: {
+            type: 'message',
+            label: 'วิธีการชำระเงิน',
+            text: 'วิธีการชำระเงิน'
+          }
+        }
+      ]
     }
   };
 }
@@ -2207,6 +2279,36 @@ async function notifyN8nCheckinFlow(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nCheckinFlow error', err);
+    return false;
+  }
+}
+
+async function notifyN8nKeyWebhook(env, payload) {
+  const url = env.N8N_KEY_WEBHOOK_URL || '';
+  if (!url) {
+    console.warn('notifyN8nKeyWebhook: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nKeyWebhook: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nKeyWebhook error', err);
     return false;
   }
 }
