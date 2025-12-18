@@ -367,7 +367,11 @@ async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
 
 // GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
 function getWebhookGas(env){
-  return env.MM_WEBHOOK_URL || env.MM_GAS_WEBHOOK_URL || env.APPS_SCRIPT_URL || '';
+  return env.MM_WEBHOOK_URL || '';
+}
+
+function getReservationGas(env){
+  return env.RESERVATION_URL || '';
 }
 
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
@@ -599,9 +603,13 @@ if (url.pathname.startsWith('/api/moveout')) {
 
     const payload = JSON.parse(bodyText || '{}');
     const events = Array.isArray(payload.events) ? payload.events : [];
+    const firstEvent = events[0];
+
+    if (firstEvent?.source?.type === 'group') {
+      console.log('GROUP ID:', firstEvent.source.groupId);
+    }
 
     if (events.length > 0 && env.N8N_POSTBACK_URL) {
-      const firstEvent = events[0];
       if (firstEvent?.type === 'postback' && firstEvent?.postback?.data) {
         let fridgePostback = null;
         try {
@@ -824,6 +832,38 @@ if (
        * --------------------- */
       if (ev.type === 'message') {
         const m = ev.message || {};
+        const chatId = getChatId(ev);
+
+        // Dedicated expense group catch-all
+        if (env.EXPENSE_GROUP_ID && chatId === env.EXPENSE_GROUP_ID) {
+          const expensePayload = {
+            source: 'expense_group',
+            intent: 'record_expense',
+            type: m.type,
+            text: m.type === 'text' ? (m.text || '') : '',
+            imageMessageId: m.type === 'image' ? m.id : null,
+            userId: ev?.source?.userId || null,
+            groupId: chatId,
+            timestamp: new Date().toISOString()
+          };
+
+          if (env.N8N_EXPENSE_WEBHOOK_URL) {
+            ctx.waitUntil(
+              notifyN8nExpense(env, expensePayload).catch(console.error)
+            );
+          } else {
+            console.warn('EXPENSE_GROUP_ID set but N8N_EXPENSE_WEBHOOK_URL is missing');
+          }
+
+          if (replyToken) {
+            const icon = m.type === 'image' ? '📸' : '📝';
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: `${icon} บันทึกแล้ว` }
+            ]).catch(console.error);
+          }
+
+          continue;
+        }
 
         // === TEXT ===
         if (m.type === 'text') {
@@ -1199,7 +1239,12 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg).catch(console.error));
             }
             // Forward the original event so GAS can run the regular check-in picker flow
-            ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+            const reservationUrl = getReservationGas(env);
+            if (reservationUrl) {
+              ctx.waitUntil(forwardToSpecificGas(env, reservationUrl, { events: [ev] }));
+            } else {
+              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+            }
             continue;
           }
 
@@ -2343,6 +2388,36 @@ async function Penalty_webhook(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('Penalty_webhook error', err);
+    return false;
+  }
+}
+
+async function notifyN8nExpense(env, payload) {
+  const url = env.N8N_EXPENSE_WEBHOOK_URL || '';
+  if (!url) {
+    console.warn('notifyN8nExpense: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nExpense: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nExpense error', err);
     return false;
   }
 }
