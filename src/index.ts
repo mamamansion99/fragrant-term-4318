@@ -89,6 +89,9 @@ const CHECKIN_CHANGE_KEYWORDS = [
 const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
+const CHECKOUT_COMMAND_RE = /^\s*เช็คเอ้?า?ท?์?\s*ห้อง\s*([^\s]+)\s*$/i;
+const CHECKOUT_FLOW_TTL_SECONDS = 30 * 60;
+const CHECKOUT_FLOW_TTL_MS = CHECKOUT_FLOW_TTL_SECONDS * 1000;
 
 const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
 const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
@@ -109,6 +112,21 @@ function buildCheckinFlowKey(userId, chatId) {
 function parseCheckinCommand(text) {
   if (!text) return null;
   const match = CHECKIN_COMMAND_RE.exec(text);
+  if (!match) return null;
+  return match[1].toUpperCase();
+}
+function buildCheckoutFlowKey(userId, chatId) {
+  if (userId) {
+    return `checkout_flow:${userId}`;
+  }
+  if (chatId) {
+    return `checkout_flow:${chatId}`;
+  }
+  return 'checkout_flow:unknown';
+}
+function parseCheckoutCommand(text) {
+  if (!text) return null;
+  const match = CHECKOUT_COMMAND_RE.exec(text);
   if (!match) return null;
   return match[1].toUpperCase();
 }
@@ -876,6 +894,7 @@ if (
         const fridgeIntent = detectFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
         const checkinRoomCode = parseCheckinCommand(textIn);
+        const checkoutRoomCode = parseCheckoutCommand(textIn);
         const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
         const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
         const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
@@ -1177,6 +1196,34 @@ if (
             }
 
             const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${checkinRoomCode} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackMsg }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+            }
+            continue;
+          }
+
+          if (checkoutRoomCode) {
+            const payload = {
+              source: 'line_message',
+              intent: 'checkout_start',
+              channel: 'checkout',
+              event: ev,
+              text: textIn,
+              roomId: checkoutRoomCode,
+              lineUserId: userId || null,
+              chatId,
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              notifyN8nCheckoutFlow(env, payload).catch((err) => console.error('checkout notify failed', err))
+            );
+
+            const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คเอ้าท์ห้อง ${checkoutRoomCode} ต่อทันที`;
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
                 { type: 'text', text: ackMsg }
@@ -2286,6 +2333,10 @@ function getN8nCheckinFlowWebhook(env) {
   return env.N8N_CHECKIN_FLOW_URL || env.N8N_CHECKINFLOW_URL || '';
 }
 
+function getN8nCheckoutWebhook(env) {
+  return env.N8N_CHECKOUT_WEBHOOK_URL || env.N8N_CHECKOUT_FLOW_URL || env.N8N_CHECKOUT_URL || '';
+}
+
 async function notifyN8nCheckinFlow(env, payload) {
   const url = getN8nCheckinFlowWebhook(env);
   if (!url) {
@@ -2324,6 +2375,48 @@ async function notifyN8nCheckinFlow(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nCheckinFlow error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCheckoutFlow(env, payload) {
+  const url = getN8nCheckoutWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nCheckoutFlow: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nCheckoutFlow: missing WORKER_SECRET');
+  }
+
+  try {
+    const body = JSON.stringify(payload);
+    console.log('notifyN8nCheckoutFlow send', {
+      url,
+      intent: payload?.intent || '',
+      roomId: payload?.roomId || '',
+      hasEvent: !!payload?.event,
+      hasImage: !!payload?.imageMessageId
+    });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCheckoutFlow: non-200 response', res.status, text.slice(0, 200));
+    } else {
+      console.log('notifyN8nCheckoutFlow ok', { status: res.status, text: text.slice(0, 200) });
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCheckoutFlow error', err);
     return false;
   }
 }
