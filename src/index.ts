@@ -456,6 +456,10 @@ function getPayRentGas(env){
   return env.PAYRENT_GAS_URL || '';
 }
 
+function getN8nPayRentUrl(env){
+  return env.N8N_PAYRENT_URL || '';
+}
+
 async function forwardToSpecificGas(env, gasUrl, body) {
   const secret = env.WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret };
@@ -1560,7 +1564,7 @@ if (
 
           if (payRentActive) {
             // Route to PAYRENT only while flow is active
-            const rentUrl = getPayRentGas(env);
+            const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
             ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
             // clear the flag after handing off (optional; keeps it one-shot)
             ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));

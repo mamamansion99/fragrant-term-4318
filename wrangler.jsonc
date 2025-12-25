@@ -21,6 +21,7 @@
     // Dedicated expense group (Option 2)
     "EXPENSE_GROUP_ID": "C2190a9a8cbde42b097a9d2fd0c1599bc",
     "N8N_EXPENSE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/record-expense",
+    "N8N_PAYRENT_URL": "https://n8n.srv1112305.hstgr.cloud/webhook-test/pay-rent",
     // PAY_RENT GAS endpoint
     "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbxG8jM33dAFIIWg4NupM8Cc4_3KQnQVJh3YXVh1FT6R-6kaiTK8PEdTES0RgEcWkslxOw/exec",
     "MOVEOUT_GAS_URL": "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec",
