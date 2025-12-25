@@ -1565,7 +1565,13 @@ if (
           if (payRentActive) {
             // Route to PAYRENT only while flow is active
             const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
-            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
+            const payload = {
+              events: [ev],
+              roomId: payRentFlow?.roomId || '',
+              userId: ev?.source?.userId || '',
+              chatId
+            };
+            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
             // clear the flag after handing off (optional; keeps it one-shot)
             ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
             continue;
