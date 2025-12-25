@@ -282,6 +282,47 @@ function isCheckinChangeIntent(text) {
   return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
 }
 
+function normalizeNoSpace(s) {
+  return String(s || '').trim().replace(/\s+/g, '');
+}
+
+function findRoom(t) {
+  const m = t.match(/([AB])(\d{2,4})/i);
+  return m ? `${m[1].toUpperCase()}${m[2]}` : null;
+}
+
+function parseRentCommand(rawText) {
+  const t = normalizeNoSpace(rawText);
+  const bundleMatch = /^เช่าชุดกุญแจ([AB]\d{2,4})$/i.exec(t);
+  const keycardMatch = /^เช่าคีย์การ์ด([AB]\d{2,4})$/i.exec(t);
+  const keyMatch = /^เช่ากุญแจ([AB]\d{2,4})$/i.exec(t);
+
+  const roomToken = bundleMatch?.[1] || keycardMatch?.[1] || keyMatch?.[1] || null;
+  if (!roomToken) return null;
+
+  const room = findRoom(`ROOM${roomToken}`); // reuse finder to normalize casing
+  if (!room) return { error: 'MISSING_ROOM' };
+
+  const PRICE = { KEYCARD: 100, KEY: 500 };
+  const items = [];
+  const qty = 1; // fixed single set per request
+
+  if (bundleMatch) {
+    items.push(
+      { assetType: 'KEYCARD', qty, unitPrice: PRICE.KEYCARD, amount: qty * PRICE.KEYCARD },
+      { assetType: 'KEY', qty, unitPrice: PRICE.KEY, amount: qty * PRICE.KEY }
+    );
+  } else if (keycardMatch) {
+    items.push({ assetType: 'KEYCARD', qty, unitPrice: PRICE.KEYCARD, amount: qty * PRICE.KEYCARD });
+  } else if (keyMatch) {
+    items.push({ assetType: 'KEY', qty, unitPrice: PRICE.KEY, amount: qty * PRICE.KEY });
+  }
+
+  const totalAmount = items.reduce((s, it) => s + it.amount, 0);
+
+  return { room, items, totalAmount };
+}
+
 function parseKeyKeyword(text) {
   const raw = (text || '').trim();
   if (!raw) return null;
@@ -913,6 +954,7 @@ if (
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
+        const rentCommand = parseRentCommand(textIn);
         const keyKeyword = parseKeyKeyword(textIn);
 
         const forwardPayRent = () => {
@@ -936,6 +978,46 @@ if (
             notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
           );
         };
+
+        if (rentCommand) {
+          if (rentCommand.error === 'MISSING_ROOM') {
+            const askRoomText = 'โปรดระบุห้อง เช่น เช่าชุดกุญแจ A101';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
+            }
+            continue;
+          }
+
+          const rentPayload = {
+            type: 'n8n_rent-key',
+            room: rentCommand.room,
+            items: rentCommand.items,
+            amount: rentCommand.totalAmount,
+            text: textIn,
+            userId: userId || null,
+            chatId: chatId || null,
+            messageId: m?.id || null,
+            sourceType: ev?.source?.type || null,
+            receivedAt: new Date().toISOString()
+          };
+
+          ctx.waitUntil(
+            notifyN8nKeyWebhook(env, rentPayload).catch((err) => console.error('key rent webhook failed', err))
+          );
+
+          const itemSummary = rentCommand.items
+            .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
+            .join(', ');
+          const ackText = `รับคำเช่า${rentCommand.items.length > 1 ? 'ชุดกุญแจ' : ''}ห้อง ${rentCommand.room} แล้ว (${itemSummary})`;
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+          continue;
+        }
 
         if (keyKeyword) {
           const timestamp = new Date().toISOString();
@@ -1869,7 +1951,7 @@ function quickKeywordReply(text, env) {
     const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
     return [
       { type: 'text', text: `อัปเดตวันที่ ${today}` },
-      { type: 'text', text: `สถานะห้อง: ตึก A เต็มแล้วค่ะ ตึก B ยังมีห้องว่างอยู่ หากสนใจจองสามารถเช็กห้องว่างตอนนี้และจองผ่านเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
+      { type: 'text', text: `สถานะห้อง: ตึก A ใกล้เต็มแล้ว และตึก B ก็ใกล้เต็ม แนะนำเช็กห้องว่างล่าสุดได้ที่ลิงก์นี้ก่อนจองนะครับ\n${bookingUrl}\nถ้าต้องการห้อง VIP ทักคุยกับแอดมินในแชทนี้ได้เลย` }
     ];
   }
 
