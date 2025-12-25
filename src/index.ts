@@ -1567,7 +1567,7 @@ if (
             const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
             const payload = {
               events: [ev],
-              roomId: payRentFlow?.roomId || '',
+              roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
               userId: ev?.source?.userId || '',
               chatId
             };
