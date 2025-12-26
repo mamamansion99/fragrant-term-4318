@@ -901,7 +901,7 @@ if (
         const keyKeyword = parseKeyKeyword(textIn);
 
         const forwardPayRent = () => {
-          const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
+          const rentUrl = getPayRentGas(env) || getN8nPayRentUrl(env);
           if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
           console.warn('pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS');
           return forwardToGas(env, { events: [ev] });
@@ -1435,7 +1435,7 @@ if (
 
           if (payRentActive) {
             // Route to PAYRENT while flow is active
-            const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
+            const rentUrl = getPayRentGas(env) || getN8nPayRentUrl(env);
             const payload = {
               events: [ev],
               roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
