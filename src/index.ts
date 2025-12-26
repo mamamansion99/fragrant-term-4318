@@ -264,6 +264,35 @@ function isCheckinChangeIntent(text) {
   return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
 }
 
+// Rent key/keycard/set commands
+function parseKeyRent(textRaw) {
+  const raw = String(textRaw || '').trim();
+  if (!raw) return null;
+  const compact = raw.replace(/\s+/g, '');
+
+  let mode = null;
+  if (compact.startsWith('เช่าชุดกุญแจ')) mode = 'SET';
+  else if (compact.startsWith('เช่าคีย์การ์ด')) mode = 'KEYCARD';
+  else if (compact.startsWith('เช่ากุญแจ')) mode = 'KEY';
+  else return null; // not a rent-key trigger
+
+  const m = compact.match(/([AB])(\d{2,4})/i);
+  if (!m) return { error: 'MISSING_ROOM' };
+  const room = `${m[1].toUpperCase()}${m[2]}`;
+
+  const items = [];
+  if (mode === 'SET' || mode === 'KEYCARD') {
+    items.push({ assetType: 'KEYCARD', qty: 1, unitPrice: 100, amount: 100 });
+  }
+  if (mode === 'SET' || mode === 'KEY') {
+    items.push({ assetType: 'KEY', qty: 1, unitPrice: 500, amount: 500 });
+  }
+  const amount = items.reduce((s, it) => s + it.amount, 0);
+
+  return { mode, room, items, amount, rawText: raw };
+}
+
+// Legacy "key A101 20" parser for forgot-key flow
 function parseKeyKeyword(text) {
   const raw = (text || '').trim();
   if (!raw) return null;
@@ -898,7 +927,8 @@ if (
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
-        const keyKeyword = parseKeyKeyword(textIn);
+        const keyRent = parseKeyRent(textIn);
+        const keyForgot = parseKeyKeyword(textIn); // simple “key A101 20” legacy path
 
         const forwardPayRent = () => {
           const rentUrl = getPayRentGas(env);
@@ -922,11 +952,24 @@ if (
           );
         };
 
-        if (keyKeyword) {
+        if (keyRent) {
+          if (keyRent.error === 'MISSING_ROOM') {
+            const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101”';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
+            }
+            continue;
+          }
+
           const timestamp = new Date().toISOString();
           const keyPayload = {
-            ...keyKeyword,
-            text: textIn,
+            type: 'KEY_RENT',
+            room: keyRent.room,
+            items: keyRent.items,
+            amount: keyRent.amount,
+            rawText: keyRent.rawText,
             userId: userId || null,
             chatId: chatId || null,
             sourceType: ev?.source?.type || null,
@@ -937,7 +980,34 @@ if (
             notifyN8nKeyWebhook(env, keyPayload).catch((err) => console.error('key webhook failed', err))
           );
 
-          const ackText = `ส่งข้อมูลคีย์ตึก ${keyKeyword.building} ห้อง ${keyKeyword.room} จำนวน ${keyKeyword.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
+          const itemSummary = keyRent.items
+            .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
+            .join(', ');
+          const ackText = `รับคำเช่า${keyRent.mode === 'SET' ? 'ชุดกุญแจ' : (keyRent.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ')} ห้อง ${keyRent.room} แล้ว (${itemSummary})`;
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+          continue;
+        }
+
+        if (keyForgot) {
+          const timestamp = new Date().toISOString();
+          const payload = {
+            ...keyForgot,
+            text: textIn,
+            userId: userId || null,
+            chatId: chatId || null,
+            sourceType: ev?.source?.type || null,
+            messageId: m?.id || null,
+            receivedAt: timestamp
+          };
+          ctx.waitUntil(
+            notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
+          );
+
+          const ackText = `ส่งข้อมูลคีย์ตึก ${keyForgot.building} ห้อง ${keyForgot.room} จำนวน ${keyForgot.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
           } else if (chatId) {
@@ -2352,7 +2422,7 @@ async function notifyN8nCheckinFlow(env, payload) {
 }
 
 async function notifyN8nKeyWebhook(env, payload) {
-  const url = env.N8N_RENT_KEY_URL || env.N8N_KEY_WEBHOOK_URL || '';
+  const url = env.N8N_RENT_KEY_URL || '';
   if (!url) {
     console.warn('notifyN8nKeyWebhook: missing webhook URL');
     return false;
@@ -2377,6 +2447,39 @@ async function notifyN8nKeyWebhook(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nKeyWebhook error', err);
+    return false;
+  }
+}
+
+async function notifyN8nKeyForgotWebhook(env, payload) {
+  const url = env.N8N_KEY_FORGOT_WEBHOOK_URL || '';
+  if (!url) {
+    console.warn('notifyN8nKeyForgotWebhook: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nKeyForgotWebhook: missing WORKER_SECRET');
+  }
+
+  try {
+    const body = JSON.stringify(payload);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nKeyForgotWebhook: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nKeyForgotWebhook error', err);
     return false;
   }
 }
