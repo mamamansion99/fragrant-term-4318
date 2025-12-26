@@ -1002,7 +1002,6 @@ if (
 
             ctx.waitUntil(kvDel(env, penaltyKey)); // switch to rent flow, clear penalty flag
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
-            ctx.waitUntil(forwardPayRent());
             continue;
           }
 
