@@ -901,10 +901,10 @@ if (
         const keyKeyword = parseKeyKeyword(textIn);
 
         const forwardPayRent = () => {
-          const rentUrl = getPayRentGas(env) || getN8nPayRentUrl(env);
+          const rentUrl = getPayRentGas(env);
           if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
-          console.warn('pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS');
-          return forwardToGas(env, { events: [ev] });
+          console.warn('pay rent text trigger: missing PAYRENT_GAS_URL, skipping forward');
+          return;
         };
 
         const notifyTenantChange = (intent) => {
@@ -1434,17 +1434,30 @@ if (
           ); // 15 min window
 
           if (payRentActive) {
-            // Route to PAYRENT while flow is active
-            const rentUrl = getPayRentGas(env) || getN8nPayRentUrl(env);
-            const payload = {
-              events: [ev],
-              roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
-              userId: ev?.source?.userId || '',
-              chatId
-            };
-            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
-            // clear the flag after handing off (optional; keeps it one-shot)
-            ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
+            if (m.type === 'image') {
+              // When slip arrives, forward to n8n payrent with context
+              const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
+              if (rentUrl) {
+                const payload = {
+                  events: [ev],
+                  roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
+                  userId: ev?.source?.userId || '',
+                  chatId
+                };
+                ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
+              } else {
+                console.warn('payrent image: missing both N8N_PAYRENT_URL and PAYRENT_GAS_URL');
+              }
+              ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
+            } else {
+              const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reminder }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
+              }
+              ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
+            }
             continue;
           }
 
