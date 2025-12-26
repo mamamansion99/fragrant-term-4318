@@ -1002,6 +1002,7 @@ if (
 
             ctx.waitUntil(kvDel(env, penaltyKey)); // switch to rent flow, clear penalty flag
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
+            ctx.waitUntil(forwardPayRent());
             continue;
           }
 
@@ -1433,21 +1434,17 @@ if (
           ); // 15 min window
 
           if (payRentActive) {
-            if (m.type === 'image') {
-              // Only forward when an image (slip) is sent during the active window
-              const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
-              ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
-              ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
-            } else {
-              // For non-image messages, remind user to send the slip and keep the flow open
-              const reminder = 'โปรดส่งสลิปเพื่อยืนยันการชำระค่าเช่าค่ะ';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reminder }]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
-              }
-              ctx.waitUntil(kvPut(env, stateKey + ':payrent_flow', { ...payRentFlow, ts: Date.now(), chatId, userId }));
-            }
+            // Route to PAYRENT while flow is active
+            const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
+            const payload = {
+              events: [ev],
+              roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
+              userId: ev?.source?.userId || '',
+              chatId
+            };
+            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
+            // clear the flag after handing off (optional; keeps it one-shot)
+            ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
             continue;
           }
 
