@@ -89,9 +89,6 @@ const CHECKIN_CHANGE_KEYWORDS = [
 const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
-const CHECKOUT_COMMAND_RE = /^\s*เช็คเอ้?า?ท?์?\s*ห้อง\s*([^\s]+)\s*$/i;
-const CHECKOUT_FLOW_TTL_SECONDS = 30 * 60;
-const CHECKOUT_FLOW_TTL_MS = CHECKOUT_FLOW_TTL_SECONDS * 1000;
 
 const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
 const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
@@ -112,21 +109,6 @@ function buildCheckinFlowKey(userId, chatId) {
 function parseCheckinCommand(text) {
   if (!text) return null;
   const match = CHECKIN_COMMAND_RE.exec(text);
-  if (!match) return null;
-  return match[1].toUpperCase();
-}
-function buildCheckoutFlowKey(userId, chatId) {
-  if (userId) {
-    return `checkout_flow:${userId}`;
-  }
-  if (chatId) {
-    return `checkout_flow:${chatId}`;
-  }
-  return 'checkout_flow:unknown';
-}
-function parseCheckoutCommand(text) {
-  if (!text) return null;
-  const match = CHECKOUT_COMMAND_RE.exec(text);
   if (!match) return null;
   return match[1].toUpperCase();
 }
@@ -280,47 +262,6 @@ function isCheckinChangeIntent(text) {
   const normalized = (text || '').toLowerCase().replace(/\s+/g, '');
   if (!normalized) return false;
   return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
-}
-
-function normalizeNoSpace(s) {
-  return String(s || '').trim().replace(/\s+/g, '');
-}
-
-function findRoom(t) {
-  const m = t.match(/([AB])(\d{2,4})/i);
-  return m ? `${m[1].toUpperCase()}${m[2]}` : null;
-}
-
-function parseRentCommand(rawText) {
-  const t = normalizeNoSpace(rawText);
-  const bundleMatch = /^เช่าชุดกุญแจ([AB]\d{2,4})$/i.exec(t);
-  const keycardMatch = /^เช่าคีย์การ์ด([AB]\d{2,4})$/i.exec(t);
-  const keyMatch = /^เช่ากุญแจ([AB]\d{2,4})$/i.exec(t);
-
-  const roomToken = bundleMatch?.[1] || keycardMatch?.[1] || keyMatch?.[1] || null;
-  if (!roomToken) return null;
-
-  const room = findRoom(`ROOM${roomToken}`); // reuse finder to normalize casing
-  if (!room) return { error: 'MISSING_ROOM' };
-
-  const PRICE = { KEYCARD: 100, KEY: 500 };
-  const items = [];
-  const qty = 1; // fixed single set per request
-
-  if (bundleMatch) {
-    items.push(
-      { assetType: 'KEYCARD', qty, unitPrice: PRICE.KEYCARD, amount: qty * PRICE.KEYCARD },
-      { assetType: 'KEY', qty, unitPrice: PRICE.KEY, amount: qty * PRICE.KEY }
-    );
-  } else if (keycardMatch) {
-    items.push({ assetType: 'KEYCARD', qty, unitPrice: PRICE.KEYCARD, amount: qty * PRICE.KEYCARD });
-  } else if (keyMatch) {
-    items.push({ assetType: 'KEY', qty, unitPrice: PRICE.KEY, amount: qty * PRICE.KEY });
-  }
-
-  const totalAmount = items.reduce((s, it) => s + it.amount, 0);
-
-  return { room, items, totalAmount };
 }
 
 function parseKeyKeyword(text) {
@@ -939,7 +880,6 @@ if (
         const fridgeIntent = detectFridgeIntent(textIn);
         const parkingServiceKeyword = isParkingIntent(textIn);
         const checkinRoomCode = parseCheckinCommand(textIn);
-        const checkoutRoomCode = parseCheckoutCommand(textIn);
         const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
         const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
         const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
@@ -958,11 +898,10 @@ if (
         const payRentKey = stateKey + ':payrent_flow';
         const payRentFlow = await kvGet(env, payRentKey);
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
-        const rentCommand = parseRentCommand(textIn);
         const keyKeyword = parseKeyKeyword(textIn);
 
         const forwardPayRent = () => {
-          const rentUrl = getPayRentGas(env);
+          const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
           if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
           console.warn('pay rent flow active but PAYRENT_GAS_URL missing, falling back to main GAS');
           return forwardToGas(env, { events: [ev] });
@@ -982,46 +921,6 @@ if (
             notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
           );
         };
-
-        if (rentCommand) {
-          if (rentCommand.error === 'MISSING_ROOM') {
-            const askRoomText = 'โปรดระบุห้อง เช่น เช่าชุดกุญแจ A101';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
-            }
-            continue;
-          }
-
-          const rentPayload = {
-            type: 'n8n_rent-key',
-            room: rentCommand.room,
-            items: rentCommand.items,
-            amount: rentCommand.totalAmount,
-            text: textIn,
-            userId: userId || null,
-            chatId: chatId || null,
-            messageId: m?.id || null,
-            sourceType: ev?.source?.type || null,
-            receivedAt: new Date().toISOString()
-          };
-
-          ctx.waitUntil(
-            notifyN8nKeyWebhook(env, rentPayload).catch((err) => console.error('key rent webhook failed', err))
-          );
-
-          const itemSummary = rentCommand.items
-            .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
-            .join(', ');
-          const ackText = `รับคำเช่า${rentCommand.items.length > 1 ? 'ชุดกุญแจ' : ''}ห้อง ${rentCommand.room} แล้ว (${itemSummary})`;
-          if (replyToken) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-          } else if (chatId) {
-            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-          }
-          continue;
-        }
 
         if (keyKeyword) {
           const timestamp = new Date().toISOString();
@@ -1292,34 +1191,6 @@ if (
             continue;
           }
 
-          if (checkoutRoomCode) {
-            const payload = {
-              source: 'line_message',
-              intent: 'checkout_start',
-              channel: 'checkout',
-              event: ev,
-              text: textIn,
-              roomId: checkoutRoomCode,
-              lineUserId: userId || null,
-              chatId,
-              receivedAt: new Date().toISOString()
-            };
-
-            ctx.waitUntil(
-              notifyN8nCheckoutFlow(env, payload).catch((err) => console.error('checkout notify failed', err))
-            );
-
-            const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คเอ้าท์ห้อง ${checkoutRoomCode} ต่อทันที`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: ackMsg }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
-            }
-            continue;
-          }
-
           if (changeLineState?.state === WAIT_ROOM_STATE) {
             notifyTenantChange('tenant_id_change_room');
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -1565,13 +1436,7 @@ if (
           if (payRentActive) {
             // Route to PAYRENT only while flow is active
             const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
-            const payload = {
-              events: [ev],
-              roomId: payRentFlow?.roomId || payRentFlow?.room || payRentFlow?.roomHint || 'UNKNOWN',
-              userId: ev?.source?.userId || '',
-              chatId
-            };
-            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
+            ctx.waitUntil(forwardToSpecificGas(env, rentUrl, { events: [ev] }));
             // clear the flag after handing off (optional; keeps it one-shot)
             ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
             continue;
@@ -1961,7 +1826,7 @@ function quickKeywordReply(text, env) {
     const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
     return [
       { type: 'text', text: `อัปเดตวันที่ ${today}` },
-      { type: 'text', text: `สถานะห้อง: ตึก A ใกล้เต็มแล้ว และตึก B ก็ใกล้เต็ม แนะนำเช็กห้องว่างล่าสุดได้ที่ลิงก์นี้ก่อนจองนะครับ\n${bookingUrl}\nถ้าต้องการห้อง VIP ทักคุยกับแอดมินในแชทนี้ได้เลย` }
+      { type: 'text', text: `สถานะห้อง: ตึก A เต็มแล้วค่ะ ตึก B ยังมีห้องว่างอยู่ หากสนใจจองสามารถเช็กห้องว่างตอนนี้และจองผ่านเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
     ];
   }
 
@@ -2036,7 +1901,7 @@ function quickKeywordReply(text, env) {
     return [
       {
         type: 'text',
-        text: 'ขอบพระคุณมมากๆที่สนใจในโครงการของพวกเรา'
+        text: 'ขอบคุณสำหรับความสนใจนะครับ'
       }
     ];
   }
@@ -2425,10 +2290,6 @@ function getN8nCheckinFlowWebhook(env) {
   return env.N8N_CHECKIN_FLOW_URL || env.N8N_CHECKINFLOW_URL || '';
 }
 
-function getN8nCheckoutWebhook(env) {
-  return env.N8N_CHECKOUT_WEBHOOK_URL || env.N8N_CHECKOUT_FLOW_URL || env.N8N_CHECKOUT_URL || '';
-}
-
 async function notifyN8nCheckinFlow(env, payload) {
   const url = getN8nCheckinFlowWebhook(env);
   if (!url) {
@@ -2471,50 +2332,8 @@ async function notifyN8nCheckinFlow(env, payload) {
   }
 }
 
-async function notifyN8nCheckoutFlow(env, payload) {
-  const url = getN8nCheckoutWebhook(env);
-  if (!url) {
-    console.warn('notifyN8nCheckoutFlow: missing webhook URL');
-    return false;
-  }
-
-  const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
-  if (secret) {
-    headers['x-worker-secret'] = secret;
-  } else {
-    console.warn('notifyN8nCheckoutFlow: missing WORKER_SECRET');
-  }
-
-  try {
-    const body = JSON.stringify(payload);
-    console.log('notifyN8nCheckoutFlow send', {
-      url,
-      intent: payload?.intent || '',
-      roomId: payload?.roomId || '',
-      hasEvent: !!payload?.event,
-      hasImage: !!payload?.imageMessageId
-    });
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body
-    });
-    const text = await res.text().catch(() => '');
-    if (!res.ok) {
-      console.error('notifyN8nCheckoutFlow: non-200 response', res.status, text.slice(0, 200));
-    } else {
-      console.log('notifyN8nCheckoutFlow ok', { status: res.status, text: text.slice(0, 200) });
-    }
-    return res.ok;
-  } catch (err) {
-    console.error('notifyN8nCheckoutFlow error', err);
-    return false;
-  }
-}
-
 async function notifyN8nKeyWebhook(env, payload) {
-  const url = env.N8N_KEY_WEBHOOK_URL || '';
+  const url = env.N8N_RENT_KEY_URL || env.N8N_KEY_WEBHOOK_URL || '';
   if (!url) {
     console.warn('notifyN8nKeyWebhook: missing webhook URL');
     return false;
