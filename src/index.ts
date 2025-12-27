@@ -1915,7 +1915,7 @@ function quickKeywordReply(text, env) {
     const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
     return [
       { type: 'text', text: `อัปเดตวันที่ ${today}` },
-      { type: 'text', text: `สถานะห้อง: ตึก A เต็มแล้วค่ะ ตึก B ยังมีห้องว่างอยู่ หากสนใจจองสามารถเช็กห้องว่างตอนนี้และจองผ่านเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
+      { type: 'text', text: `สถานะ ณ ตอนนี้เหลือห้องตึกละไม่เกิน 2-3 ห้อง โปรดลองหาห้องตามชั้นในเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
     ];
   }
 
