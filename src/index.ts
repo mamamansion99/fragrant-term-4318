@@ -2506,7 +2506,7 @@ async function handleCheckoutStart(env, opts) {
 
   if (cached) {
     const msg = [
-      'กำลังดำเนินการอยู่แล้ว',
+      `กำลังดูแลคำขอเช็คเอ้าท์ห้อง ${roomId} อยู่แล้วนะคะ 💚`,
       cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
     ].filter(Boolean).join('\n');
     if (targetChatId) {
