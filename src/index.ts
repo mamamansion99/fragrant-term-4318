@@ -2497,6 +2497,7 @@ async function handleCheckoutStart(env, opts) {
   const userId = ev?.source?.userId || '';
   const ts = ev?.timestamp || Date.now();
   const chatId = getChatId(ev);
+  const targetChatId = chatId || getChatId(ev) || '';
 
   console.log('checkout_trigger', { roomId, text: text.slice(0, 80), userId });
 
@@ -2508,7 +2509,9 @@ async function handleCheckoutStart(env, opts) {
       'กำลังดำเนินการอยู่แล้ว',
       cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
     ].filter(Boolean).join('\n');
-    if (replyToken) {
+    if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg).catch(console.error);
+    } else if (replyToken) {
       await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]).catch(console.error);
     }
     return true;
@@ -2544,19 +2547,19 @@ async function handleCheckoutStart(env, opts) {
       ].filter(Boolean);
 
       const finalText = lines.join('\n');
-      if (replyToken) {
+      if (targetChatId) {
+        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(console.error);
+      } else if (replyToken) {
         await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(console.error);
-      } else if (chatId) {
-        await linePushText(env.LINE_ACCESS_TOKEN, chatId, finalText).catch(console.error);
       }
     } catch (err) {
       console.error('checkout_start_failed', { roomId, err: String(err) });
       await kvDel(env, kvKey);
       const failText = 'ระบบมีปัญหา กรุณาลองใหม่';
-      if (replyToken) {
+      if (targetChatId) {
+        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
+      } else if (replyToken) {
         await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: failText }]).catch(console.error);
-      } else if (chatId) {
-        await linePushText(env.LINE_ACCESS_TOKEN, chatId, failText).catch(console.error);
       }
     }
   });
