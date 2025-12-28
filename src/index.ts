@@ -2509,11 +2509,16 @@ async function handleCheckoutStart(env, opts) {
       `กำลังดูแลคำขอเช็คเอ้าท์ห้อง ${roomId} อยู่แล้วนะคะ 💚`,
       cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
     ].filter(Boolean).join('\n');
-    if (targetChatId) {
-      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg).catch(console.error);
-    } else if (replyToken) {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]).catch(console.error);
+    let sent = false;
+    if (replyToken) {
+      try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]); sent = true; }
+      catch (e) { console.error('checkout_cached_reply_fail', e); }
     }
+    if (targetChatId) {
+      try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg); sent = true; }
+      catch (e) { console.error('checkout_cached_push_fail', e); }
+    }
+    if (!sent) console.error('checkout_cached_no_channel', { roomId, userId });
     return true;
   }
 
