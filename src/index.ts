@@ -2507,29 +2507,6 @@ async function handleCheckoutStart(env, opts) {
 
   console.log('checkout_trigger', { roomId, text: text.slice(0, 80), userId });
 
-  const kvKey = `checkout:start:${roomId}`;
-  const cached = await kvGet(env, kvKey);
-
-  if (cached) {
-    const msg = [
-      `กำลังดูแลคำขอเช็คเอ้าท์ห้อง ${roomId} อยู่แล้วนะคะ 💚`,
-      cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
-    ].filter(Boolean).join('\n');
-    // Prefer replyToken; fallback to push
-    if (replyToken) {
-      try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]); return true; }
-      catch (e) { console.error('checkout_cached_reply_fail', e); }
-    }
-    if (targetChatId) {
-      try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg); return true; }
-      catch (e) { console.error('checkout_cached_push_fail', e); }
-    }
-    console.error('checkout_cached_no_channel', { roomId, userId });
-    return true;
-  }
-
-  await kvPut(env, kvKey, { status:'pending', roomId, ts: Date.now() }, CHECKOUT_FLOW_TTL_SECONDS);
-
   // Immediate ack to user to avoid silence while waiting for n8n
   if (replyToken) {
     const ack = `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`;
@@ -2556,8 +2533,6 @@ async function handleCheckoutStart(env, opts) {
       };
       const res = await notifyN8nCheckoutStart(env, payload);
       console.log('checkout_n8n_ok', { roomId, flowId: res?.flowId || '', mainUrl: res?.mainUrl ? 'yes' : 'no' });
-      // Clear state once n8n responds OK so future triggers can proceed immediately
-      await kvDel(env, kvKey);
 
       const lines = [
         `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
