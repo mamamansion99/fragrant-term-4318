@@ -2504,7 +2504,7 @@ async function handleCheckoutStart(env, opts) {
   const kvKey = `checkout:start:${roomId}`;
   const cached = await kvGet(env, kvKey);
 
-  if (cached && cached.mainUrl) {
+  if (cached) {
     const msg = [
       'กำลังดำเนินการอยู่แล้ว',
       cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
