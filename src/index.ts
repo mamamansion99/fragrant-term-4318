@@ -2485,7 +2485,8 @@ async function notifyN8nCheckoutStart(env, payload) {
   return {
     flowId: data?.flowId || data?.id || '',
     mainUrl: data?.mainUrl || data?.url || '',
-    dueAt: data?.dueAt || data?.due || ''
+    dueAt: data?.dueAt || data?.due || '',
+    raw: data
   };
 }
 
@@ -2509,16 +2510,16 @@ async function handleCheckoutStart(env, opts) {
       `กำลังดูแลคำขอเช็คเอ้าท์ห้อง ${roomId} อยู่แล้วนะคะ 💚`,
       cached.mainUrl ? `ลิงก์ติดตาม: ${cached.mainUrl}` : ''
     ].filter(Boolean).join('\n');
-    let sent = false;
+    // Prefer replyToken; fallback to push
     if (replyToken) {
-      try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]); sent = true; }
+      try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: msg }]); return true; }
       catch (e) { console.error('checkout_cached_reply_fail', e); }
     }
     if (targetChatId) {
-      try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg); sent = true; }
+      try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, msg); return true; }
       catch (e) { console.error('checkout_cached_push_fail', e); }
     }
-    if (!sent) console.error('checkout_cached_no_channel', { roomId, userId });
+    console.error('checkout_cached_no_channel', { roomId, userId });
     return true;
   }
 
@@ -2550,7 +2551,8 @@ async function handleCheckoutStart(env, opts) {
       };
       const res = await notifyN8nCheckoutStart(env, payload);
       console.log('checkout_n8n_ok', { roomId, flowId: res?.flowId || '', mainUrl: res?.mainUrl ? 'yes' : 'no' });
-      await kvPut(env, kvKey, { ...res, roomId, ts: Date.now() }, CHECKOUT_FLOW_TTL_SECONDS);
+      // Clear state once n8n responds OK so future triggers can proceed immediately
+      await kvDel(env, kvKey);
 
       const lines = [
         `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
