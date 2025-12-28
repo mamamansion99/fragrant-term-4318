@@ -2458,13 +2458,18 @@ async function notifyN8nCheckoutStart(env, payload) {
   const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
   if (secret) headers['x-mm-secret'] = secret;
 
+  console.log('checkout_webhook_req', { url, roomId: payload?.roomId || '', hasSecret: !!secret });
+
   const res = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify(payload)
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000)
   });
 
   const text = await res.text().catch(() => '');
+  console.log('checkout_webhook_res', { status: res.status, ok: res.ok, body: text.slice(0, 200) });
+
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) {
     // If n8n returns plain text (e.g., "Workflow was started"), wrap it
