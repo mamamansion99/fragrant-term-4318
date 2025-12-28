@@ -2522,7 +2522,14 @@ async function handleCheckoutStart(env, opts) {
   // Immediate ack to user to avoid silence while waiting for n8n
   if (replyToken) {
     const ack = `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`;
-    try { await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: ack }]); } catch (e) { console.error('checkout_ack_fail', e); }
+    try {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: ack }]);
+    } catch (e) {
+      console.error('checkout_ack_fail', e);
+      if (targetChatId) {
+        try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, ack); } catch (e2) { console.error('checkout_ack_push_fail', e2); }
+      }
+    }
   } else if (chatId) {
     ctxWaitPush(env, chatId, `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`);
   }
@@ -2548,9 +2555,9 @@ async function handleCheckoutStart(env, opts) {
 
       const finalText = lines.join('\n');
       if (targetChatId) {
-        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(console.error);
+        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(err => console.error('checkout_final_push_fail', err));
       } else if (replyToken) {
-        await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(console.error);
+        await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(err => console.error('checkout_final_reply_fail', err));
       }
     } catch (err) {
       console.error('checkout_start_failed', { roomId, err: String(err) });
