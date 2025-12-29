@@ -2565,7 +2565,6 @@ async function handleCheckoutStart(env, opts) {
     } catch (err) {
       const errMsg = String(err && err.message ? err.message : err);
       console.error('checkout_start_failed', { roomId, err: errMsg });
-      await kvDel(env, kvKey);
       const failText = `ระบบมีปัญหา กรุณาลองใหม่ (checkout: ${errMsg.slice(0,80)})`;
       if (targetChatId) {
         await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
