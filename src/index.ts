@@ -2454,21 +2454,37 @@ async function notifyN8nCheckoutStart(env, payload) {
   const url = getCheckoutWebhook(env);
   if (!url) throw new Error('missing checkout webhook URL');
 
-  const headers = { 'Content-Type': 'application/json' };
+  const headers = { 'Content-Type': 'application/json', 'accept': 'application/json' };
   const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
   if (secret) headers['x-mm-secret'] = secret;
 
   console.log('checkout_webhook_req', { url, roomId: payload?.roomId || '', hasSecret: !!secret });
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(payload),
-    signal: AbortSignal.timeout(15000)
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000)
+    });
+  } catch (e) {
+    console.log('checkout_webhook_error', {
+      message: e?.message,
+      name: e?.name,
+      stack: e?.stack ? String(e.stack).slice(0, 300) : ''
+    });
+    throw e;
+  }
 
   const text = await res.text().catch(() => '');
-  console.log('checkout_webhook_res', { status: res.status, ok: res.ok, body: text.slice(0, 200) });
+  console.log('checkout_webhook_res', {
+    status: res.status,
+    ok: res.ok,
+    location: res.headers.get('location'),
+    bodyPreview: text.slice(0, 300)
+  });
 
   let data = null;
   try { data = text ? JSON.parse(text) : null; } catch (_) {
