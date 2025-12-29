@@ -2535,55 +2535,45 @@ async function handleCheckoutStart(env, opts) {
       }
     }
   } else if (chatId) {
-    ctxWaitPush(env, chatId, `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`);
+    try { await linePushText(env.LINE_ACCESS_TOKEN, chatId, `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`); }
+    catch (e3) { console.error('checkout_ack_push_fail', e3); }
   }
 
-  ctxWait(async () => {
-    try {
-      const payload = {
-        source: 'LINE_TEXT',
-        roomId,
-        lineUserId: userId,
-        text,
-        timestamp: ts
-      };
-      const res = await notifyN8nCheckoutStart(env, payload);
-      console.log('checkout_n8n_ok', { roomId, flowId: res?.flowId || '', mainUrl: res?.mainUrl ? 'yes' : 'no' });
+  try {
+    const payload = {
+      source: 'LINE_TEXT',
+      roomId,
+      lineUserId: userId,
+      text,
+      timestamp: ts
+    };
+    const res = await notifyN8nCheckoutStart(env, payload);
+    console.log('checkout_n8n_ok', { roomId, flowId: res?.flowId || '', mainUrl: res?.mainUrl ? 'yes' : 'no' });
 
-      const lines = [
-        `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
-        res?.dueAt ? `กำหนดตรวจ/ปิดงานภายใน: ${res.dueAt}` : '',
-        res?.mainUrl ? `ลิงก์ติดตาม: ${res.mainUrl}` : ''
-      ].filter(Boolean);
+    const lines = [
+      `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
+      res?.dueAt ? `กำหนดตรวจ/ปิดงานภายใน: ${res.dueAt}` : '',
+      res?.mainUrl ? `ลิงก์ติดตาม: ${res.mainUrl}` : ''
+    ].filter(Boolean);
 
-      const finalText = lines.join('\n');
-      if (targetChatId) {
-        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(err => console.error('checkout_final_push_fail', err));
-      } else if (replyToken) {
-        await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(err => console.error('checkout_final_reply_fail', err));
-      }
-    } catch (err) {
-      const errMsg = String(err && err.message ? err.message : err);
-      console.error('checkout_start_failed', { roomId, err: errMsg });
-      const failText = `ระบบมีปัญหา กรุณาลองใหม่ (checkout: ${errMsg.slice(0,80)})`;
-      if (targetChatId) {
-        await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
-      } else if (replyToken) {
-        await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: failText }]).catch(console.error);
-      }
+    const finalText = lines.join('\n');
+    if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(err => console.error('checkout_final_push_fail', err));
+    } else if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(err => console.error('checkout_final_reply_fail', err));
     }
-  });
+  } catch (err) {
+    const errMsg = String(err && err.message ? err.message : err);
+    console.error('checkout_start_failed', { roomId, err: errMsg });
+    const failText = `ระบบมีปัญหา กรุณาลองใหม่ (checkout: ${errMsg.slice(0,80)})`;
+    if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
+    } else if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: failText }]).catch(console.error);
+    }
+  }
 
   return true;
-}
-
-// Wrapper to schedule async tasks safely
-function ctxWait(fn){
-  Promise.resolve().then(fn).catch(err => console.error('ctxWait error', err));
-}
-
-function ctxWaitPush(env, chatId, text){
-  Promise.resolve(linePushText(env.LINE_ACCESS_TOKEN, chatId, text)).catch(console.error);
 }
 
 async function notifyN8nKeyWebhook(env, payload) {
