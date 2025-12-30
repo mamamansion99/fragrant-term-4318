@@ -621,6 +621,13 @@ if (url.pathname.startsWith('/api/moveout')) {
   });
 }
 
+    if (request.method === 'GET' && url.pathname === '/debug/postback') {
+      const sample = url.searchParams.get('data') || 'action=CONTINUE&room=A106&end=2026-02-27&inq=INQ_A106_2026-02-27_xxxxxx';
+      const parsed = parsePostbackData(sample);
+      const body = JSON.stringify({ raw: sample, parsed }, null, 2);
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
 
     // Custom callback for tenant ID change completion
     if (request.method === 'POST' && url.pathname === '/tenant-change-complete') {
@@ -651,6 +658,7 @@ if (url.pathname.startsWith('/api/moveout')) {
     const payload = JSON.parse(bodyText || '{}');
     const events = Array.isArray(payload.events) ? payload.events : [];
     const firstEvent = events[0];
+    const replyToLine = createReplyToLine(env);
 
     if (firstEvent?.source?.type === 'group') {
       console.log('GROUP ID:', firstEvent.source.groupId);
@@ -685,6 +693,96 @@ if (url.pathname.startsWith('/api/moveout')) {
        * --------------------- */
       if (ev.type === 'postback') {
         const data = parsePostbackData(ev.postback?.data || '');
+        const pickFirst = (v) => Array.isArray(v) ? v[0] : v;
+        const normalize = (v) => {
+          if (v === undefined || v === null) return '';
+          return String(pickFirst(v) || '').trim();
+        };
+        const actionRaw = normalize(data.action || data.act);
+        const action = actionRaw.toUpperCase();
+        const room = normalize(data.room || data.roomId || data.r);
+        const end = normalize(data.end || data.endDate || data.checkout);
+        const inq = normalize(data.inq || data.inquiry || data.inquiryId);
+        const postbackLog = {
+          action,
+          room,
+          end,
+          inq,
+          userId: ev?.source?.userId || '',
+          timestamp: new Date(ev?.timestamp || Date.now()).toISOString()
+        };
+        console.log('line_postback', postbackLog);
+
+        const isContractRenewalAction = action === 'CONTINUE' || action === 'LEAVE' || action === 'UNDECIDED';
+        const looksLikeContractRenewal =
+          isContractRenewalAction ||
+          Object.prototype.hasOwnProperty.call(data, 'inq') ||
+          Object.prototype.hasOwnProperty.call(data, 'inquiry') ||
+          Object.prototype.hasOwnProperty.call(data, 'inquiryId');
+
+        if (looksLikeContractRenewal && (!action || !inq)) {
+          console.warn('contract_renewal_postback_missing_fields', postbackLog);
+          try {
+            await replyToLine(replyToken, [{ type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่อีกครั้ง' }]);
+          } catch (err) {
+            console.error('contract_renewal_reply_fail', err);
+          }
+          continue;
+        }
+
+        if (isContractRenewalAction) {
+
+          const renewalPayload = {
+            source: 'line_postback',
+            eventId: ev?.webhookEventId || ev?.replyToken || '',
+            timestamp: ev?.timestamp || Date.now(),
+            userId: ev?.source?.userId || '',
+            replyToken: replyToken || '',
+            action,
+            inquiryId: inq,
+            roomId: room || '',
+            contractEnd: end || ''
+          };
+          ctx.waitUntil(
+            notifyN8nRenewalPostback(env, renewalPayload)
+              .catch((err) => console.error('contract_renewal_notify_fail', err))
+          );
+
+          const roomLabel = room || 'ไม่ระบุ';
+          const replyMap = {
+            CONTINUE: `รับทราบค่ะ ✅ ห้อง ${roomLabel} แจ้งว่า “อยู่ต่อ” แล้ว`,
+            LEAVE: `รับทราบค่ะ 🚚 ห้อง ${roomLabel} แจ้งว่า “ย้ายออก” แล้ว แอดมินจะติดต่อกลับเพื่อขั้นตอนถัดไป`,
+            UNDECIDED: `รับทราบค่ะ 🤔 ห้อง ${roomLabel} แจ้งว่า “ยังไม่แน่ใจ” แล้ว หากพร้อมเมื่อไหร่กดเลือกได้อีกครั้ง`
+          };
+
+          try {
+            await replyToLine(replyToken, [{ type: 'text', text: replyMap[action] || 'รับทราบค่ะ' }]);
+          } catch (err) {
+            console.error('contract_renewal_reply_fail', err);
+          }
+
+          if (action === 'LEAVE') {
+            const ownerGroupId = env.OWNER_GROUP_ID || '';
+            const leavePushEnabled = String(env.ENABLE_LEAVE_PUSH || '').toLowerCase() === 'true';
+            if (ownerGroupId && leavePushEnabled) {
+              const now = `${formatDateBangkok()} ${formatTimeBangkok()}`;
+              const summary = [
+                '🚚 Tenant plans to leave',
+                `Room: ${roomLabel}`,
+                `EndDate: ${end || '-'}`,
+                `InquiryId: ${inq}`,
+                `Time: ${now}`
+              ].join('\n');
+
+              ctx.waitUntil(
+                linePushText(env.LINE_ACCESS_TOKEN, ownerGroupId, summary)
+                  .catch((err) => console.error('contract_renewal_leave_push_fail', err))
+              );
+            }
+          }
+
+          continue;
+        }
 
         // Move-out postbacks handled at Edge
         if (data.act === 'moveout_yes' || data.act === 'moveout_cancel') {
@@ -1782,6 +1880,40 @@ async function lineReply(channelToken, replyToken, messages) {
   }
 }
 
+function createReplyToLine(env) {
+  return async function replyToLine(replyToken, messages) {
+    if (!replyToken) return;
+    if (!env.LINE_ACCESS_TOKEN) {
+      throw new Error('replyToLine: missing LINE_ACCESS_TOKEN');
+    }
+    return lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages);
+  };
+}
+
+async function notifyN8nRenewalPostback(env, payload) {
+  const url = env.N8N_RENEWAL_POSTBACK_URL || '';
+  if (!url) {
+    console.warn('notifyN8nRenewalPostback: missing webhook URL');
+    return false;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nRenewalPostback non-200', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nRenewalPostback error', err);
+    return false;
+  }
+}
+
 async function verifySig(bodyText, signature, channelSecret) {
   if (!channelSecret || !signature) return false;
 
@@ -1852,6 +1984,25 @@ function parsePostbackData(raw) {
     } catch (err) {
       console.warn('parsePostbackData JSON parse failed', err);
     }
+  }
+
+  try {
+    const params = new URLSearchParams(input);
+    const out = {};
+    for (const [key, value] of params.entries()) {
+      if (!key) continue;
+      if (Object.prototype.hasOwnProperty.call(out, key)) {
+        const prev = out[key];
+        out[key] = Array.isArray(prev) ? prev.concat(value) : [prev, value];
+      } else {
+        out[key] = value;
+      }
+    }
+    if (Object.keys(out).length > 0) {
+      return out;
+    }
+  } catch (err) {
+    console.warn('parsePostbackData URLSearchParams failed', err);
   }
 
   return parseKv(input);
