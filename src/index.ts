@@ -482,6 +482,23 @@ async function reservationAdminCall(env, action, payload) {
   return { ok: res.ok && (data.ok !== false), data };
 }
 
+async function reservationAdminCallWithAuthGuard(env, action, payload) {
+  const urlBase = getReservationGas(env);
+  const key = getReservationAdminKey(env);
+  if (!urlBase || !key) {
+    throw new Error('missing_reservation_config');
+  }
+  const res = await reservationAdminCall(env, action, payload);
+  if (!res.ok) {
+    const err = (res.data && res.data.error) || '';
+    if (err === 'unauthorized') throw new Error('reservation_admin_unauthorized');
+    if (err && typeof err === 'string' && err.includes('missing_MM_V2_SPREADSHEET_ID')) {
+      throw new Error('reservation_missing_sheet');
+    }
+  }
+  return res;
+}
+
 async function forwardToSpecificGas(env, gasUrl, body) {
   const secret = env.WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret };
@@ -1520,7 +1537,7 @@ if (
             const resvUrl = getReservationGas(env);
             if (adminKey && resvUrl && userId) {
               ctx.waitUntil(
-                reservationAdminCall(env, 'reservation_bind_line', {
+                reservationAdminCallWithAuthGuard(env, 'reservation_bind_line', {
                   reservation_id: bookingCode.replace(/^#/, ''),
                   line_user_id: userId
                 }).catch((err) => console.error('reservation_bind_line failed', err))
@@ -1734,12 +1751,12 @@ if (
               try {
                 const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
                 const resId = bookingCode.replace(/^#/, '');
-                const upload = await reservationAdminCall(env, 'reservation_upload_slip', {
+                const upload = await reservationAdminCallWithAuthGuard(env, 'reservation_upload_slip', {
                   reservation_id: resId,
                   dataUrl
                 });
                 if (upload?.ok) {
-                  await reservationAdminCall(env, 'reservation_slip_yes', { reservation_id: resId }).catch(() => {});
+                  await reservationAdminCallWithAuthGuard(env, 'reservation_slip_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
                 } else {
                   uploadError = JSON.stringify(upload?.data || {});
@@ -1750,7 +1767,10 @@ if (
               }
 
               if (!handled) {
-                const msg = 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
+                const msg = isAuth
+                  ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
@@ -1778,12 +1798,12 @@ if (
               try {
                 const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
                 const resId = bookingCode.replace(/^#/, '');
-                const upload = await reservationAdminCall(env, 'reservation_upload_id', {
+                const upload = await reservationAdminCallWithAuthGuard(env, 'reservation_upload_id', {
                   reservation_id: resId,
                   dataUrl
                 });
                 if (upload?.ok) {
-                  await reservationAdminCall(env, 'reservation_id_yes', { reservation_id: resId }).catch(() => {});
+                  await reservationAdminCallWithAuthGuard(env, 'reservation_id_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
                 } else {
                   uploadError = JSON.stringify(upload?.data || {});
@@ -1794,7 +1814,10 @@ if (
               }
 
               if (!handled) {
-                const msg = 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
+                const msg = isAuth
+                  ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
