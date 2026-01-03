@@ -1841,6 +1841,15 @@ if (
             }
           }
 
+          // No booking flow active -> prompt user to resend code
+          const noBookingMsg = 'ยังไม่พบรหัสจองสำหรับไฟล์นี้ โปรดพิมพ์รหัส เช่น #MM123 แล้วส่งสลิปอีกครั้ง';
+          if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, noBookingMsg).catch(console.error));
+          } else if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: noBookingMsg }]).catch(console.error);
+          }
+          continue;
+
           // Not in any known flow
           const noFlowMsg = 'ตอนนี้ยังไม่ได้อยู่ในสเต็ปใดเลย ต้องการทำขั้นตอนใดครับ? หากเป็นการจองให้พิมพ์รหัส เช่น #MM123';
           if (replyToken) {
