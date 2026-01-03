@@ -1527,9 +1527,6 @@ if (
                 }).catch((err) => console.error('reservation_bind_line failed', err))
               );
             }
-
-            // Still forward to legacy GAS if present (compat)
-            ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
 
@@ -1749,10 +1746,7 @@ if (
                 console.error('reservation slip upload failed', err);
               }
 
-              if (!handled) {
-                ctx.waitUntil(forwardToGas(env, { events: [ev] }));
-                continue;
-              }
+              if (!handled) continue;
 
               const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
               const nextFlow = { phase: 'await_id', code: bookingCode, ts: Date.now(), expiresAt };
@@ -1789,10 +1783,7 @@ if (
                 console.error('reservation id upload failed', err);
               }
 
-              if (!handled) {
-                ctx.waitUntil(forwardToGas(env, { events: [ev] }));
-                continue;
-              }
+              if (!handled) continue;
 
               ctx.waitUntil(kvDel(env, bookingFlowKey));
               const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
