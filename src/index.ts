@@ -1768,10 +1768,13 @@ if (
 
               if (!handled) {
                 const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
+                const isNotFound = uploadError.includes('not_found');
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  : isNotFound
+                  ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
                   : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
-                console.log('reservation slip failed', { error: uploadError || '(empty)' });
+                console.log('reservation slip failed', { code: bookingCode, error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
@@ -1816,10 +1819,13 @@ if (
 
               if (!handled) {
                 const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
+                const isNotFound = uploadError.includes('not_found');
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  : isNotFound
+                  ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
                   : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
-                console.log('reservation id failed', { error: uploadError || '(empty)' });
+                console.log('reservation id failed', { code: bookingCode, error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
