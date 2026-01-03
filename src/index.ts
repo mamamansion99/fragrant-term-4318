@@ -1730,6 +1730,7 @@ if (
 
             if (phase === 'await_slip') {
               let handled = false;
+              let uploadError = '';
               try {
                 const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
                 const resId = bookingCode.replace(/^#/, '');
@@ -1740,12 +1741,19 @@ if (
                 if (upload?.ok) {
                   await reservationAdminCall(env, 'reservation_slip_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
+                } else {
+                  uploadError = JSON.stringify(upload?.data || {});
                 }
               } catch (err) {
+                uploadError = String(err);
                 console.error('reservation slip upload failed', err);
               }
 
-              if (!handled) continue;
+              if (!handled) {
+                const msg = 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                await errorReplyOrPush(env, replyToken, chatId, msg);
+                continue;
+              }
 
               const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
               const nextFlow = { phase: 'await_id', code: bookingCode, ts: Date.now(), expiresAt };
@@ -1766,6 +1774,7 @@ if (
 
             if (phase === 'await_id') {
               let handled = false;
+              let uploadError = '';
               try {
                 const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
                 const resId = bookingCode.replace(/^#/, '');
@@ -1776,12 +1785,19 @@ if (
                 if (upload?.ok) {
                   await reservationAdminCall(env, 'reservation_id_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
+                } else {
+                  uploadError = JSON.stringify(upload?.data || {});
                 }
               } catch (err) {
+                uploadError = String(err);
                 console.error('reservation id upload failed', err);
               }
 
-              if (!handled) continue;
+              if (!handled) {
+                const msg = 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                await errorReplyOrPush(env, replyToken, chatId, msg);
+                continue;
+              }
 
               ctx.waitUntil(kvDel(env, bookingFlowKey));
               const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
@@ -1968,6 +1984,16 @@ function createReplyToLine(env) {
     }
     return lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages);
   };
+}
+
+function errorReplyOrPush(env, replyToken, chatId, text) {
+  if (replyToken) {
+    return lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
+  }
+  if (chatId) {
+    return linePushText(env.LINE_ACCESS_TOKEN, chatId, text).catch(console.error);
+  }
+  return Promise.resolve();
 }
 
 async function notifyN8nRenewalPostback(env, payload) {
