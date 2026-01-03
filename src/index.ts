@@ -435,7 +435,7 @@ function getReservationGas(env){
 }
 
 function getReservationAdminKey(env){
-  return env.ADMIN_API_KEY || '';
+  return env.MM_WORKER_SECRET || env.WORKER_SECRET || '';
 }
 
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
@@ -486,9 +486,21 @@ async function fetchLineImageAsDataUrl(channelToken, messageId) {
 async function reservationAdminCall(env, action, payload) {
   const urlBase = getReservationGas(env);
   const key = getReservationAdminKey(env);
-  if (!urlBase || !key) throw new Error('missing reservation admin config');
+  if (!urlBase) throw new Error('missing reservation admin config');
   const url = `${urlBase}?action=${encodeURIComponent(action)}`;
-  const body = JSON.stringify({ ...(payload || {}), key });
+  const bodyPayload: Record<string, any> = { ...(payload || {}) };
+  if (key) bodyPayload.worker_secret = key;
+  const body = JSON.stringify(bodyPayload);
+  // Lightweight call log for booking API (no secrets logged)
+  const reservationId = (payload && (payload.reservation_id || payload.code)) || '';
+  const dataUrlLen = payload && typeof payload.dataUrl === 'string' ? payload.dataUrl.length : 0;
+  console.log('booking_call', {
+    action,
+    url,
+    reservationId,
+    hasDataUrl: dataUrlLen > 0,
+    dataUrlLength: dataUrlLen
+  });
   const res = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -496,13 +508,24 @@ async function reservationAdminCall(env, action, payload) {
   });
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : { text: await res.text() };
+  const preview = typeof data === 'string'
+    ? data.slice(0, 200)
+    : JSON.stringify(data).slice(0, 200);
+  console.log('booking_call_res', {
+    action,
+    url,
+    reservationId,
+    status: res.status,
+    ok: res.ok,
+    bodyPreview: preview
+  });
   return { ok: res.ok && (data.ok !== false), data };
 }
 
 async function reservationAdminCallWithAuthGuard(env, action, payload) {
   const urlBase = getReservationGas(env);
   const key = getReservationAdminKey(env);
-  if (!urlBase || !key) {
+  if (!urlBase) {
     throw new Error('missing_reservation_config');
   }
   const res = await reservationAdminCall(env, action, payload);
@@ -517,7 +540,7 @@ async function reservationAdminCallWithAuthGuard(env, action, payload) {
 }
 
 async function forwardToSpecificGas(env, gasUrl, body) {
-  const secret = env.WORKER_SECRET || '';
+  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret };
 
   if (!gasUrl || !secret) {
@@ -556,7 +579,7 @@ async function forwardToSpecificGas(env, gasUrl, body) {
 /** Forward any payload to GAS with header+body secret. Returns boolean ok. */
 async function forwardToGas(env, body) {
   const gasUrl = getWebhookGas(env);
-  const secret = env.WORKER_SECRET || '';
+  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
   const payload = { ...body, workerSecret: secret }; // body secret for edge calls
 
   if (!gasUrl || !secret) {
@@ -657,6 +680,45 @@ export default {
     // CORS preflight for browser
     if (request.method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders(env.ALLOWED_ORIGIN) });
+    }
+
+    // Temporary env diagnostic (remove after use)
+    if (url.pathname === '/debug-env') {
+      const redacted: Record<string, any> = {};
+      for (const [k, v] of Object.entries(env || {})) {
+        const isSecret = /token|secret|key|password/i.test(k);
+        if (isSecret) {
+          const str = String(v || '');
+          redacted[k] = str ? `${str.slice(0, 4)}...(${str.length} chars)` : '';
+        } else {
+          redacted[k] = v;
+        }
+      }
+      return new Response(JSON.stringify(redacted, null, 2), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // Raw LINE passthrough → forward body/headers to GAS
+    const passthroughUrl = env.LINE_PASSTHROUGH_URL || env.RAW_LINE_GAS_URL || '';
+    if (passthroughUrl && request.method === 'POST' && (url.pathname === '/line-raw' || url.pathname === '/line-passthrough')) {
+      const buf = await request.arrayBuffer();
+      const headers = new Headers();
+      request.headers.forEach((v, k) => {
+        if (k.toLowerCase() === 'content-length') return;
+        headers.set(k, v);
+      });
+      if (!headers.has('content-type')) headers.set('content-type', 'application/json');
+
+      const res = await fetch(passthroughUrl, {
+        method: 'POST',
+        headers,
+        body: buf
+      });
+      const resBody = await res.text();
+      const resCt = res.headers.get('content-type') || 'text/plain';
+      return new Response(resBody, { status: res.status, headers: { 'content-type': resCt } });
     }
 
 // Frontend API → proxy to GAS #2
@@ -784,6 +846,12 @@ if (url.pathname.startsWith('/api/moveout')) {
           timestamp: new Date(ev?.timestamp || Date.now()).toISOString()
         };
         console.log('line_postback', postbackLog);
+
+        // Forward booking confirmations to reservation Apps Script for button-driven flow/logging
+        if (action === 'CONFIRM' && getReservationGas(env)) {
+          ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), { events: [ev] }));
+          continue;
+        }
 
         const isContractRenewalAction = action === 'CONTINUE' || action === 'LEAVE' || action === 'UNDECIDED';
         const looksLikeContractRenewal =
@@ -1113,6 +1181,8 @@ if (
         const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
         const keyRent = parseKeyRent(textIn);
         const keyForgot = parseKeyKeyword(textIn); // simple “key A101 20” legacy path
+        const reservationWebhookUrl = getReservationGas(env);
+        const isBookingCodeText = /^#?\s*MM\d{3,}$/i.test(textIn);
 
         const forwardPayRent = () => {
           const rentUrl = getPayRentGas(env);
@@ -1135,6 +1205,11 @@ if (
             notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
           );
         };
+
+        // Proxy booking code to reservation Apps Script for interactive button/logs (in addition to Worker flow)
+        if (reservationWebhookUrl && isBookingCodeText) {
+          ctx.waitUntil(forwardToSpecificGas(env, reservationWebhookUrl, { events: [ev] }));
+        }
 
         if (keyRent) {
           if (keyRent.error === 'MISSING_ROOM') {
@@ -1948,12 +2023,18 @@ if (
           // Booking flow gates (slip -> ID)
           const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
           const bookingFlow = await kvGet(env, bookingFlowKey);
+          const reservationWebhookUrl = getReservationGas(env);
 
           if (bookingFlow && bookingFlow.phase) {
             const phase = bookingFlow.phase || 'await_slip';
             const age = Date.now() - (bookingFlow.ts || 0);
             const ttlMs = (phase === 'await_id' || phase === 'confirm_id') ? BOOKING_ID_TTL_MS : BOOKING_SLIP_TTL_MS;
             const expired = age > ttlMs;
+
+            // Mirror slip/ID events to reservation GAS for logging/legacy flows
+            if (reservationWebhookUrl) {
+              ctx.waitUntil(forwardToSpecificGas(env, reservationWebhookUrl, { events: [ev] }));
+            }
 
             const bookingCode = bookingFlow.code || '#MMxxx';
             const codeHint = bookingCode.toUpperCase();
@@ -2025,7 +2106,7 @@ if (
                 const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
                 const isNotFound = uploadError.includes('not_found');
                 const msg = isAuth
-                  ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า WORKER_SECRET ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : isNotFound
                   ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
                   : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
@@ -2105,7 +2186,7 @@ if (
                 const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
                 const isNotFound = uploadError.includes('not_found');
                 const msg = isAuth
-                  ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
+                  ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า WORKER_SECRET ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : isNotFound
                   ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
                   : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
