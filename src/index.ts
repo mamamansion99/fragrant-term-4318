@@ -1506,8 +1506,7 @@ if (
             const expireText = formatTimeBangkok(new Date(expiresAt));
             const reply = [
               `รับรหัสจอง ${bookingCode} แล้ว`,
-              `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`,
-              'ถ้าหมดเวลาแล้วให้พิมพ์รหัสอีกครั้ง เช่น #MM123'
+              `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`
             ].join('\n');
 
             if (replyToken) {
@@ -1714,12 +1713,12 @@ if (
 
             const bookingCode = bookingFlow.code || '#MMxxx';
             const codeHint = bookingCode.toUpperCase();
-            const retryText = `หมดเวลาส่งไฟล์แล้ว โปรดพิมพ์รหัสจอง เช่น ${codeHint} เพื่อเริ่มใหม่`;
+            const retryText = 'หมดเวลาส่งไฟล์แล้ว โปรดติดต่อเจ้าหน้าที่เพื่อดำเนินการต่อ';
 
             if (expired) {
               ctx.waitUntil(kvDel(env, bookingFlowKey));
               const message = phase === 'await_id'
-                ? `หมดเวลาส่งบัตรแล้ว โปรดพิมพ์รหัสจอง เช่น ${codeHint} เพื่อเริ่มใหม่`
+                ? 'หมดเวลาส่งบัตรแล้ว โปรดติดต่อเจ้าหน้าที่เพื่อดำเนินการต่อ'
                 : retryText;
               if (replyToken) {
                 await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: message }]).catch(console.error);
@@ -1755,8 +1754,7 @@ if (
               const expireText = formatTimeBangkok(new Date(expiresAt));
               const msg = [
                 `รับสลิปจอง ${bookingCode} แล้ว`,
-                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`,
-                `หากหมดเวลาแล้วให้พิมพ์รหัสอีกครั้ง เช่น ${bookingCode}`
+                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`
               ].join('\n');
               if (replyToken) {
                 await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
