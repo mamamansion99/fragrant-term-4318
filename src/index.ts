@@ -417,6 +417,10 @@ function getReservationGas(env){
   return env.RESERVATION_URL || '';
 }
 
+function getReservationAdminKey(env){
+  return env.ADMIN_API_KEY || '';
+}
+
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
 function getMoveoutGas(env){
   return env.MOVEOUT_GAS_URL || '';
@@ -442,6 +446,40 @@ function getPayRentGas(env){
 
 function getN8nPayRentUrl(env){
   return env.N8N_PAYRENT_URL || '';
+}
+
+async function fetchLineImageAsDataUrl(channelToken, messageId) {
+  if (!channelToken || !messageId) throw new Error('missing token or messageId');
+  const res = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${channelToken}` }
+  });
+  if (!res.ok) throw new Error(`line media fetch failed ${res.status}`);
+  const ct = res.headers.get('content-type') || 'image/jpeg';
+  const buf = await res.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i += 1) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64 = btoa(binary);
+  return `data:${ct};base64,${base64}`;
+}
+
+async function reservationAdminCall(env, action, payload) {
+  const urlBase = getReservationGas(env);
+  const key = getReservationAdminKey(env);
+  if (!urlBase || !key) throw new Error('missing reservation admin config');
+  const url = `${urlBase}?action=${encodeURIComponent(action)}`;
+  const body = JSON.stringify({ ...(payload || {}), key });
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body
+  });
+  const ct = (res.headers.get('content-type') || '').toLowerCase();
+  const data = ct.includes('application/json') ? await res.json().catch(() => ({})) : { text: await res.text() };
+  return { ok: res.ok && (data.ok !== false), data };
 }
 
 async function forwardToSpecificGas(env, gasUrl, body) {
@@ -1478,6 +1516,19 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reply).catch(console.error));
             }
 
+            // Bind Line ID to reservation (new backend) and set to pending payment window
+            const adminKey = getReservationAdminKey(env);
+            const resvUrl = getReservationGas(env);
+            if (adminKey && resvUrl && userId) {
+              ctx.waitUntil(
+                reservationAdminCall(env, 'reservation_bind_line', {
+                  reservation_id: bookingCode.replace(/^#/, ''),
+                  line_user_id: userId
+                }).catch((err) => console.error('reservation_bind_line failed', err))
+              );
+            }
+
+            // Still forward to legacy GAS if present (compat)
             ctx.waitUntil(forwardToGas(env, { events: [ev] }));
             continue;
           }
@@ -1682,7 +1733,27 @@ if (
             }
 
             if (phase === 'await_slip') {
-              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+              let handled = false;
+              try {
+                const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
+                const resId = bookingCode.replace(/^#/, '');
+                const upload = await reservationAdminCall(env, 'reservation_upload_slip', {
+                  reservation_id: resId,
+                  dataUrl
+                });
+                if (upload?.ok) {
+                  await reservationAdminCall(env, 'reservation_slip_yes', { reservation_id: resId }).catch(() => {});
+                  handled = true;
+                }
+              } catch (err) {
+                console.error('reservation slip upload failed', err);
+              }
+
+              if (!handled) {
+                ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+                continue;
+              }
+
               const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
               const nextFlow = { phase: 'await_id', code: bookingCode, ts: Date.now(), expiresAt };
               ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
@@ -1702,7 +1773,27 @@ if (
             }
 
             if (phase === 'await_id') {
-              ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+              let handled = false;
+              try {
+                const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
+                const resId = bookingCode.replace(/^#/, '');
+                const upload = await reservationAdminCall(env, 'reservation_upload_id', {
+                  reservation_id: resId,
+                  dataUrl
+                });
+                if (upload?.ok) {
+                  await reservationAdminCall(env, 'reservation_id_yes', { reservation_id: resId }).catch(() => {});
+                  handled = true;
+                }
+              } catch (err) {
+                console.error('reservation id upload failed', err);
+              }
+
+              if (!handled) {
+                ctx.waitUntil(forwardToGas(env, { events: [ev] }));
+                continue;
+              }
+
               ctx.waitUntil(kvDel(env, bookingFlowKey));
               const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
               if (replyToken) {
