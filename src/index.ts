@@ -1771,6 +1771,7 @@ if (
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                console.log('reservation slip failed', { error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
@@ -1818,6 +1819,7 @@ if (
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                console.log('reservation id failed', { error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
               }
@@ -2010,11 +2012,11 @@ function createReplyToLine(env) {
 }
 
 function errorReplyOrPush(env, replyToken, chatId, text) {
-  if (replyToken) {
-    return lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
-  }
   if (chatId) {
     return linePushText(env.LINE_ACCESS_TOKEN, chatId, text).catch(console.error);
+  }
+  if (replyToken) {
+    return lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
   }
   return Promise.resolve();
 }
