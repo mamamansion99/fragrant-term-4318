@@ -380,6 +380,22 @@ async function linePushText(channelToken, to, text) {
   }
 }
 
+async function linePush(channelToken, to, messages) {
+  const res = await fetch('https://api.line.me/v2/bot/message/push', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${channelToken}`,
+    },
+    body: JSON.stringify({ to, messages })
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
+  }
+}
+
 async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
   let currentUrl = url;
   let options = { ...init };
@@ -414,7 +430,8 @@ function getWebhookGas(env){
 }
 
 function getReservationGas(env){
-  return env.RESERVATION_URL || '';
+  // Booking flow → prefer MM_V2_URL, otherwise fall back to RESERVATION_URL
+  return env.MM_V2_URL || env.RESERVATION_URL || '';
 }
 
 function getReservationAdminKey(env){
@@ -1507,10 +1524,173 @@ if (
             null;
 
 
+          const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
+          const bookingFlow = await kvGet(env, bookingFlowKey);
+
+          // (E1) Booking flow confirmations (yes/no)
+          const yesNoQuickReply = {
+            quickReply: {
+              items: [
+                { type: 'action', action: { type: 'message', label: 'ใช่', text: 'ใช่' } },
+                { type: 'action', action: { type: 'message', label: 'ไม่ใช่', text: 'ไม่ใช่' } }
+              ]
+            }
+          };
+
+          if (bookingFlow && bookingFlow.phase === 'confirm_slip') {
+            const normalized = textIn.trim().toLowerCase();
+            const isYes = /^y(es)?$/.test(normalized) || /^ใช่/.test(normalized);
+            const isNo = /^no?$/.test(normalized) || /^ไม่/.test(normalized) || /^ไม่ใช่/.test(normalized);
+            const codeHint = bookingFlow.code || '#MMxxx';
+
+            if (!isYes && !isNo) {
+              const prompt = `ยืนยันสลิปสำหรับ ${codeHint} ใช่ไหมคะ? ตอบ "ใช่" หรือ "ไม่ใช่"`;
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: prompt, ...yesNoQuickReply }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [{ type: 'text', text: prompt, ...yesNoQuickReply }]).catch(console.error));
+              }
+              continue;
+            }
+
+            if (isYes) {
+              let ok = false;
+              let uploadError = '';
+              try {
+                const resp = await reservationAdminCallWithAuthGuard(env, 'reservation_slip_yes', {
+                  reservation_id: String(codeHint).replace(/^#/, '')
+                });
+                ok = !!resp?.ok;
+                if (!ok) uploadError = JSON.stringify(resp?.data || resp || {});
+              } catch (err) {
+                uploadError = String(err);
+              }
+
+              if (!ok) {
+                console.log('reservation slip confirm failed', { code: codeHint, error: uploadError || '(empty)' });
+                const msg = 'ยืนยันสลิปไม่สำเร็จ โปรดลองอีกครั้งหรือแจ้งเจ้าหน้าที่ค่ะ';
+                await errorReplyOrPush(env, replyToken, chatId, msg);
+                continue;
+              }
+
+              const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
+              const nextFlow = { phase: 'await_id', code: codeHint, ts: Date.now(), expiresAt };
+              ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
+
+              const expireText = formatTimeBangkok(new Date(expiresAt));
+              const msg = [
+                `ยืนยันสลิป ${codeHint} แล้ว`,
+                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`
+              ].join('\n');
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              }
+              continue;
+            }
+
+            // isNo
+            try {
+              await reservationAdminCallWithAuthGuard(env, 'reservation_slip_no', {
+                reservation_id: String(codeHint).replace(/^#/, '')
+              });
+            } catch (err) {
+              console.log('reservation slip deny failed', { code: codeHint, error: String(err) });
+            }
+
+            const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
+            const nextFlow = { phase: 'await_slip', code: codeHint, ts: Date.now(), expiresAt };
+            ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_SLIP_TTL_SECONDS));
+
+            const expireText = formatTimeBangkok(new Date(expiresAt));
+            const msg = [
+              `ยกเลิกสลิปเดิมสำหรับ ${codeHint} แล้ว`,
+              `โปรดส่งสลิปใหม่ภายใน 60 นาที (หมดอายุ ${expireText})`
+            ].join('\n');
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+            }
+            continue;
+          }
+
+          if (bookingFlow && bookingFlow.phase === 'confirm_id') {
+            const normalized = textIn.trim().toLowerCase();
+            const isYes = /^y(es)?$/.test(normalized) || /^ใช่/.test(normalized);
+            const isNo = /^no?$/.test(normalized) || /^ไม่/.test(normalized) || /^ไม่ใช่/.test(normalized);
+            const codeHint = bookingFlow.code || '#MMxxx';
+
+            if (!isYes && !isNo) {
+              const prompt = `ยืนยันไฟล์บัตรสำหรับ ${codeHint} ใช่ไหมคะ? ตอบ "ใช่" หรือ "ไม่ใช่"`;
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: prompt, ...yesNoQuickReply }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [{ type: 'text', text: prompt, ...yesNoQuickReply }]).catch(console.error));
+              }
+              continue;
+            }
+
+            if (isYes) {
+              let ok = false;
+              let uploadError = '';
+              try {
+                const resp = await reservationAdminCallWithAuthGuard(env, 'reservation_id_yes', {
+                  reservation_id: String(codeHint).replace(/^#/, '')
+                });
+                ok = !!resp?.ok;
+                if (!ok) uploadError = JSON.stringify(resp?.data || resp || {});
+              } catch (err) {
+                uploadError = String(err);
+              }
+
+              if (!ok) {
+                console.log('reservation id confirm failed', { code: codeHint, error: uploadError || '(empty)' });
+                const msg = 'ยืนยันไฟล์บัตรไม่สำเร็จ โปรดลองอีกครั้งหรือแจ้งเจ้าหน้าที่ค่ะ';
+                await errorReplyOrPush(env, replyToken, chatId, msg);
+                continue;
+              }
+
+              ctx.waitUntil(kvDel(env, bookingFlowKey));
+              const msg = `ยืนยันไฟล์บัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              }
+              continue;
+            }
+
+            // isNo
+            try {
+              await reservationAdminCallWithAuthGuard(env, 'reservation_id_no', {
+                reservation_id: String(codeHint).replace(/^#/, '')
+              });
+            } catch (err) {
+              console.log('reservation id deny failed', { code: codeHint, error: String(err) });
+            }
+
+            const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
+            const nextFlow = { phase: 'await_id', code: codeHint, ts: Date.now(), expiresAt };
+            ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
+
+            const expireText = formatTimeBangkok(new Date(expiresAt));
+            const msg = [
+              `ยกเลิกไฟล์บัตรเดิมสำหรับ ${codeHint} แล้ว`,
+              `โปรดส่งรูปบัตรใหม่ภายใน 6 ชม. (หมดอายุ ${expireText})`
+            ].join('\n');
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+            }
+            continue;
+          }
+
           // (F) Booking code → ack + forward
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const bookingCode = extractBookingCode(textIn);
-            const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
             const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
             const flow = {
               phase: 'await_slip',
@@ -1521,15 +1701,62 @@ if (
             ctx.waitUntil(kvPut(env, bookingFlowKey, flow, BOOKING_SLIP_TTL_SECONDS));
 
             const expireText = formatTimeBangkok(new Date(expiresAt));
-            const reply = [
+            const instantAck = [
               `รับรหัสจอง ${bookingCode} แล้ว`,
               `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`
             ].join('\n');
-
+            // Always respond immediately so the user never sees silence
             if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reply }]).catch(console.error);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: instantAck }]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reply).catch(console.error));
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, instantAck).catch(console.error));
+            }
+
+            let ackSent = false;
+            let ackError = '';
+            try {
+              const resp = await reservationAdminCallWithAuthGuard(env, 'reservation_ack', {
+                reservation_id: bookingCode.replace(/^#/, ''),
+                line_user_id: userId || undefined
+              });
+              if (resp?.ok && resp?.data) {
+                const payText = resp.data.payText || [
+                  `รับรหัสจอง ${bookingCode} แล้ว`,
+                  `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`
+                ].join('\n');
+                const msgs: any[] = [{ type: 'text', text: payText }];
+                if (resp.data.qrImageUrl) {
+                  msgs.push({
+                    type: 'image',
+                    originalContentUrl: resp.data.qrImageUrl,
+                    previewImageUrl: resp.data.qrImageUrl
+                  });
+                }
+                // Send follow-up with QR/pay text (we already sent instant ack)
+                if (chatId) {
+                  ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, msgs).catch(console.error));
+                } else if (replyToken) {
+                  await lineReply(env.LINE_ACCESS_TOKEN, replyToken, msgs).catch(console.error);
+                }
+                ackSent = true;
+              } else {
+                ackError = JSON.stringify(resp?.data || resp || {});
+              }
+            } catch (err) {
+              ackError = String(err);
+            }
+
+            if (!ackSent) {
+              if (ackError) {
+                console.warn('reservation_ack failed', {
+                  code: bookingCode,
+                  error: ackError,
+                  userId,
+                  chatId,
+                  resvUrl: getReservationGas(env),
+                  hasAdminKey: !!getReservationAdminKey(env)
+                });
+              }
             }
 
             // Bind Line ID to reservation (new backend) and set to pending payment window
@@ -1725,7 +1952,7 @@ if (
           if (bookingFlow && bookingFlow.phase) {
             const phase = bookingFlow.phase || 'await_slip';
             const age = Date.now() - (bookingFlow.ts || 0);
-            const ttlMs = phase === 'await_id' ? BOOKING_ID_TTL_MS : BOOKING_SLIP_TTL_MS;
+            const ttlMs = (phase === 'await_id' || phase === 'confirm_id') ? BOOKING_ID_TTL_MS : BOOKING_SLIP_TTL_MS;
             const expired = age > ttlMs;
 
             const bookingCode = bookingFlow.code || '#MMxxx';
@@ -1745,7 +1972,7 @@ if (
               continue;
             }
 
-            if (phase === 'await_slip') {
+            if (phase === 'await_slip' || phase === 'confirm_slip') {
               let handled = false;
               let uploadError = '';
               try {
@@ -1756,8 +1983,36 @@ if (
                   dataUrl
                 });
                 if (upload?.ok) {
-                  await reservationAdminCallWithAuthGuard(env, 'reservation_slip_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
+                  const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
+                  const nextFlow = { phase: 'confirm_slip', code: bookingCode, ts: Date.now(), expiresAt };
+                  ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_SLIP_TTL_SECONDS));
+
+                  const expireText = formatTimeBangkok(new Date(expiresAt));
+                  const previewLine = upload?.data?.previewUrl ? `ตัวอย่าง: ${upload.data.previewUrl}` : null;
+                  const msg = [
+                    `รับไฟล์สลิปสำหรับ ${bookingCode} แล้ว`,
+                    `ยืนยันว่าเป็นสลิปนี้หรือไม่? (หมดอายุ ${expireText})`,
+                    previewLine,
+                    `ตอบ "ใช่" หรือ "ไม่ใช่" หากต้องการเปลี่ยนไฟล์ ส่งสลิปใหม่แล้วตอบอีกครั้ง`
+                  ].filter(Boolean).join('\n');
+
+                  const confirmMsg = {
+                    type: 'text',
+                    text: msg,
+                    quickReply: {
+                      items: [
+                        { type: 'action', action: { type: 'message', label: 'ใช่', text: 'ใช่' } },
+                        { type: 'action', action: { type: 'message', label: 'ไม่ใช่', text: 'ไม่ใช่' } }
+                      ]
+                    }
+                  };
+
+                  if (chatId) {
+                    ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmMsg]).catch(console.error));
+                  } else if (replyToken) {
+                    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmMsg]).catch(console.error);
+                  }
                 } else {
                   uploadError = JSON.stringify(upload?.data || {});
                 }
@@ -1786,7 +2041,8 @@ if (
               const expireText = formatTimeBangkok(new Date(expiresAt));
               const msg = [
                 `รับสลิปจอง ${bookingCode} แล้ว`,
-                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`
+                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`,
+                `หากสลิปไม่ถูกต้อง ส่งสลิปใหม่ได้ทันทีแล้วพิมพ์รหัสอีกครั้ง`
               ].join('\n');
               if (chatId) {
                 ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
@@ -1796,7 +2052,7 @@ if (
               continue;
             }
 
-            if (phase === 'await_id') {
+            if (phase === 'await_id' || phase === 'confirm_id') {
               let handled = false;
               let uploadError = '';
               try {
@@ -1807,8 +2063,36 @@ if (
                   dataUrl
                 });
                 if (upload?.ok) {
-                  await reservationAdminCallWithAuthGuard(env, 'reservation_id_yes', { reservation_id: resId }).catch(() => {});
                   handled = true;
+                  const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
+                  const nextFlow = { phase: 'confirm_id', code: bookingCode, ts: Date.now(), expiresAt };
+                  ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
+
+                  const expireText = formatTimeBangkok(new Date(expiresAt));
+                  const previewLine = upload?.data?.previewUrl ? `ตัวอย่าง: ${upload.data.previewUrl}` : null;
+                  const msg = [
+                    `รับไฟล์บัตรสำหรับ ${codeHint} แล้ว`,
+                    `ยืนยันว่าเป็นไฟล์นี้หรือไม่? (หมดอายุ ${expireText})`,
+                    previewLine,
+                    `ตอบ "ใช่" หรือ "ไม่ใช่" หากต้องการเปลี่ยนไฟล์ ส่งบัตรใหม่แล้วตอบอีกครั้ง`
+                  ].filter(Boolean).join('\n');
+
+                  const confirmMsg = {
+                    type: 'text',
+                    text: msg,
+                    quickReply: {
+                      items: [
+                        { type: 'action', action: { type: 'message', label: 'ใช่', text: 'ใช่' } },
+                        { type: 'action', action: { type: 'message', label: 'ไม่ใช่', text: 'ไม่ใช่' } }
+                      ]
+                    }
+                  };
+
+                  if (chatId) {
+                    ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmMsg]).catch(console.error));
+                  } else if (replyToken) {
+                    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmMsg]).catch(console.error);
+                  }
                 } else {
                   uploadError = JSON.stringify(upload?.data || {});
                 }
@@ -1831,7 +2115,10 @@ if (
               }
 
               ctx.waitUntil(kvDel(env, bookingFlowKey));
-              const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
+              const msg = [
+                `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`,
+                `หากต้องการเปลี่ยนไฟล์ ส่งบัตรใหม่ได้ทันทีแล้วพิมพ์รหัสอีกครั้ง`
+              ].join('\n');
               if (chatId) {
                 ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
               } else if (replyToken) {
