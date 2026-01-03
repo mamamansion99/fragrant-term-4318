@@ -1784,10 +1784,10 @@ if (
                 `รับสลิปจอง ${bookingCode} แล้ว`,
                 `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`
               ].join('\n');
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
-              } else if (chatId) {
+              if (chatId) {
                 ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              } else if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
               }
               continue;
             }
@@ -1824,10 +1824,10 @@ if (
 
               ctx.waitUntil(kvDel(env, bookingFlowKey));
               const msg = `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`;
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
-              } else if (chatId) {
+              if (chatId) {
                 ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
+              } else if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
               }
               continue;
             }
