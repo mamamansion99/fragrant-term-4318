@@ -1862,64 +1862,6 @@ if (
               }
             })());
 
-            let ackSent = false;
-            let ackError = '';
-            try {
-              const resp = await reservationAdminCallWithAuthGuard(env, 'reservation_ack', {
-                reservation_id: bookingCode.replace(/^#/, ''),
-                line_user_id: userId || undefined
-              });
-              if (resp?.ok && resp?.data) {
-                const payText = resp.data.payText || [
-                  `รับรหัสจอง ${bookingCode} แล้ว`,
-                  `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`
-                ].join('\n');
-                const msgs: any[] = [{ type: 'text', text: payText }];
-                if (resp.data.qrImageUrl) {
-                  msgs.push({
-                    type: 'image',
-                    originalContentUrl: resp.data.qrImageUrl,
-                    previewImageUrl: resp.data.qrImageUrl
-                  });
-                }
-                // Send follow-up with QR/pay text (we already sent instant ack)
-                if (chatId) {
-                  ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, msgs).catch(console.error));
-                } else if (replyToken) {
-                  await lineReply(env.LINE_ACCESS_TOKEN, replyToken, msgs).catch(console.error);
-                }
-                ackSent = true;
-              } else {
-                ackError = JSON.stringify(resp?.data || resp || {});
-              }
-            } catch (err) {
-              ackError = String(err);
-            }
-
-            if (!ackSent) {
-              if (ackError) {
-                console.warn('reservation_ack failed', {
-                  code: bookingCode,
-                  error: ackError,
-                  userId,
-                  chatId,
-                  resvUrl: getReservationGas(env),
-                  hasAdminKey: !!getReservationAdminKey(env)
-                });
-              }
-            }
-
-            // Bind Line ID to reservation (new backend) and set to pending payment window
-            const adminKey = getReservationAdminKey(env);
-            const resvUrl = getReservationGas(env);
-            if (adminKey && resvUrl && userId) {
-              ctx.waitUntil(
-                reservationAdminCallWithAuthGuard(env, 'reservation_bind_line', {
-                  reservation_id: bookingCode.replace(/^#/, ''),
-                  line_user_id: userId
-                }).catch((err) => console.error('reservation_bind_line failed', err))
-              );
-            }
             continue;
           }
 
