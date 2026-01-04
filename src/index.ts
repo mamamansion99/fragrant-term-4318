@@ -850,6 +850,50 @@ if (url.pathname.startsWith('/api/moveout')) {
         // Forward booking confirmations to reservation Apps Script for button-driven flow/logging
         if (action === 'CONFIRM' && getReservationGas(env)) {
           ctx.waitUntil(forwardToSpecificGas(env, getReservationGas(env), { events: [ev] }));
+          const code = normalize(data.code || data.reservation_id || data.reservationId);
+          if (!code) {
+            await errorReplyOrPush(env, replyToken, getChatId(ev), 'ไม่พบรหัสจองในปุ่ม กรุณาพิมพ์รหัสอีกครั้ง');
+            continue;
+          }
+
+          // Quick acknowledge so user sees progress
+          const debounce = '⏳ กำลังตรวจสอบรหัสจอง…';
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: debounce }]).catch(console.error);
+          } else {
+            const chatId = getChatId(ev);
+            if (chatId) ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, debounce).catch(console.error));
+          }
+
+          let payMsgs: any[] = [];
+          try {
+            const resp = await reservationAdminCallWithAuthGuard(env, 'reservation_ack', {
+              reservation_id: code.replace(/^#/, ''),
+              line_user_id: ev?.source?.userId || ''
+            });
+            if (resp?.ok && resp.data) {
+              const payText = resp.data.payText || '✅ ยืนยันการจองเรียบร้อย\nกรุณาชำระค่าจอง 2000 บาท และส่งสลิปกลับมาที่แชทนี้\nทีมงานจะตรวจสอบและยืนยันให้ภายใน 24 ชม.';
+              payMsgs.push({ type: 'text', text: payText });
+              if (resp.data.qrImageUrl) {
+                payMsgs.push({
+                  type: 'image',
+                  originalContentUrl: resp.data.qrImageUrl,
+                  previewImageUrl: resp.data.qrImageUrl
+                });
+              }
+            }
+          } catch (err) {
+            console.error('reservation_ack on CONFIRM failed', err);
+          }
+
+          if (payMsgs.length) {
+            const chatId = getChatId(ev);
+            if (chatId) {
+              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, payMsgs).catch(console.error));
+            } else if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, payMsgs).catch(console.error);
+            }
+          }
           continue;
         }
 
@@ -1775,16 +1819,11 @@ if (
             };
             ctx.waitUntil(kvPut(env, bookingFlowKey, flow, BOOKING_SLIP_TTL_SECONDS));
 
-            const expireText = formatTimeBangkok(new Date(expiresAt));
-            const instantAck = [
-              `รับรหัสจอง ${bookingCode} แล้ว`,
-              `โปรดส่งสลิปภายใน 60 นาที (หมดอายุ ${expireText})`
-            ].join('\n');
-            // Always respond immediately so the user never sees silence
+            const debounceText = '⏳ กำลังตรวจสอบรหัสจอง…';
             if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: instantAck }]).catch(console.error);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: debounceText }]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, instantAck).catch(console.error));
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, debounceText).catch(console.error));
             }
 
             // Try to fetch reservation details and send a confirm button with name + room
@@ -1808,7 +1847,7 @@ if (
                         `ชื่อ: ${name}`
                       ].join('\n'),
                       actions: [
-                        { type: 'postback', label: 'ยืนยันถูกต้อง', data: `act=confirm&code=${codeRaw}` }
+                        { type: 'postback', label: 'ยืนยัน', data: `act=confirm&code=${codeRaw}` }
                       ]
                     }
                   };
