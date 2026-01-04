@@ -1517,6 +1517,15 @@ if (
             continue;
           }
 
+          // (Booking) Forward booking-code texts directly to reservation GAS (let GAS own state/flow)
+          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+            const resvUrl = getReservationGas(env);
+            if (resvUrl) {
+              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+              continue;
+            }
+          }
+
           // (E) Label → act mapping
           const mappedAct =
             ROOM_LABEL_MAP[textIn] ? ROOM_LABEL_MAP[textIn] :
@@ -1710,19 +1719,6 @@ if (
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: instantAck }]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, instantAck).catch(console.error));
-            }
-
-            // Log which GAS endpoint we are calling (to debug dev vs versioned URL)
-            try {
-              const resvUrl = getReservationGas(env);
-              console.log('BOOKING_FLOW', {
-                code: bookingCode,
-                resvUrl,
-                resvHost: resvUrl ? new URL(resvUrl).host : '',
-                hasAdminKey: !!getReservationAdminKey(env)
-              });
-            } catch (e) {
-              console.warn('BOOKING_FLOW_URL_LOG_FAIL', String(e));
             }
 
             let ackSent = false;
@@ -1967,6 +1963,15 @@ if (
               ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
             }
             continue;
+          }
+
+          // Booking flow: forward booking images directly to reservation GAS (GAS owns slip/ID flow)
+          {
+            const resvUrl = getReservationGas(env);
+            if (resvUrl) {
+              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+              continue;
+            }
           }
 
           // Booking flow gates (slip -> ID)
