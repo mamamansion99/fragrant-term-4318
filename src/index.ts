@@ -1712,6 +1712,19 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, instantAck).catch(console.error));
             }
 
+            // Log which GAS endpoint we are calling (to debug dev vs versioned URL)
+            try {
+              const resvUrl = getReservationGas(env);
+              console.log('BOOKING_FLOW', {
+                code: bookingCode,
+                resvUrl,
+                resvHost: resvUrl ? new URL(resvUrl).host : '',
+                hasAdminKey: !!getReservationAdminKey(env)
+              });
+            } catch (e) {
+              console.warn('BOOKING_FLOW_URL_LOG_FAIL', String(e));
+            }
+
             let ackSent = false;
             let ackError = '';
             let ackResp: any = null;
