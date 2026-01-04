@@ -1787,6 +1787,42 @@ if (
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, instantAck).catch(console.error));
             }
 
+            // Try to fetch reservation details and send a confirm button with name + room
+            ctx.waitUntil((async () => {
+              try {
+                const codeRaw = bookingCode.replace(/^#/, '');
+                const resv = await reservationAdminCallWithAuthGuard(env, 'reservation_get_admin', {
+                  reservation_id: codeRaw
+                });
+                if (resv?.ok && resv.data) {
+                  const roomId = resv.data.roomId || '-';
+                  const name = resv.data.customerName || resv.data.customer_name || '-';
+                  const button = {
+                    type: 'template',
+                    altText: 'ยืนยันข้อมูลการจอง',
+                    template: {
+                      type: 'buttons',
+                      text: [
+                        `รหัส: #${codeRaw}`,
+                        `ห้อง: ${roomId}`,
+                        `ชื่อ: ${name}`
+                      ].join('\n'),
+                      actions: [
+                        { type: 'postback', label: 'ยืนยันถูกต้อง', data: `act=confirm&code=${codeRaw}` }
+                      ]
+                    }
+                  };
+                  if (chatId) {
+                    await linePush(env.LINE_ACCESS_TOKEN, chatId, [button]).catch(console.error);
+                  } else if (replyToken) {
+                    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [button]).catch(console.error);
+                  }
+                }
+              } catch (err) {
+                console.warn('reservation_get_admin for button failed', err);
+              }
+            })());
+
             let ackSent = false;
             let ackError = '';
             try {
