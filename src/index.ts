@@ -765,6 +765,14 @@ if (url.pathname.startsWith('/api/moveout')) {
        * --------------------- */
       if (ev.type === 'postback') {
         const data = parsePostbackData(ev.postback?.data || '');
+        // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
+        if (data.act === 'confirm' || data.act === 'slip_yes' || data.act === 'slip_no' || data.act === 'id_yes' || data.act === 'id_no') {
+          const resvUrl = getReservationGas(env);
+          if (resvUrl) {
+            ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+            continue;
+          }
+        }
         const pickFirst = (v) => Array.isArray(v) ? v[0] : v;
         const normalize = (v) => {
           if (v === undefined || v === null) return '';
