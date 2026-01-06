@@ -793,6 +793,45 @@ if (url.pathname.startsWith('/api/moveout')) {
         };
         console.log('line_postback', postbackLog);
 
+        // Mark paid → quick ack then forward to n8n
+        const markPaidUrl = env.N8N_MARK_PAID_URL || '';
+        if (action === 'MARK_PAID') {
+          const chatId = getChatId(ev);
+          const ackText = data.resId
+            ? `กำลังดำเนินการรหัส ${data.resId} โปรดรอสักครู่…`
+            : 'กำลังดำเนินการ โปรดรอสักครู่…';
+
+          if (replyToken) {
+            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error));
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+
+          if (markPaidUrl) {
+            const headers = { 'Content-Type': 'application/json' };
+            const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+            if (secret) headers['x-worker-secret'] = secret;
+
+            const forwardPayload = {
+              source: 'line_postback',
+              channel: 'mark_paid',
+              event: ev,
+              data,
+              receivedAt: new Date().toISOString()
+            };
+            ctx.waitUntil(
+              fetch(markPaidUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(forwardPayload)
+              }).catch((err) => console.error('mark_paid_forward_failed', err))
+            );
+          } else {
+            console.warn('mark_paid: missing N8N_MARK_PAID_URL');
+          }
+          continue;
+        }
+
         const isContractRenewalAction = action === 'CONTINUE' || action === 'LEAVE' || action === 'UNDECIDED';
         const looksLikeContractRenewal =
           isContractRenewalAction ||
