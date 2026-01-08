@@ -4,10 +4,10 @@
  * 0) Small utilities
  * ========================= */
 function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(str); } // YYYY-MM-DD
-function getChatId(ev)  { return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || ''; }
+function getChatId(ev) { return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || ''; }
 function getStateKey(ev) {
   const chat = getChatId(ev) || 'unknown';
-  const uid  = ev?.source?.userId || 'anon';
+  const uid = ev?.source?.userId || 'anon';
   return `${chat}:${uid}`;
 }
 
@@ -27,7 +27,7 @@ function formatTimeBangkok(date = new Date()) {
 }
 
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
-const maskPhone = (p)=> (p||'').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
+const maskPhone = (p) => (p || '').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
 const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
 const PARKING_KEYWORD_RE = /(ที่จอด|ลานจอด|จอดรถ|ค่าจอด|โรงจอด|ซองจอด)/i;
 const PARKING_INTENT_RE = /(บริการ|อยาก|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|กี่บาท|เท่าไหร่|ว่าง|เต็ม|เอารถมา|นำรถมา)/i;
@@ -173,7 +173,7 @@ const AVAILABILITY_EXCLUDE_REGEXES = [
 ];
 
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
-function isParkingIntent(text){
+function isParkingIntent(text) {
   const normalized = (text || '').trim();
   if (!normalized) return false;
   if (/^\s*บริการ\s*ที่จอดรถ\s*$/i.test(normalized)) return true;
@@ -345,10 +345,10 @@ function parseKeyKeyword(text) {
 /* =========================
  * 1) KV + Loading helpers
  * ========================= */
-function hasKV(env){ return !!(env && env.KV && typeof env.KV.get === 'function'); }
-async function kvGet(env, k){ try{ if(!hasKV(env)) return null; return await env.KV.get(k, 'json'); }catch(_){ return null; } }
-async function kvPut(env, k, v, ttlSeconds){ try{ if(!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 }); }catch(_){ /* no-op */ } }
-async function kvDel(env, k){ try{ if(!hasKV(env)) return; await env.KV.delete(k); }catch(_){ /* no-op */ } }
+function hasKV(env) { return !!(env && env.KV && typeof env.KV.get === 'function'); }
+async function kvGet(env, k) { try { if (!hasKV(env)) return null; return await env.KV.get(k, 'json'); } catch (_) { return null; } }
+async function kvPut(env, k, v, ttlSeconds) { try { if (!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 }); } catch (_) { /* no-op */ } }
+async function kvDel(env, k) { try { if (!hasKV(env)) return; await env.KV.delete(k); } catch (_) { /* no-op */ } }
 
 async function lineStartLoading(token, chatId, seconds = 7) {
   if (!chatId) return;
@@ -425,30 +425,30 @@ async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
 
 
 // GAS #1: your existing “MM_LineWebhook” (used for LINE webhook traffic)
-function getWebhookGas(env){
+function getWebhookGas(env) {
   return env.MM_WEBHOOK_URL || '';
 }
 
-function getReservationGas(env){
+function getReservationGas(env) {
   // Booking flow → only MM_V2_URL (no fallback)
   return env.MM_V2_URL || '';
 }
 
-function getReservationAdminKey(env){
+function getReservationAdminKey(env) {
   return env.ADMIN_API_KEY || '';
 }
 
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
-function getMoveoutGas(env){
+function getMoveoutGas(env) {
   return env.MOVEOUT_GAS_URL || '';
 }
 
-function getAutoImgGas(env){
+function getAutoImgGas(env) {
   return env.AUTO_IMG_URL || '';
 }
 
 
-function corsHeaders(origin){
+function corsHeaders(origin) {
   return {
     'Access-Control-Allow-Origin': origin || '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -457,11 +457,11 @@ function corsHeaders(origin){
   };
 }
 
-function getPayRentGas(env){
+function getPayRentGas(env) {
   return env.PAYRENT_GAS_URL || '';
 }
 
-function getN8nPayRentUrl(env){
+function getN8nPayRentUrl(env) {
   return env.N8N_PAYRENT_URL || '';
 }
 
@@ -539,7 +539,7 @@ async function forwardToSpecificGas(env, gasUrl, body) {
     status = res.status;
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
-      const j = await res.json().catch(()=>({}));
+      const j = await res.json().catch(() => ({}));
       ok = !!j.ok || res.ok;
       text = JSON.stringify(j);
     } else {
@@ -549,7 +549,7 @@ async function forwardToSpecificGas(env, gasUrl, body) {
   } catch (e) {
     console.error('forwardToSpecificGas error', String(e));
   }
-  console.log('forwardToSpecificGas result', { url: (new URL(gasUrl)).host, status, ok, text: (''+text).slice(0,200) });
+  console.log('forwardToSpecificGas result', { url: (new URL(gasUrl)).host, status, ok, text: ('' + text).slice(0, 200) });
   return ok;
 }
 
@@ -578,7 +578,7 @@ async function forwardToGas(env, body) {
     status = res.status;
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
-      const j = await res.json().catch(()=>({}));
+      const j = await res.json().catch(() => ({}));
       ok = !!j.ok;
       text = JSON.stringify(j);
     } else {
@@ -607,8 +607,8 @@ async function handleMoveoutPostback(env, event, data) {
   };
 
   if (data.act === 'moveout_cancel') {
-    try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
-    await send([{ type:'text', text:'ยกเลิกขั้นตอนแจ้งออกแล้วค่ะ' }]);
+    try { await kvDel(env, stateKey + ':moveout_flow'); } catch { }
+    await send([{ type: 'text', text: 'ยกเลิกขั้นตอนแจ้งออกแล้วค่ะ' }]);
     return true;
   }
 
@@ -616,13 +616,13 @@ async function handleMoveoutPostback(env, event, data) {
     // ❗ Don’t trust postback params. Read from KV.
     const flow = await kvGet(env, stateKey + ':moveout_flow');
     const room = String(flow?.room || '').toUpperCase().trim();
-    const iso  = String(flow?.dateISO || '').trim();
-    const phone= String(flow?.phone || '').trim();
+    const iso = String(flow?.dateISO || '').trim();
+    const phone = String(flow?.phone || '').trim();
 
     if (!room || !isIsoDate(iso) || !PHONE_RE.test(phone)) {
-      console.error('moveout_yes: invalid or missing KV state', { hasRoom:!!room, hasDate:isIsoDate(iso), hasPhone:PHONE_RE.test(phone) });
-      await send([{ type:'text', text:'ไม่สามารถยืนยันข้อมูลได้ กรุณาเริ่มขั้นตอนใหม่อีกครั้งค่ะ' }]);
-      try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
+      console.error('moveout_yes: invalid or missing KV state', { hasRoom: !!room, hasDate: isIsoDate(iso), hasPhone: PHONE_RE.test(phone) });
+      await send([{ type: 'text', text: 'ไม่สามารถยืนยันข้อมูลได้ กรุณาเริ่มขั้นตอนใหม่อีกครั้งค่ะ' }]);
+      try { await kvDel(env, stateKey + ':moveout_flow'); } catch { }
       return true;
     }
 
@@ -630,17 +630,17 @@ async function handleMoveoutPostback(env, event, data) {
     await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 15);
 
     // 2) fire GAS synchronously (NO push used)
-    const ok = await forwardToGas(env, { act:'moveout', roomId:room, dateISO:iso, phone, lineUserId:(event?.source?.userId||'') });
+    const ok = await forwardToGas(env, { act: 'moveout', roomId: room, dateISO: iso, phone, lineUserId: (event?.source?.userId || '') });
 
     // 3) clear flow state
-    try { await kvDel(env, stateKey + ':moveout_flow'); } catch {}
+    try { await kvDel(env, stateKey + ':moveout_flow'); } catch { }
 
     // 4) single reply with final result (within 1 minute)
     const finalMsg = ok
       ? `✅ รับแจ้งออกแล้ว\nห้อง ${room} จะว่างตั้งแต่ ${iso.split('-').reverse().join('/')}\nเบอร์ติดต่อ: ${maskPhone(phone)}`
       : '❗บันทึกไม่สำเร็จ โปรดลองใหม่หรือติดต่อผู้ดูแลค่ะ';
 
-    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalMsg }]);
+    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: finalMsg }]);
     return true;
   }
 
@@ -659,39 +659,39 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(env.ALLOWED_ORIGIN) });
     }
 
-// Frontend API → proxy to GAS #2
-if (url.pathname.startsWith('/api/moveout')) {
-  // base GAS #2 URL (must be your Web App /exec)
-  const base = new URL(getMoveoutGas(env));
+    // Frontend API → proxy to GAS #2
+    if (url.pathname.startsWith('/api/moveout')) {
+      // base GAS #2 URL (must be your Web App /exec)
+      const base = new URL(getMoveoutGas(env));
 
-  // Start with the browser’s query string, then add ws (if any)
-  const t = new URL(base);
-  t.search = url.search; // keep ?action=...&lineId=...
-  const ws = env.WORKER_SECRET || '';
-  if (ws) t.searchParams.set('ws', ws); // optional GET auth
+      // Start with the browser’s query string, then add ws (if any)
+      const t = new URL(base);
+      t.search = url.search; // keep ?action=...&lineId=...
+      const ws = env.WORKER_SECRET || '';
+      if (ws) t.searchParams.set('ws', ws); // optional GET auth
 
-  // Build fetch init
-  const init = { method: request.method, headers: {} };
+      // Build fetch init
+      const init = { method: request.method, headers: {} };
 
-  if (request.method !== 'GET' && request.method !== 'HEAD') {
-    const raw = await request.text();
-    let body = {};
-    try { body = JSON.parse(raw || '{}'); } catch (_) {}
-    if (ws) body.workerSecret = ws; // optional body auth
-    init.headers['Content-Type'] = 'application/json';
-    init.body = JSON.stringify(body);
-  }
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        const raw = await request.text();
+        let body = {};
+        try { body = JSON.parse(raw || '{}'); } catch (_) { }
+        if (ws) body.workerSecret = ws; // optional body auth
+        init.headers['Content-Type'] = 'application/json';
+        init.body = JSON.stringify(body);
+      }
 
-  // Call GAS and pass through content-type as-is
-  const res = await fetch(t.toString(), init);
-  const bodyText = await res.text();
-  const ct = res.headers.get('content-type') || 'application/json';
+      // Call GAS and pass through content-type as-is
+      const res = await fetch(t.toString(), init);
+      const bodyText = await res.text();
+      const ct = res.headers.get('content-type') || 'application/json';
 
-  return new Response(bodyText, {
-    status: res.status,
-    headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
-  });
-}
+      return new Response(bodyText, {
+        status: res.status,
+        headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
+      });
+    }
 
     if (request.method === 'GET' && url.pathname === '/debug/postback') {
       const sample = url.searchParams.get('data') || 'action=CONTINUE&room=A106&end=2026-02-27&inq=INQ_A106_2026-02-27_xxxxxx';
@@ -914,7 +914,7 @@ if (url.pathname.startsWith('/api/moveout')) {
           const txt = data.act === 'mgr_approve'
             ? 'รับทราบ ✓ กำลังบันทึกและแจ้งผู้จัดการ…'
             : 'รับทราบ ✓ ส่งเข้า Review Queue แล้ว…';
-          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: txt }]).catch(console.error));
+          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: txt }]).catch(console.error));
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
@@ -995,29 +995,29 @@ if (url.pathname.startsWith('/api/moveout')) {
         }
 
         // Ultra-fast postbacks handled here (no GAS)
-// Ultra-fast postbacks handled here (no GAS)
+        // Ultra-fast postbacks handled here (no GAS)
         if (isRoomAct(data.act)) {
           const text = roomDetailByKey(data.act);
 
           // Special branch: ROOM_RENT_IMG → send 3 images
           if (data.act === 'ROOM_RENT_IMG') {
             const out = [
-              { type:'text', text: text || '[ราคา + ภาพ]' },
+              { type: 'text', text: text || '[ราคา + ภาพ]' },
 
               {
                 type: 'image',
                 originalContentUrl: 'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht',
-                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht'
+                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht'
               },
               {
                 type: 'image',
                 originalContentUrl: 'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r',
-                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r'
+                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r'
               },
               {
                 type: 'image',
                 originalContentUrl: 'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o',
-                previewImageUrl:   'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o'
+                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o'
               },
             ];
 
@@ -1032,7 +1032,7 @@ if (url.pathname.startsWith('/api/moveout')) {
           ctx.waitUntil(
             lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }])
               .catch(console.error)
-            );
+          );
           continue;
         }
         if (isFixAct(data.act)) {
@@ -1049,35 +1049,35 @@ if (url.pathname.startsWith('/api/moveout')) {
           continue;
         }
 
-const stateKey = getStateKey(ev);
-// Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
-// Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
-if (
-  data.scope === 'payrent' ||
-  ['pick_month', 'quick_month', 'upload', 'status', 'faq', 'howto'].includes(data.act)
-) {
-  const chatId = getChatId(ev);
-  const rentUrl = getPayRentGas(env);
+        const stateKey = getStateKey(ev);
+        // Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
+        // Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
+        if (
+          data.scope === 'payrent' ||
+          ['pick_month', 'quick_month', 'upload', 'status', 'faq', 'howto'].includes(data.act)
+        ) {
+          const chatId = getChatId(ev);
+          const rentUrl = getPayRentGas(env);
 
-  // 1) show a quick "please wait" (PUSH so we don't consume replyToken)
-  try {
-    await linePushText(env.LINE_ACCESS_TOKEN, chatId, 'โปรดรอสักครู่…');
-  } catch (e) {
-    console.error('push wait msg failed', e);
-  }
+          // 1) show a quick "please wait" (PUSH so we don't consume replyToken)
+          try {
+            await linePushText(env.LINE_ACCESS_TOKEN, chatId, 'โปรดรอสักครู่…');
+          } catch (e) {
+            console.error('push wait msg failed', e);
+          }
 
-  // 2) optional: start LINE loading right away
-  try {
-    await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6);
-  } catch (e) {
-    console.warn('lineStartLoading failed', e);
-  }
+          // 2) optional: start LINE loading right away
+          try {
+            await lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 6);
+          } catch (e) {
+            console.warn('lineStartLoading failed', e);
+          }
 
-  // 3) forward the original postback to PAYRENT GAS (await for snappiest UX)
-  await forwardToSpecificGas(env, rentUrl, { events: [ev] });
+          // 3) forward the original postback to PAYRENT GAS (await for snappiest UX)
+          await forwardToSpecificGas(env, rentUrl, { events: [ev] });
 
-  continue;
-}
+          continue;
+        }
 
 
 
@@ -1089,8 +1089,8 @@ if (
         continue;
       }
 
-      
-      
+
+
       /* -----------------------
        * MESSAGE HANDLER
        * --------------------- */
@@ -1131,147 +1131,147 @@ if (
 
         // === TEXT ===
         if (m.type === 'text') {
-        const textIn  = (m.text || '').trim();
-        const chatId  = getChatId(ev);
-        const stateKey= getStateKey(ev);
-        const userId  = ev?.source?.userId || '';
-        const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
-        const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
-        const fridgeIntent = detectFridgeIntent(textIn);
-        const parkingServiceKeyword = isParkingIntent(textIn);
-        const checkinRoomCode = parseCheckinCommand(textIn);
-        const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
-        const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
-        const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
-        const isPenaltyPayment = !!penaltyMatch;
-        const penaltyType = penaltyMatch
-          ? (penaltyMatch[1].includes('อื่น') ? 'Others_payment' : 'penalty')
-          : null;
-        const penaltyKey = stateKey + ':penalty_flow';
-        const penaltyFlow = await kvGet(env, penaltyKey);
-        const penaltyActive = !!(
-          penaltyFlow &&
-          penaltyFlow.ts &&
-          (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
-        );
-        const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
-        const payRentKey = stateKey + ':payrent_flow';
-        const payRentFlow = await kvGet(env, payRentKey);
-        const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
-        const keyRent = parseKeyRent(textIn);
-        const keyForgot = parseKeyKeyword(textIn); // simple “key A101 20” legacy path
-
-        const forwardPayRent = () => {
-          const rentUrl = getPayRentGas(env);
-          if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
-          console.warn('pay rent text trigger: missing PAYRENT_GAS_URL, skipping forward');
-          return;
-        };
-
-        const notifyTenantChange = (intent) => {
-          const payload = {
-            source: 'line_message',
-            intent,
-            text: textIn,
-            userId: userId || null,
-            chatId: chatId || null,
-            state: changeLineState?.state || null,
-            receivedAt: new Date().toISOString()
-          };
-          ctx.waitUntil(
-            notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
+          const textIn = (m.text || '').trim();
+          const chatId = getChatId(ev);
+          const stateKey = getStateKey(ev);
+          const userId = ev?.source?.userId || '';
+          const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
+          const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
+          const fridgeIntent = detectFridgeIntent(textIn);
+          const parkingServiceKeyword = isParkingIntent(textIn);
+          const checkinRoomCode = parseCheckinCommand(textIn);
+          const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+          const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+          const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
+          const isPenaltyPayment = !!penaltyMatch;
+          const penaltyType = penaltyMatch
+            ? (penaltyMatch[1].includes('อื่น') ? 'Others_payment' : 'penalty')
+            : null;
+          const penaltyKey = stateKey + ':penalty_flow';
+          const penaltyFlow = await kvGet(env, penaltyKey);
+          const penaltyActive = !!(
+            penaltyFlow &&
+            penaltyFlow.ts &&
+            (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
           );
-        };
+          const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
+          const payRentKey = stateKey + ':payrent_flow';
+          const payRentFlow = await kvGet(env, payRentKey);
+          const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
+          const keyRent = parseKeyRent(textIn);
+          const keyForgot = parseKeyKeyword(textIn); // simple “key A101 20” legacy path
 
-        if (keyRent) {
-          if (keyRent.error === 'MISSING_ROOM') {
-            const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101”';
+          const forwardPayRent = () => {
+            const rentUrl = getPayRentGas(env);
+            if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
+            console.warn('pay rent text trigger: missing PAYRENT_GAS_URL, skipping forward');
+            return;
+          };
+
+          const notifyTenantChange = (intent) => {
+            const payload = {
+              source: 'line_message',
+              intent,
+              text: textIn,
+              userId: userId || null,
+              chatId: chatId || null,
+              state: changeLineState?.state || null,
+              receivedAt: new Date().toISOString()
+            };
+            ctx.waitUntil(
+              notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
+            );
+          };
+
+          if (keyRent) {
+            if (keyRent.error === 'MISSING_ROOM') {
+              const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101”';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
+              }
+              continue;
+            }
+
+            const timestamp = new Date().toISOString();
+            const keyPayload = {
+              type: 'KEY_RENT',
+              room: keyRent.room,
+              items: keyRent.items,
+              amount: keyRent.amount,
+              rawText: keyRent.rawText,
+              userId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              messageId: m?.id || null,
+              receivedAt: timestamp
+            };
+            ctx.waitUntil(
+              notifyN8nKeyWebhook(env, keyPayload).catch((err) => console.error('key webhook failed', err))
+            );
+
+            const itemSummary = keyRent.items
+              .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
+              .join(', ');
+            const ackText = `รับคำเช่า${keyRent.mode === 'SET' ? 'ชุดกุญแจ' : (keyRent.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ')} ห้อง ${keyRent.room} แล้ว (${itemSummary})`;
             if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
             }
             continue;
           }
 
-          const timestamp = new Date().toISOString();
-          const keyPayload = {
-            type: 'KEY_RENT',
-            room: keyRent.room,
-            items: keyRent.items,
-            amount: keyRent.amount,
-            rawText: keyRent.rawText,
-            userId: userId || null,
-            chatId: chatId || null,
-            sourceType: ev?.source?.type || null,
-            messageId: m?.id || null,
-            receivedAt: timestamp
-          };
-          ctx.waitUntil(
-            notifyN8nKeyWebhook(env, keyPayload).catch((err) => console.error('key webhook failed', err))
-          );
+          if (keyForgot) {
+            const timestamp = new Date().toISOString();
+            const payload = {
+              ...keyForgot,
+              text: textIn,
+              userId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              messageId: m?.id || null,
+              receivedAt: timestamp
+            };
+            ctx.waitUntil(
+              notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
+            );
 
-          const itemSummary = keyRent.items
-            .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
-            .join(', ');
-          const ackText = `รับคำเช่า${keyRent.mode === 'SET' ? 'ชุดกุญแจ' : (keyRent.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ')} ห้อง ${keyRent.room} แล้ว (${itemSummary})`;
-          if (replyToken) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-          } else if (chatId) {
-            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            const ackText = `ส่งข้อมูลคีย์ตึก ${keyForgot.building} ห้อง ${keyForgot.room} จำนวน ${keyForgot.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
+            continue;
           }
-          continue;
-        }
 
-        if (keyForgot) {
-          const timestamp = new Date().toISOString();
-          const payload = {
-            ...keyForgot,
-            text: textIn,
-            userId: userId || null,
-            chatId: chatId || null,
-            sourceType: ev?.source?.type || null,
-            messageId: m?.id || null,
-            receivedAt: timestamp
-          };
-          ctx.waitUntil(
-            notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
-          );
-
-          const ackText = `ส่งข้อมูลคีย์ตึก ${keyForgot.building} ห้อง ${keyForgot.room} จำนวน ${keyForgot.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
-          if (replyToken) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-          } else if (chatId) {
-            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          if (/^\s*เปลี่ยนไอดีผู้เช่า\s*$/i.test(textIn)) {
+            if (userId) {
+              await kvPut(env, changeLineKey, { state: WAIT_ROOM_STATE, ts: Date.now(), chatId, userId });
+            }
+            notifyTenantChange('tenant_id_change_request');
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ' }
+            ]).catch(console.error);
+            continue;
           }
-          continue;
-        }
 
-        if (/^\s*เปลี่ยนไอดีผู้เช่า\s*$/i.test(textIn)) {
-          if (userId) {
-            await kvPut(env, changeLineKey, { state: WAIT_ROOM_STATE, ts: Date.now(), chatId, userId });
+
+          // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
+          if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
+            // quick acknowledge so user sees immediate response
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่' }
+            ]).catch(console.error);
+
+            // forward the original LINE event to GAS
+            // (your GAS doPost will detect text === แจ้งออก and call _issueAndSendMoveOutMagicLink_)
+            await forwardToGas(env, { events: [ev] });
+
+            continue;
           }
-          notifyTenantChange('tenant_id_change_request');
-          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type:'text', text:'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ' }
-          ]).catch(console.error);
-          continue;
-        }
-
-
-        // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
-        if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
-          // quick acknowledge so user sees immediate response
-          await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type:'text', text:'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่' }
-          ]).catch(console.error);
-
-          // forward the original LINE event to GAS
-          // (your GAS doPost will detect text === แจ้งออก and call _issueAndSendMoveOutMagicLink_)
-          await forwardToGas(env, { events: [ev] });
-
-          continue;
-        }
 
           // (B) While inside move-out flow (รวม confirm)
           const handled = await moveoutTextGate(env, stateKey, textIn, replyToken);
@@ -1506,7 +1506,7 @@ if (
           if (changeLineState?.state === WAIT_ROOM_STATE) {
             notifyTenantChange('tenant_id_change_room');
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type:'text', text:'รับรหัสห้องแล้วค่ะ เจ้าหน้าที่แจ้งกลับให้เร็วที่สุด' }
+              { type: 'text', text: 'รับรหัสห้องแล้วค่ะ เจ้าหน้าที่แจ้งกลับให้เร็วที่สุด' }
             ]).catch(console.error);
             continue;
           }
@@ -1515,7 +1515,7 @@ if (
             const intent = textIn.trim().startsWith('ไม่') ? 'tenant_id_change_reject' : 'tenant_id_change_approve';
             notifyTenantChange(intent);
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type:'text', text:'ส่งสถานะไปยังเจ้าหน้าที่เรียบร้อยแล้วค่ะ' }
+              { type: 'text', text: 'ส่งสถานะไปยังเจ้าหน้าที่เรียบร้อยแล้วค่ะ' }
             ]).catch(console.error);
             continue;
           }
@@ -1576,8 +1576,8 @@ if (
           // (E) Label → act mapping
           const mappedAct =
             ROOM_LABEL_MAP[textIn] ? ROOM_LABEL_MAP[textIn] :
-            FIX_LABEL_MAP[textIn]  ? FIX_LABEL_MAP[textIn]  :
-            null;
+              FIX_LABEL_MAP[textIn] ? FIX_LABEL_MAP[textIn] :
+                null;
 
 
           const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
@@ -1843,7 +1843,7 @@ if (
           // (G) Looks like room → only if flow exists
           const looksLikeRoom = /^[A-Z]?\d{3,4}$/i.test(textIn);
           if (looksLikeRoom) {
-            const key  = stateKey + ':moveout_flow';
+            const key = stateKey + ':moveout_flow';
             const flow = await kvGet(env, key);
             if (flow && flow.step) {
               const h = await moveoutTextGate(env, stateKey, textIn, replyToken);
@@ -2103,8 +2103,8 @@ if (
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : isNotFound
-                  ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
-                  : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                    ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
+                    : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
                 console.log('reservation slip failed', { code: bookingCode, error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
@@ -2183,8 +2183,8 @@ if (
                 const msg = isAuth
                   ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
                   : isNotFound
-                  ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
-                  : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
+                    ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
+                    : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
                 console.log('reservation id failed', { code: bookingCode, error: uploadError || '(empty)' });
                 await errorReplyOrPush(env, replyToken, chatId, msg);
                 continue;
@@ -2234,53 +2234,53 @@ if (
  * 5) Maps & Predicates
  * ===================================================== */
 const ROOM_LABEL_MAP = {
-  'ขนาด/เลย์เอาต์':'ROOM_SIZE','เฟอร์นิเจอร์':'ROOM_FURNITURE','เครื่องใช้ไฟฟ้า':'ROOM_APPLIANCE',
-  'ค่าเช่า':'ROOM_RENT','ค่าน้ำ-ไฟ/เน็ต':'ROOM_UTIL','เงินประกัน/สัญญา':'ROOM_DEPOSIT',
-  'ที่จอดรถ':'ROOM_PARKING','เข้าอยู่เร็วสุด':'ROOM_EARLIEST'
+  'ขนาด/เลย์เอาต์': 'ROOM_SIZE', 'เฟอร์นิเจอร์': 'ROOM_FURNITURE', 'เครื่องใช้ไฟฟ้า': 'ROOM_APPLIANCE',
+  'ค่าเช่า': 'ROOM_RENT', 'ค่าน้ำ-ไฟ/เน็ต': 'ROOM_UTIL', 'เงินประกัน/สัญญา': 'ROOM_DEPOSIT',
+  'ที่จอดรถ': 'ROOM_PARKING', 'เข้าอยู่เร็วสุด': 'ROOM_EARLIEST'
 };
 const FIX_LABEL_MAP = {
-  'น้ำ/ท่อรั่ว':'FIX_WATER','ไฟ/ปลั๊ก/เบรกเกอร์':'FIX_ELECTRIC','แอร์ไม่เย็น/น้ำหยด':'FIX_AC',
-  'ห้องน้ำ/สุขภัณฑ์':'FIX_BATH','ประตู/กุญแจ':'FIX_DOOR','เฟอร์นิเจอร์/อุปกรณ์':'FIX_FURN',
-  'กลิ่น/เสียงรบกวน':'FIX_SMELL','อื่น ๆ':'FIX_OTHER'
+  'น้ำ/ท่อรั่ว': 'FIX_WATER', 'ไฟ/ปลั๊ก/เบรกเกอร์': 'FIX_ELECTRIC', 'แอร์ไม่เย็น/น้ำหยด': 'FIX_AC',
+  'ห้องน้ำ/สุขภัณฑ์': 'FIX_BATH', 'ประตู/กุญแจ': 'FIX_DOOR', 'เฟอร์นิเจอร์/อุปกรณ์': 'FIX_FURN',
+  'กลิ่น/เสียงรบกวน': 'FIX_SMELL', 'อื่น ๆ': 'FIX_OTHER'
 };
-function isRoomAct(a){ return typeof a==='string' && a.startsWith('ROOM_'); }
-function isFixAct(a){ return typeof a==='string' && a.startsWith('FIX_'); }
-function isResAct(a){ return typeof a==='string' && a.startsWith('RES_'); }
+function isRoomAct(a) { return typeof a === 'string' && a.startsWith('ROOM_'); }
+function isFixAct(a) { return typeof a === 'string' && a.startsWith('FIX_'); }
+function isResAct(a) { return typeof a === 'string' && a.startsWith('RES_'); }
 
 /* =========================================
  * 6) Message builders
  * ========================================= */
-function roomDetailByKey(key){
+function roomDetailByKey(key) {
   const map = {
-    ROOM_SIZE:`[ขนาด/เลย์เอาต์]
+    ROOM_SIZE: `[ขนาด/เลย์เอาต์]
 • Standard: ~22 ตร.ม. ระเบียง
 • Corner Plus: ~23 ตร.ม. หน้าต่างมุม + ระเบียง
 • Starter: ~22 ตร.ม. ระเบียง`,
-    ROOM_FURNITURE:`[เฟอร์นิเจอร์]
+    ROOM_FURNITURE: `[เฟอร์นิเจอร์]
 🛏️เตียง 5 ฟุต + ที่นอน
 🚪ตู้เสื้อผ้า
 🪑โต๊ะทำงาน + เก้าอี้
 🪟ผ้าม่าน`,
-    ROOM_APPLIANCE:`[เครื่องใช้ไฟฟ้า]
+    ROOM_APPLIANCE: `[เครื่องใช้ไฟฟ้า]
 ❄️แอร์, เครื่องทำน้ำอุ่น
 ตู้เย็น 200 บาท/เดือน`,
-    ROOM_RENT:`[ค่าเช่า]
+    ROOM_RENT: `[ค่าเช่า]
 • Standard (เฟอร์ครบ): 3,800–4,000 บ./ด.
 • Corner Plus (เฟอร์ครบ): 4,100–4,300 บ./ด.
 • Starter (ไม่มีเฟอร์): 3,500 บ./ด.`,
-    ROOM_UTIL:`[ค่าน้ำ-ไฟ/เน็ต]
+    ROOM_UTIL: `[ค่าน้ำ-ไฟ/เน็ต]
 น้ำ 18 | ไฟ 8 
 🛜เน็ต: ฟรี`,
-    ROOM_RENT_IMG:`[เรทราคา + ภาพ]`,   // 👈 new entry
-    ROOM_DEPOSIT:`[เงินประกัน/สัญญา]
+    ROOM_RENT_IMG: `[เรทราคา + ภาพ]`,   // 👈 new entry
+    ROOM_DEPOSIT: `[เงินประกัน/สัญญา]
 สัญญาขั้นต่ำ 1 ปี
 หากต้องการเช่า 6 เดือน เพิ่มค่าเช่า 200 บ./เดือน
 (รายละเอียดเงินประกัน/ล่วงหน้า ระบุในวันทำสัญญา)`,
-    ROOM_PARKING:`[ที่จอดรถ]
+    ROOM_PARKING: `[ที่จอดรถ]
 🚗มีหลังคา 800/เดือน
 🚗ไม่มีหลังคา 500/เดือน
 🏍️มอเตอร์ไซต์ฟรี (มีหลังคา)`,
-    ROOM_EARLIEST:`[เข้าอยู่เร็วสุด]
+    ROOM_EARLIEST: `[เข้าอยู่เร็วสุด]
     ตึก A พร้อมเข้าอยู่ 1 พ.ย. 
     ตึก B พร้อมเข้าอยู่ 1 ธ.ค. 
 
@@ -2288,16 +2288,16 @@ function roomDetailByKey(key){
   };
   return map[key] || 'เลือกรายละเอียดหัวข้อจาก Quick Reply ได้ค่ะ';
 }
-function fixDetailByKey(key){
+function fixDetailByKey(key) {
   const map = {
-    FIX_WATER:'[น้ำ/ท่อรั่ว]\nปิดวาล์วน้ำชั่วคราว (ถ้าเข้าถึงได้) และถ่ายรูปจุดรั่ว แจ้งเลขห้อง+เวลาสะดวก ทีมช่างจะนัดเข้าซ่อมครับ/ค่ะ',
-    FIX_ELECTRIC:'[ไฟฟ้า/ระบบไฟ]\nปลั๊กหรือไฟดับ? แจ้งเลขห้องพร้อมอธิบายอาการครับ/ค่ะ',
-    FIX_OTHER:'[อื่น ๆ]\nเพิ่มเติมรายละเอียดให้เรา เพื่อจัดการได้เร็วขึ้น'
+    FIX_WATER: '[น้ำ/ท่อรั่ว]\nปิดวาล์วน้ำชั่วคราว (ถ้าเข้าถึงได้) และถ่ายรูปจุดรั่ว แจ้งเลขห้อง+เวลาสะดวก ทีมช่างจะนัดเข้าซ่อมครับ/ค่ะ',
+    FIX_ELECTRIC: '[ไฟฟ้า/ระบบไฟ]\nปลั๊กหรือไฟดับ? แจ้งเลขห้องพร้อมอธิบายอาการครับ/ค่ะ',
+    FIX_OTHER: '[อื่น ๆ]\nเพิ่มเติมรายละเอียดให้เรา เพื่อจัดการได้เร็วขึ้น'
   };
   return map[key] || 'เลือกหัวข้อจาก Quick Reply ได้เลยครับ/ค่ะ';
 }
 
-function resDetailByKey(key){
+function resDetailByKey(key) {
   if (key === 'RES_COMMUTE_AIRPORT') {
     const airportText = [
       '✈️ วิธีเดินทางไปสนามบินสุวรรณภูมิ (ไม่มีรถส่วนตัว)',
@@ -3187,7 +3187,7 @@ async function handleCheckoutStart(env, opts) {
   if (replyToken) {
     const ack = `กำลังเริ่มขั้นตอนเช็คเอ้าท์ ห้อง ${roomId} โปรดรอสักครู่…`;
     try {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: ack }]);
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ack }]);
     } catch (e) {
       console.error('checkout_ack_fail', e);
       if (targetChatId) {
@@ -3220,16 +3220,16 @@ async function handleCheckoutStart(env, opts) {
     if (targetChatId) {
       await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch(err => console.error('checkout_final_push_fail', err));
     } else if (replyToken) {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: finalText }]).catch(err => console.error('checkout_final_reply_fail', err));
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: finalText }]).catch(err => console.error('checkout_final_reply_fail', err));
     }
   } catch (err) {
     const errMsg = String(err && err.message ? err.message : err);
     console.error('checkout_start_failed', { roomId, err: errMsg });
-    const failText = `ระบบมีปัญหา กรุณาลองใหม่ (checkout: ${errMsg.slice(0,80)})`;
+    const failText = `ระบบมีปัญหา กรุณาลองใหม่ (checkout: ${errMsg.slice(0, 80)})`;
     if (targetChatId) {
       await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
     } else if (replyToken) {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type:'text', text: failText }]).catch(console.error);
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: failText }]).catch(console.error);
     }
   }
 
