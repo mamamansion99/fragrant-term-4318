@@ -33,7 +33,7 @@
     "HOWTO_IMAGE_URL_2": "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3",
     "ENABLE_LEAVE_PUSH": "true",
     "OWNER_GROUP_ID": "Cdf017804cb8d6f4a8e02c831d700e4b5",
-    "N8N_RENEWAL_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook-test/renewal-postback"
+    "N8N_RENEWAL_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/renewal-postback"
   },
   "kv_namespaces": [
     {
