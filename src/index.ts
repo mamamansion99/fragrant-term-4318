@@ -1135,6 +1135,43 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
+
+          // --- Registration Flow State ---
+          const regKey = userId ? 'reg_id:' + userId : '';
+          const regState = userId ? await kvGet(env, regKey) : null;
+          if (regState && regState.action === 'ask_roomid') {
+            // Allow cancel
+            if (textIn === 'ยกเลิก' || textIn === 'cancel') {
+              await kvDel(env, regKey);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: 'ยกเลิกการลงทะเบียนแล้วค่ะ' }]).catch(console.error);
+              continue;
+            }
+
+            const normalized = textIn.toUpperCase().replace(/\s+/g, '');
+            const isMatch = /^([AB])(\d{3,4})$/.test(normalized);
+
+            if (isMatch) {
+              const webhookUrl = 'https://n8n.srv1112305.hstgr.cloud/webhook/GetLineUserId';
+              ctx.waitUntil(
+                fetch(webhookUrl, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ lineUserId: userId, replyToken, text: textIn, roomId: normalized, action: 'save_mapping' })
+                }).catch(err => console.error('GetLineUserId mapping failed', err))
+              );
+              await kvDel(env, regKey);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: `ลงทะเบียนห้อง ${normalized} เรียบร้อยแล้วค่ะ` }
+              ]).catch(console.error);
+              continue;
+            } else {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: 'รูปแบบไม่ถูกต้อง กรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514 (หรือพิมพ์ "ยกเลิก")' }
+              ]).catch(console.error);
+              continue;
+            }
+          }
+
           const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
           const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
           const fridgeIntent = detectFridgeIntent(textIn);
@@ -1254,6 +1291,18 @@ export default {
             notifyTenantChange('tenant_id_change_request');
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
               { type: 'text', text: 'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (textIn === 'ลงทะเบียนไอดี') {
+            // Set state to wait for Room ID
+            if (userId) {
+              await kvPut(env, 'reg_id:' + userId, { action: 'ask_roomid', ts: Date.now() }, 600); // 10 min TTL
+            }
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: '✅ รับทราบครับ\nกรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514' }
             ]).catch(console.error);
             continue;
           }
