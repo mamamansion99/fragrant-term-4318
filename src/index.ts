@@ -781,14 +781,20 @@ export default {
         const actionRaw = normalize(data.action || data.act);
         const action = actionRaw.toUpperCase();
         const room = normalize(data.room || data.roomId || data.r);
-        const end = normalize(data.end || data.endDate || data.checkout);
+        const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
         const inq = normalize(data.inq || data.inquiry || data.inquiryId);
+        const td = normalize(data.td);
+        const eventId = normalize(data.eventId || data.eid);
+        const slotKey = normalize(data.slotKey);
+        const slotStart = normalize(data.slotStart);
+        const slotEnd = normalize(data.slotEnd);
+        const userId = ev?.source?.userId || '';
         const postbackLog = {
           action,
           room,
           end,
           inq,
-          userId: ev?.source?.userId || '',
+          userId,
           timestamp: new Date(ev?.timestamp || Date.now()).toISOString()
         };
         console.log('line_postback', postbackLog);
@@ -832,7 +838,14 @@ export default {
           continue;
         }
 
-        const isContractRenewalAction = action === 'CONTINUE' || action === 'LEAVE' || action === 'UNDECIDED';
+        const isSignSlot = action === 'SIGN_SLOT';
+        const isSignAskAdmin = action === 'SIGN_ASK_ADMIN';
+        const isContractRenewalAction =
+          action === 'CONTINUE' ||
+          action === 'LEAVE' ||
+          action === 'UNDECIDED' ||
+          isSignSlot ||
+          isSignAskAdmin;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
           Object.prototype.hasOwnProperty.call(data, 'inq') ||
@@ -840,28 +853,47 @@ export default {
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
 
         if (looksLikeContractRenewal && (!action || !inq)) {
-          console.warn('contract_renewal_postback_missing_fields', postbackLog);
-          try {
-            await replyToLine(replyToken, [{ type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่อีกครั้ง' }]);
-          } catch (err) {
-            console.error('contract_renewal_reply_fail', err);
+          if (!isSignSlot) {
+            console.warn('contract_renewal_postback_missing_fields', postbackLog);
+            try {
+              await replyToLine(replyToken, [{ type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่อีกครั้ง' }]);
+            } catch (err) {
+              console.error('contract_renewal_reply_fail', err);
+            }
+            continue;
           }
-          continue;
         }
 
         if (isContractRenewalAction) {
 
           const renewalPayload = {
             source: 'line_postback',
-            eventId: ev?.webhookEventId || ev?.replyToken || '',
+            eventId: ev?.webhookEventId || eventId || ev?.replyToken || '',
             timestamp: ev?.timestamp || Date.now(),
-            userId: ev?.source?.userId || '',
+            userId,
             replyToken: replyToken || '',
             action,
             inquiryId: inq,
             roomId: room || '',
-            contractEnd: end || ''
+            contractEnd: end || '',
+            td: td || '',
+            slotKey: slotKey || '',
+            slotStart: slotStart || '',
+            slotEnd: slotEnd || ''
           };
+
+          if (isSignSlot) {
+            const missingFields = [];
+            if (!slotStart) missingFields.push('slotStart');
+            if (!slotEnd) missingFields.push('slotEnd');
+            if (!inq) missingFields.push('inquiryId');
+            if (!room) missingFields.push('roomId');
+            if (!userId) missingFields.push('userId');
+            if (missingFields.length > 0) {
+              renewalPayload.missingCritical = true;
+              renewalPayload.missingFields = missingFields;
+            }
+          }
           ctx.waitUntil(
             notifyN8nRenewalPostback(env, renewalPayload)
               .catch((err) => console.error('contract_renewal_notify_fail', err))
@@ -2537,24 +2569,45 @@ function parsePostbackData(raw) {
     try {
       const parsed = JSON.parse(input);
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed;
+        const out = {};
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!key) continue;
+          out[key] = String(value ?? '');
+        }
+        if (Object.keys(out).length > 0) {
+          return out;
+        }
       }
     } catch (err) {
       console.warn('parsePostbackData JSON parse failed', err);
     }
   }
 
+  const qs = input.startsWith('?') ? input.slice(1) : input;
   try {
-    const params = new URLSearchParams(input);
+    const parsed = parseKv(qs);
+    const out = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (!key) continue;
+      if (Array.isArray(value)) {
+        out[key] = String(value[value.length - 1] || '');
+      } else {
+        out[key] = String(value ?? '');
+      }
+    }
+    if (Object.keys(out).length > 0) {
+      return out;
+    }
+  } catch (err) {
+    console.warn('parsePostbackData parseKv failed', err);
+  }
+
+  try {
+    const params = new URLSearchParams(qs);
     const out = {};
     for (const [key, value] of params.entries()) {
       if (!key) continue;
-      if (Object.prototype.hasOwnProperty.call(out, key)) {
-        const prev = out[key];
-        out[key] = Array.isArray(prev) ? prev.concat(value) : [prev, value];
-      } else {
-        out[key] = value;
-      }
+      out[key] = String(value ?? '');
     }
     if (Object.keys(out).length > 0) {
       return out;
@@ -2563,7 +2616,7 @@ function parsePostbackData(raw) {
     console.warn('parsePostbackData URLSearchParams failed', err);
   }
 
-  return parseKv(input);
+  return {};
 }
 
 async function moveoutTextGate(env, stateKey, textIn, replyToken) {
