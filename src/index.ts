@@ -2950,7 +2950,7 @@ function fridgeButtonMessage(postbackData) {
     altText: 'เช่าตู้เย็น',
     template: {
       type: 'buttons',
-      text: 'มีให้เช่าเดือนละ 200 บาท',
+      text: 'มีให้เช่าเดือนละ 250 บาท / month',
       actions: [
         {
           type: 'postback',
