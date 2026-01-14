@@ -25,6 +25,9 @@
     // Dedicated expense group (Option 2)
     "EXPENSE_GROUP_ID": "C2190a9a8cbde42b097a9d2fd0c1599bc",
     "N8N_EXPENSE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/record-expense",
+    // Image-only webhook group
+    "IMAGE_GROUP_ID": "C79acd538b4ea48377bb7a74031218248",
+    "n8n_slip_receipt_ledger": "https://n8n.srv1112305.hstgr.cloud/webhook/Receipt_Auto",
     // PAY_RENT GAS redeployed @35 (OCR robustness + fallbacks)
     "PAYRENT_GAS_URL": "https://script.google.com/macros/s/AKfycbyOX3kp5wfFXR-uUheiGQWPae9hb6QKxql11xalth8JlglJ8j0x3DOznblOJjnPxwRDHg/exec",
     "MOVEOUT_GAS_URL": "https://script.google.com/macros/s/AKfycbzjrKP2Rzko6sTMNsFwYzQBf2PS938RlnHBJp_9Gi98WfhVOp1xUxkHqx7BAGAJtoax/exec",

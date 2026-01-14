@@ -1130,6 +1130,34 @@ export default {
         const m = ev.message || {};
         const chatId = getChatId(ev);
 
+        if (m.type === 'image' && env.IMAGE_GROUP_ID && chatId === env.IMAGE_GROUP_ID) {
+          const imagePayload = {
+            source: 'line_group_image',
+            intent: 'group_image',
+            groupId: chatId,
+            userId: ev?.source?.userId || null,
+            imageMessageId: m.id || null,
+            timestamp: new Date().toISOString(),
+            event: ev
+          };
+
+          if (env.n8n_slip_receipt_ledger) {
+            ctx.waitUntil(
+              notifyN8nGroupImage(env, imagePayload).catch((err) => console.error('group_image webhook failed', err))
+            );
+          } else {
+            console.warn('IMAGE_GROUP_ID set but n8n_slip_receipt_ledger is missing');
+          }
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: '📸 ส่งรูปเข้า workflow แล้ว' }
+            ]).catch(console.error);
+          }
+
+          continue;
+        }
+
         // Dedicated expense group catch-all
         if (env.EXPENSE_GROUP_ID && chatId === env.EXPENSE_GROUP_ID) {
           const expensePayload = {
@@ -3461,6 +3489,36 @@ async function notifyN8nExpense(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nExpense error', err);
+    return false;
+  }
+}
+
+async function notifyN8nGroupImage(env, payload) {
+  const url = env.n8n_slip_receipt_ledger || '';
+  if (!url) {
+    console.warn('notifyN8nGroupImage: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nGroupImage: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nGroupImage error', err);
     return false;
   }
 }
