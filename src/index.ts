@@ -800,7 +800,7 @@ export default {
         console.log('line_postback', postbackLog);
 
         // Mark paid → quick ack then forward to n8n
-        const markPaidUrl = env.N8N_MARK_PAID_URL || '';
+        const markPaidUrl = env.N8N_MMV2_MARK_PAID_URL || '';
         if (action === 'MARK_PAID') {
           const chatId = getChatId(ev);
           const ackText = data.resId
@@ -833,7 +833,7 @@ export default {
               }).catch((err) => console.error('mark_paid_forward_failed', err))
             );
           } else {
-            console.warn('mark_paid: missing N8N_MARK_PAID_URL');
+            console.warn('mark_paid: missing N8N_MMV2_MARK_PAID_URL');
           }
           continue;
         }
