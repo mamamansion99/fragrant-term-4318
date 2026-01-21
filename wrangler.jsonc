@@ -36,6 +36,7 @@
     "AUTO_IMG_URL": "https://script.google.com/macros/s/AKfycbzg9w9zg92s9VNvTZ7JRxKJWX5VHMlYUYASsTGUdhTMWlJWDfLpjixWKuPK4J82rZTttA/exec",
     "HOWTO_IMAGE_URL_1": "https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ",
     "HOWTO_IMAGE_URL_2": "https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3",
+    "BOOKING_URL": "https://mm-v2.pages.dev/#reservation",
     "ENABLE_LEAVE_PUSH": "true",
     "OWNER_GROUP_ID": "Cdf017804cb8d6f4a8e02c831d700e4b5",
     "N8N_RENEWAL_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/renewal-postback"

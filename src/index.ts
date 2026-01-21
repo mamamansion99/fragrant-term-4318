@@ -350,6 +350,59 @@ async function kvGet(env, k) { try { if (!hasKV(env)) return null; return await 
 async function kvPut(env, k, v, ttlSeconds) { try { if (!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 }); } catch (_) { /* no-op */ } }
 async function kvDel(env, k) { try { if (!hasKV(env)) return; await env.KV.delete(k); } catch (_) { /* no-op */ } }
 
+const SCREENING_CFG_KEY = 'cfg:screening_enabled';
+
+async function cfgGet(env, k) {
+  try {
+    if (!hasKV(env)) return null;
+    return await env.KV.get(k, 'json');
+  } catch (_) {
+    return null;
+  }
+}
+
+async function cfgPut(env, k, v) {
+  try {
+    if (!hasKV(env)) return;
+    await env.KV.put(k, JSON.stringify(v));
+  } catch (_) {
+    // no-op
+  }
+}
+
+async function getScreeningEnabled(env) {
+  const v = await cfgGet(env, SCREENING_CFG_KEY);
+  if (typeof v === 'boolean') return v;
+  if (v && typeof v.enabled === 'boolean') return v.enabled;
+  return false;
+}
+
+async function setScreeningEnabled(env, enabled) {
+  await cfgPut(env, SCREENING_CFG_KEY, { enabled: !!enabled, updatedAt: Date.now() });
+}
+
+const LEAD_TTL_SECONDS = 7 * 24 * 60 * 60;
+const leadKey = (userId) => `lead:${userId}`;
+
+async function getLead(env, userId) {
+  if (!userId) return null;
+  return await kvGet(env, leadKey(userId));
+}
+
+async function saveLead(env, userId, lead) {
+  if (!userId) return;
+  await kvPut(env, leadKey(userId), lead, LEAD_TTL_SECONDS);
+}
+
+async function clearLead(env, userId) {
+  if (!userId) return;
+  await kvDel(env, leadKey(userId));
+}
+
+function nowBkkString() {
+  return `${formatDateBangkok()} ${formatTimeBangkok()}`;
+}
+
 async function lineStartLoading(token, chatId, seconds = 7) {
   if (!chatId) return;
   const secs = Math.max(5, Math.min(seconds, 60));
@@ -773,6 +826,227 @@ export default {
             continue;
           }
         }
+
+        const act = String(data.act || '').trim();
+
+        // ===== Admin switch postbacks (OWNER GROUP only) =====
+        if (act === 'CFG_SCREEN_ON' || act === 'CFG_SCREEN_OFF' || act === 'CFG_SCREEN_STATUS') {
+          const ownerGroupId = env.OWNER_GROUP_ID || '';
+          const chatId = getChatId(ev);
+          if (!ownerGroupId || chatId !== ownerGroupId) {
+            await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้นครับ');
+            continue;
+          }
+
+          if (act === 'CFG_SCREEN_ON') {
+            await setScreeningEnabled(env, true);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: '✅ เปิดโหมดคัดกรองแล้ว' }]).catch(console.error);
+            continue;
+          }
+          if (act === 'CFG_SCREEN_OFF') {
+            await setScreeningEnabled(env, false);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: '✅ ปิดโหมดคัดกรองแล้ว' }]).catch(console.error);
+            continue;
+          }
+          if (act === 'CFG_SCREEN_STATUS') {
+            const enabled = await getScreeningEnabled(env);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: `📌 สถานะโหมดคัดกรอง: ${enabled ? 'ON ✅' : 'OFF ❌'}` }
+            ]).catch(console.error);
+            continue;
+          }
+        }
+
+        // ===== Lead screening flow (user answers) =====
+        if (act === 'LEAD_START' || act === 'LEAD_A' || act === 'LEAD_CANCEL') {
+          const userId = ev?.source?.userId || '';
+          if (!userId) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ไม่พบข้อมูลผู้ใช้งาน กรุณาลองใหม่ครับ' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (act === 'LEAD_CANCEL') {
+            await clearLead(env, userId);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ยกเลิกการกรอกข้อมูลแล้วครับ ✅' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (act === 'LEAD_START') {
+            const lead = {
+              userId,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              submittedAt: null,
+              status: 'IN_PROGRESS',
+              step: 1,
+              answers: {}
+            };
+            await saveLead(env, userId, lead);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [leadQuestion(1)]).catch(console.error);
+            continue;
+          }
+
+          if (act === 'LEAD_A') {
+            const q = String(data.q || '').trim();
+            const v = String(data.v || '').trim();
+            if (!q || !v) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่ครับ' }
+              ]).catch(console.error);
+              continue;
+            }
+
+            let lead = await getLead(env, userId);
+            if (!lead || lead.status !== 'IN_PROGRESS') {
+              lead = {
+                userId,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                submittedAt: null,
+                status: 'IN_PROGRESS',
+                step: 1,
+                answers: {}
+              };
+            }
+
+            lead.answers = lead.answers || {};
+            lead.answers[q] = v;
+            lead.updatedAt = Date.now();
+
+            const stepMap = { movein: 2, people: 3, status: 4, vehicle: 5, stay: 999 };
+            let next = stepMap[q] || (Number(lead.step) || 1) + 1;
+            if (next > 5) next = 999;
+
+            if (next === 999) {
+              lead.status = 'SUBMITTED';
+              lead.submittedAt = Date.now();
+              await saveLead(env, userId, lead);
+
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: 'ขอบคุณครับ 🙏 ได้รับข้อมูลเรียบร้อยแล้ว\nแอดมินจะตรวจสอบและติดต่อกลับอีกครั้งใน LINE ครับ ✅' }
+              ]).catch(console.error);
+
+              const ownerGroupId = env.OWNER_GROUP_ID || '';
+              if (ownerGroupId) {
+                const a = lead.answers || {};
+                const valueMap = {
+                  movein: { IN3: 'ภายใน 3 วัน', IN7: 'ภายใน 7 วัน', IN30: 'ภายในเดือนนี้', UNSURE: 'ยังไม่แน่ใจ' },
+                  people: { '1': '1 คน', '2': '2 คน', '3PLUS': 'มากกว่า 2' },
+                  status: { STUDENT: 'นักเรียน/นักศึกษา', WORK: 'ทำงานประจำ', SHIFT: 'ทำงานกะ/กลางคืน', OTHER: 'อื่นๆ' },
+                  vehicle: { NONE: 'ไม่มี', MOTO: 'มอเตอร์ไซค์', CAR: 'รถยนต์' },
+                  stay: { '6M': '6 เดือน', '1Y': '1 ปี', '1YPLUS': 'มากกว่า 1 ปี' }
+                };
+                const formatAnswer = (key, value) => (valueMap[key] && valueMap[key][value]) ? valueMap[key][value] : (value || '-');
+                const summary = [
+                  '🧾 Lead Screening (SUBMITTED)',
+                  `👤 UserId: ${userId}`,
+                  `🕒 Time: ${nowBkkString()}`,
+                  '',
+                  `1) Move-in: ${formatAnswer('movein', a.movein)}`,
+                  `2) People: ${formatAnswer('people', a.people)}`,
+                  `3) Status: ${formatAnswer('status', a.status)}`,
+                  `4) Vehicle: ${formatAnswer('vehicle', a.vehicle)}`,
+                  `5) Stay: ${formatAnswer('stay', a.stay)}`
+                ].join('\n');
+
+                const msg = [
+                  { type: 'text', text: summary },
+                  {
+                    type: 'template',
+                    altText: 'Approve / Reject Lead',
+                    template: {
+                      type: 'buttons',
+                      text: 'ต้องการทำอะไรกับลูกค้ารายนี้?',
+                      actions: [
+                        { type: 'postback', label: '✅ ส่งลิงก์จอง', data: `act=LEAD_APPROVE&uid=${encodeURIComponent(userId)}` },
+                        { type: 'postback', label: '❌ ปฏิเสธสุภาพ', data: `act=LEAD_REJECT&uid=${encodeURIComponent(userId)}` }
+                      ]
+                    }
+                  }
+                ];
+
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, ownerGroupId, msg).catch(console.error));
+              }
+              continue;
+            }
+
+            lead.step = next;
+            await saveLead(env, userId, lead);
+            const nextQuestion = leadQuestion(next);
+            if (nextQuestion) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [nextQuestion]).catch(console.error);
+              continue;
+            }
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'รับข้อมูลแล้วครับ ✅' }
+            ]).catch(console.error);
+            continue;
+          }
+        }
+
+        // ===== Owner Approve / Reject lead =====
+        if (act === 'LEAD_APPROVE' || act === 'LEAD_REJECT') {
+          const ownerGroupId = env.OWNER_GROUP_ID || '';
+          const chatId = getChatId(ev);
+          if (!ownerGroupId || chatId !== ownerGroupId) {
+            await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้นครับ');
+            continue;
+          }
+
+          const uid = String(data.uid || '').trim();
+          if (!uid) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ไม่พบ uid' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          const lead = await getLead(env, uid);
+          if (!lead) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'Lead นี้หมดอายุ/ไม่พบในระบบแล้ว' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
+
+          if (act === 'LEAD_APPROVE') {
+            await linePush(env.LINE_ACCESS_TOKEN, uid, [
+              { type: 'text', text: `ขอบคุณที่ให้ข้อมูลครับ ✅\nสามารถจองห้องได้ที่ลิงก์นี้เลยครับ:\n${bookingUrl}` }
+            ]).catch(console.error);
+
+            lead.status = 'APPROVED';
+            lead.approvedAt = Date.now();
+            await saveLead(env, uid, lead);
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: '✅ ส่งลิงก์จองให้ลูกค้าแล้ว' }
+            ]).catch(console.error);
+            continue;
+          }
+
+          if (act === 'LEAD_REJECT') {
+            await linePush(env.LINE_ACCESS_TOKEN, uid, [
+              { type: 'text', text: 'ขอบคุณที่สนใจนะครับ 🙏 ตอนนี้ห้องที่ตรงเงื่อนไขพอดีเต็มอยู่ครับ หากมีห้องว่างเดี๋ยวจะแจ้งให้ทราบอีกครั้งครับ' }
+            ]).catch(console.error);
+
+            lead.status = 'REJECTED';
+            lead.rejectedAt = Date.now();
+            await saveLead(env, uid, lead);
+
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: '✅ ส่งข้อความปฏิเสธสุภาพแล้ว' }
+            ]).catch(console.error);
+            continue;
+          }
+        }
+
         const pickFirst = (v) => Array.isArray(v) ? v[0] : v;
         const normalize = (v) => {
           if (v === undefined || v === null) return '';
@@ -1195,6 +1469,25 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
+
+          const ownerGroupId = env.OWNER_GROUP_ID || '';
+          if (ownerGroupId && chatId === ownerGroupId && /โหมดคัดกรอง/i.test(textIn)) {
+            const msg = {
+              type: 'template',
+              altText: 'สวิตช์โหมดคัดกรอง',
+              template: {
+                type: 'buttons',
+                text: 'สวิตช์โหมดคัดกรอง (ถามก่อนส่งลิงก์จอง)',
+                actions: [
+                  { type: 'postback', label: '✅ เปิด', data: 'act=CFG_SCREEN_ON' },
+                  { type: 'postback', label: '❌ ปิด', data: 'act=CFG_SCREEN_OFF' },
+                  { type: 'postback', label: '📌 เช็คสถานะ', data: 'act=CFG_SCREEN_STATUS' }
+                ]
+              }
+            };
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [msg]).catch(console.error);
+            continue;
+          }
 
           // --- Registration Flow State ---
           const regKey = userId ? 'reg_id:' + userId : '';
@@ -1648,7 +1941,7 @@ export default {
           }
 
           // (D) Quick keyword replies
-          const fast = quickKeywordReply(textIn, env);
+          const fast = await quickKeywordReply(textIn, env, userId);
           if (fast) {
             ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
             continue;
@@ -2653,7 +2946,88 @@ async function moveoutTextGate(env, stateKey, textIn, replyToken) {
   return false;
 }
 
-function quickKeywordReply(text, env) {
+function leadQuestion(step) {
+  const mk = (label, q, v) => ({
+    type: 'action',
+    action: {
+      type: 'postback',
+      label,
+      data: `act=LEAD_A&q=${encodeURIComponent(q)}&v=${encodeURIComponent(v)}`,
+      displayText: label
+    }
+  });
+
+  if (step === 1) {
+    return {
+      type: 'text',
+      text: '1) ต้องการย้ายเข้าเมื่อไหร่ครับ?',
+      quickReply: {
+        items: [
+          mk('ภายใน 3 วัน', 'movein', 'IN3'),
+          mk('ภายใน 7 วัน', 'movein', 'IN7'),
+          mk('ภายในเดือนนี้', 'movein', 'IN30'),
+          mk('ยังไม่แน่ใจ', 'movein', 'UNSURE')
+        ]
+      }
+    };
+  }
+  if (step === 2) {
+    return {
+      type: 'text',
+      text: '2) อยู่กี่คนครับ?',
+      quickReply: {
+        items: [
+          mk('1 คน', 'people', '1'),
+          mk('2 คน', 'people', '2'),
+          mk('มากกว่า 2', 'people', '3PLUS')
+        ]
+      }
+    };
+  }
+  if (step === 3) {
+    return {
+      type: 'text',
+      text: '3) สถานะปัจจุบันครับ',
+      quickReply: {
+        items: [
+          mk('นักเรียน/นักศึกษา', 'status', 'STUDENT'),
+          mk('ทำงานประจำ', 'status', 'WORK'),
+          mk('ทำงานกะ/กลางคืน', 'status', 'SHIFT'),
+          mk('อื่นๆ', 'status', 'OTHER')
+        ]
+      }
+    };
+  }
+  if (step === 4) {
+    return {
+      type: 'text',
+      text: '4) มียานพาหนะไหมครับ?',
+      quickReply: {
+        items: [
+          mk('ไม่มี', 'vehicle', 'NONE'),
+          mk('มอเตอร์ไซค์', 'vehicle', 'MOTO'),
+          mk('รถยนต์', 'vehicle', 'CAR')
+        ]
+      }
+    };
+  }
+  if (step === 5) {
+    return {
+      type: 'text',
+      text: '5) ตั้งใจอยู่ประมาณกี่เดือน/กี่ปีครับ?',
+      quickReply: {
+        items: [
+          mk('6 เดือน', 'stay', '6M'),
+          mk('1 ปี', 'stay', '1Y'),
+          mk('มากกว่า 1 ปี', 'stay', '1YPLUS')
+        ]
+      }
+    };
+  }
+  return null;
+}
+
+async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
 
@@ -2726,8 +3100,36 @@ function quickKeywordReply(text, env) {
     AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
   const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
   if (isAvailabilityAsk && !isAvailabilityExcluded) {
+    const enabled = await getScreeningEnabled(env);
+    if (enabled) {
+      const lead = userId ? await getLead(env, userId) : null;
+      if (lead && lead.status === 'SUBMITTED') {
+        return [
+          { type: 'text', text: 'รับข้อมูลเรียบร้อยแล้วครับ ✅ เดี๋ยวแอดมินติดต่อกลับใน LINE ครับ' }
+        ];
+      }
+      if (lead && lead.status === 'IN_PROGRESS' && lead.step) {
+        const nextQuestion = leadQuestion(lead.step);
+        if (nextQuestion) {
+          return [nextQuestion];
+        }
+      }
+      return [
+        {
+          type: 'text',
+          text: 'ก่อนส่งลิงก์จอง ขออนุญาตถามสั้นๆ 5 ข้อเพื่อจัดห้องให้เหมาะที่สุดครับ 😊',
+          quickReply: {
+            items: [
+              { type: 'action', action: { type: 'postback', label: 'เริ่มตอบคำถาม ✅', data: 'act=LEAD_START', displayText: 'เริ่มตอบคำถาม' } },
+              { type: 'action', action: { type: 'postback', label: 'ยกเลิก', data: 'act=LEAD_CANCEL', displayText: 'ยกเลิก' } }
+            ]
+          }
+        }
+      ];
+    }
+
     const today = formatDateBangkok();
-    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mamamansion-ar2.pages.dev/');
+    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
     return [
       { type: 'text', text: `อัปเดตวันที่ ${today}` },
       { type: 'text', text: `สถานะ ณ ตอนนี้เหลือห้องตึกละไม่เกิน 2-3 ห้อง โปรดลองหาห้องตามชั้นในเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
@@ -2904,10 +3306,39 @@ function quickKeywordReply(text, env) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
+    const enabled = await getScreeningEnabled(env);
+    if (enabled) {
+      const lead = userId ? await getLead(env, userId) : null;
+      if (lead && lead.status === 'SUBMITTED') {
+        return [
+          { type: 'text', text: 'รับข้อมูลเรียบร้อยแล้วครับ ✅ เดี๋ยวแอดมินติดต่อกลับใน LINE ครับ' }
+        ];
+      }
+      if (lead && lead.status === 'IN_PROGRESS' && lead.step) {
+        const nextQuestion = leadQuestion(lead.step);
+        if (nextQuestion) {
+          return [nextQuestion];
+        }
+      }
+      return [
+        {
+          type: 'text',
+          text: 'ก่อนส่งลิงก์จอง ขออนุญาตถามสั้นๆ 5 ข้อเพื่อจัดห้องให้เหมาะที่สุดครับ 😊',
+          quickReply: {
+            items: [
+              { type: 'action', action: { type: 'postback', label: 'เริ่มตอบคำถาม ✅', data: 'act=LEAD_START', displayText: 'เริ่มตอบคำถาม' } },
+              { type: 'action', action: { type: 'postback', label: 'ยกเลิก', data: 'act=LEAD_CANCEL', displayText: 'ยกเลิก' } }
+            ]
+          }
+        }
+      ];
+    }
+
+    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
     const bookingStepsText = [
       '[📅 วิธีจองห้องพัก]',
       '',
-      '1) เข้า “ระบบจอง” ที่ลิงก์นี้: https://mamamansion-ar2.pages.dev/',
+      `1) เข้า “ระบบจอง” ที่ลิงก์นี้: ${bookingUrl}`,
       '2) กรอกข้อมูล เลือกห้องและวันที่เข้าอยู่ แล้วส่งฟอร์ม',
       '3) ระบบออกเลขรหัส #MMxxx',
       '4) พิมพ์รหัส #MMxxx ในแชทนี้',
