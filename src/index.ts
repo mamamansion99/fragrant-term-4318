@@ -1052,12 +1052,15 @@ export default {
           if (v === undefined || v === null) return '';
           return String(pickFirst(v) || '').trim();
         };
-        const actionRaw = normalize(data.action || data.act);
+        const actionRaw = normalize(
+          data.action ||
+          (act === 'renew_decision' ? data.ans : data.act)
+        );
         const action = actionRaw.toUpperCase();
         const room = normalize(data.room || data.roomId || data.r);
         const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
         const inq = normalize(data.inq || data.inquiry || data.inquiryId);
-        const td = normalize(data.td);
+        const td = normalize(data.td || (act === 'renew_decision' ? data.trig : ''));
         const eventId = normalize(data.eventId || data.eid);
         const slotKey = normalize(data.slotKey);
         const slotStart = normalize(data.slotStart);
