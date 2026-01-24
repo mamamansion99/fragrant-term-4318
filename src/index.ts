@@ -3057,7 +3057,7 @@ async function quickKeywordReply(text, env, userId) {
   if (wantsParkingInfo && !isUrgent) {
     return [
       { type: 'text', text: 'ที่จอดรถภายในหอพักมามาแมนชั่น 800 บาท/เดือน' },
-      { type: 'text', text: 'พิมพ์ "ขอเช่าที่จอด" หรือกดปุ่มในเมนูเพื่อเลือกแบบที่ต้องการได้เลยครับ/ค่ะ' }
+      parkingButtonsMessage(buildParkingPostbackPayload({ lineUserId: userId || null }))
     ];
   }
 
