@@ -818,16 +818,29 @@ export default {
        * --------------------- */
       if (ev.type === 'postback') {
         const data = parsePostbackData(ev.postback?.data || '');
+        const act = String(data.act || '').trim();
         // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
-        if (data.act === 'confirm' || data.act === 'slip_yes' || data.act === 'slip_no' || data.act === 'id_yes' || data.act === 'id_no') {
+        if (act === 'confirm' || act === 'slip_yes' || act === 'slip_no' || act === 'id_yes' || act === 'id_no' || act === 'booking_confirm') {
           const resvUrl = getReservationGas(env);
           if (resvUrl) {
+            const chatId = getChatId(ev);
+            const codeHint = String(data.code || data.bookingCode || '').trim();
+            const ackMsg = (act === 'id_yes' || act === 'id_no')
+              ? 'กำลังประมวลผลค่ะ โปรดรอสักครู่'
+              : (codeHint
+                ? `รับการยืนยันรหัสจอง ${codeHint} แล้วค่ะ กำลังตรวจสอบให้ทันที`
+                : 'รับการยืนยันแล้วค่ะ กำลังตรวจสอบให้ทันที');
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackMsg }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+            }
             ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
             continue;
           }
         }
-
-        const act = String(data.act || '').trim();
 
         // ===== Admin switch postbacks (OWNER GROUP only) =====
         if (act === 'CFG_SCREEN_ON' || act === 'CFG_SCREEN_OFF' || act === 'CFG_SCREEN_STATUS') {
@@ -1973,6 +1986,17 @@ export default {
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const resvUrl = getReservationGas(env);
             if (resvUrl) {
+              const bookingCode = extractBookingCode(textIn);
+              const ackMsg = bookingCode
+                ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
+                : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: ackMsg }
+                ]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+              }
               ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
               continue;
             }
