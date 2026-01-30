@@ -2678,8 +2678,22 @@ function isResAct(a) { return typeof a === 'string' && a.startsWith('RES_'); }
 function normalizePenaltyReason(reason) {
   const text = (reason || '').trim();
   if (!text) return text;
-  const keyRe = /(กุญแจ|คีย์การ์ด|คีย์ การ์ด|คีย์-การ์ด|keycard|key card|key-card|คีย์)/i;
-  if (keyRe.test(text)) return 'KEY';
+  const compact = text
+    .toLowerCase()
+    .replace(/[^a-z0-9ก-๙]/g, '')
+    .replace(/เเ/g, 'แ');
+
+  const isKeyRelated =
+    compact.includes('กุญแจ') ||
+    compact.includes('กุญเเจ') ||
+    compact.includes('คีย์การ์ด') ||
+    compact.includes('คีย์การ์ท') ||
+    compact.includes('คีย์กาด') ||
+    compact.includes('คีย์การ์ต') ||
+    compact.includes('คีย์ก์ด') ||
+    compact.includes('keycard');
+
+  if (isKeyRelated) return 'KEY';
   return text;
 }
 
@@ -3161,11 +3175,11 @@ async function quickKeywordReply(text, env, userId) {
       ];
     }
 
-    const today = formatDateBangkok();
-    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
     return [
-      { type: 'text', text: `อัปเดตวันที่ ${today}` },
-      { type: 'text', text: `สถานะ ณ ตอนนี้เหลือห้องตึกละไม่เกิน 2-3 ห้อง โปรดลองหาห้องตามชั้นในเว็บไซต์ได้เลยครับ\n${bookingUrl}` }
+      {
+        type: 'text',
+        text: 'Please answer right now: the room is almost full. Please contact admin directly to ask for room available.'
+      }
     ];
   }
 
