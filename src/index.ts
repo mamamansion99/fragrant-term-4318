@@ -1806,7 +1806,7 @@ export default {
 
             const updated = {
               ...penaltyFlow,
-              reason,
+              reason: normalizePenaltyReason(reason),
               ts: Date.now(),
               chatId,
               userId
@@ -2675,6 +2675,13 @@ const FIX_LABEL_MAP = {
 function isRoomAct(a) { return typeof a === 'string' && a.startsWith('ROOM_'); }
 function isFixAct(a) { return typeof a === 'string' && a.startsWith('FIX_'); }
 function isResAct(a) { return typeof a === 'string' && a.startsWith('RES_'); }
+function normalizePenaltyReason(reason) {
+  const text = (reason || '').trim();
+  if (!text) return text;
+  const keyRe = /(กุญแจ|คีย์การ์ด|คีย์ การ์ด|คีย์-การ์ด|keycard|key card|key-card|คีย์)/i;
+  if (keyRe.test(text)) return 'KEY';
+  return text;
+}
 
 /* =========================================
  * 6) Message builders
