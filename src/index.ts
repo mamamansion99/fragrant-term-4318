@@ -119,8 +119,8 @@ function parseCheckoutTrigger(text) {
   if (!text) return null;
   const raw = text || '';
   const collapsed = raw.replace(/\s+/g, '').toLowerCase();
-  const roomMatchCollapsed = collapsed.match(/(เช็คเอ้าท์|เช็คเอาต์|เช็คเอาท์|checkout)ห้อง?([ab]\d{3,4})/);
-  const roomMatchSpaced = raw.match(/(เช็คเอ้าท์|เช็คเอาต์|เช็คเอาท์|checkout)\s*ห้อง?\s*([ab]\d{3,4})/i);
+  const roomMatchCollapsed = collapsed.match(/(เช็คเอ้าท์|เช็คเอาต์|เช็คเอาท์|checkout)(?:ห้อง|room)?([ab]\d{3,4})/);
+  const roomMatchSpaced = raw.match(/(เช็คเอ้าท์|เช็คเอาต์|เช็คเอาท์|checkout)\s*(?:ห้อง|room)?\s*([ab]\d{3,4})/i);
   const roomToken = (roomMatchSpaced?.[2] || roomMatchCollapsed?.[2] || '').toUpperCase();
   if (!roomToken) return null;
   if (!/^[AB]\d{3,4}$/.test(roomToken)) return null;
