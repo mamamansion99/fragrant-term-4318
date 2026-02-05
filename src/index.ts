@@ -1256,6 +1256,42 @@ export default {
           continue;
         }
 
+        // Fridge received confirmation (querystring postback)
+        const fridgeType = String(data.type || '').trim().toLowerCase();
+        const fridgeAction = String(data.action || '').trim().toLowerCase();
+        if (fridgeType === 'fridge' && (fridgeAction === 'received_yes' || fridgeAction === 'received_no')) {
+          const sanitizedData = {
+            ...data,
+            type: 'fridge',
+            action: fridgeAction,
+            lineUserId: ev?.source?.userId || data.lineUserId || null,
+            chatId: getChatId(ev) || data.chatId || null
+          };
+
+          const fridgePayload = {
+            source: 'line_postback',
+            channel: 'fridge_received',
+            event: ev,
+            data: sanitizedData,
+            receivedAt: new Date().toISOString()
+          };
+
+          ctx.waitUntil(
+            notifyN8nFridgeReceived(env, fridgePayload)
+              .catch((err) => console.error('fridge received notify failed', err))
+          );
+
+          if (replyToken) {
+            const ackText = fridgeAction === 'received_yes'
+              ? 'รับทราบครับ ✅ บันทึกว่าได้รับตู้เย็นแล้ว'
+              : 'รับทราบครับ ❌ เดี๋ยวเจ้าหน้าที่จะติดต่อกลับ';
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: ackText }
+            ]).catch(console.error);
+          }
+          continue;
+        }
+
         if (data.act === 'fridge_rent_request') {
           const sanitizedData = {
             ...data,
@@ -3567,6 +3603,10 @@ function getN8nFridgeWebhook(env) {
   return env.N8N_FRIDGE_WEBHOOK_URL || '';
 }
 
+function getN8nFridgeReceivedWebhook(env) {
+  return env.N8N_FRIDGE_RECEIVED_WEBHOOK || '';
+}
+
 function getN8nParkingWebhook(env) {
   return env.N8N_PARKING_WEBHOOK_URL || '';
 }
@@ -3598,6 +3638,37 @@ async function notifyN8nFridge(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nFridge error', err);
+    return false;
+  }
+}
+
+async function notifyN8nFridgeReceived(env, payload) {
+  const url = getN8nFridgeReceivedWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nFridgeReceived: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nFridgeReceived: missing WORKER_SECRET');
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      console.error('notifyN8nFridgeReceived: non-200 response', res.status);
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nFridgeReceived error', err);
     return false;
   }
 }

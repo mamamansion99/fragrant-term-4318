@@ -12,6 +12,7 @@
     "MM_WEBHOOK_URL": "https://script.google.com/macros/s/AKfycbzmF7evl7rdprbYnV9L1qFxBCuWHaukMEwzHVZcsD2a0EWZvZM0bsCN7COO9nlbSIo/exec",
     "MM_V2_URL": "https://script.google.com/macros/s/AKfycbyYn0d87TKQoab3c_EZ88jiIwluA1R7xU7fqhry9M3VxQO1vNBpuf9z3UkPu9Ieu4nK/exec",
     "N8N_FRIDGE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-fridge",
+    "N8N_FRIDGE_RECEIVED_WEBHOOK": "https://n8n.srv1112305.hstgr.cloud/webhook/N8N_FRIDGE_RECEIVED_WEBHOOK",
     "N8N_FRIDGE_LINK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-fridge",
     "N8N_PARKING_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-parking",
     "N8N_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/line-postback-notready",
