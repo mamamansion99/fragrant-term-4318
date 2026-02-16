@@ -3129,8 +3129,16 @@ async function quickKeywordReply(text, env, userId) {
   if (mentionsWifi && (wifiPassHint || shortWifiAsk)) {
     const wifiText = [
       '🛜 WiFi หอพัก',
-      'รหัส: 5021150660',
-      'เชื่อมไม่ได้ให้ปิด/เปิด WiFi แล้วลองใหม่'
+      '',
+      '🏢 แยกตามชั้น (เลขท้ายคือชั้นของห้อง)',
+      '',
+      '🅰️ ตึก A',
+      '📶 ชื่อเครือข่าย: MAMA_2.4G_FL1–MAMA_2.4G_FL5 (5G รูปแบบเดียวกัน)',
+      '🔑 รหัส: 5021150660',
+      '',
+      '🅱️ ตึก B',
+      '📶 ชื่อเครือข่าย: mama mansion_B_2.4G1–mama mansion_B_2.4G5 (5G รูปแบบเดียวกัน)',
+      '🔑 รหัส: 22222222'
     ].join('\n');
 
     return [{ type: 'text', text: wifiText }];
@@ -4043,7 +4051,7 @@ async function notifyN8nExpense(env, payload) {
 }
 
 async function notifyN8nGroupImage(env, payload) {
-  const url = env.n8n_slip_receipt_ledger || '';
+  const url = 'https://n8n.srv1112305.hstgr.cloud/webhook/Receipt_Ledger';
   if (!url) {
     console.warn('notifyN8nGroupImage: missing webhook URL');
     return false;
