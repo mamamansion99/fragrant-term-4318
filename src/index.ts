@@ -97,6 +97,7 @@ const BOOKING_ID_TTL_MS = BOOKING_ID_TTL_SECONDS * 1000;
 const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
 const PENALTY_FLOW_TTL_MS = PENALTY_FLOW_TTL_SECONDS * 1000;
 const CHECKOUT_FLOW_TTL_SECONDS = 10 * 60;
+const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
 
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
@@ -276,6 +277,47 @@ function isCheckinChangeIntent(text) {
   const normalized = (text || '').toLowerCase().replace(/\s+/g, '');
   if (!normalized) return false;
   return CHECKIN_CHANGE_KEYWORDS.some(keyword => normalized.includes(keyword));
+}
+
+const KEY_RENT_MOBILE_BANKING_TEXT = [
+  '📌 กรุณาโอนเงินเข้าบัญชีนี้เท่านั้น',
+  '',
+  '🏦 ธนาคารทีทีบี (TTB)',
+  'เลขที่บัญชี: 760-7258-188',
+  'ชื่อบัญชี: ธิมา สุภานุรัตน์',
+  ''
+].join('\n');
+
+function buildKeyRentAckText(keyRent) {
+  const itemSummary = (keyRent?.items || [])
+    .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
+    .join(', ');
+  const modeLabel = keyRent?.mode === 'SET'
+    ? 'ชุดกุญแจ'
+    : (keyRent?.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ');
+  const roomLabel = keyRent?.room || '-';
+  return `รับคำเช่า${modeLabel} ห้อง ${roomLabel} แล้ว (${itemSummary})`;
+}
+
+function buildKeyRentPaymentMessage(keyRent) {
+  const amount = Number(keyRent?.amount || 0);
+  const room = keyRent?.room ? `ห้อง ${keyRent.room}` : '';
+  const amountLabel = amount > 0 ? `ยอด ${amount} บาท` : '';
+  const parts = ['เลือกวิธีชำระค่าเช่ากุญแจ', room, amountLabel].filter(Boolean);
+
+  return {
+    type: 'template',
+    altText: 'เลือกวิธีชำระค่าเช่ากุญแจ',
+    template: {
+      type: 'buttons',
+      text: parts.join(' • '),
+      actions: [
+        { type: 'postback', label: 'เงินสด', data: 'act=KEY_RENT_CASH', displayText: 'ชำระเงินสด' },
+        { type: 'postback', label: 'โอนจ่าย', data: 'act=KEY_RENT_BANK', displayText: 'โอนจ่าย' },
+        { type: 'postback', label: 'ยกเลิก', data: 'act=KEY_RENT_CANCEL', displayText: 'ยกเลิก' }
+      ]
+    }
+  };
 }
 
 // Rent key/keycard/set commands
@@ -1256,6 +1298,60 @@ export default {
           continue;
         }
 
+        // Key rent payment method selection
+        if (act === 'KEY_RENT_CASH' || act === 'KEY_RENT_BANK' || act === 'KEY_RENT_CANCEL') {
+          const chatId = getChatId(ev);
+          const stateKey = getStateKey(ev);
+          const keyRentFlowKey = stateKey + ':keyrent_flow';
+          const keyRentFlow = await kvGet(env, keyRentFlowKey);
+
+          if (!keyRentFlow || !keyRentFlow.keyRent) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ไม่พบรายการเช่ากุญแจ กรุณาเริ่มใหม่อีกครั้งค่ะ');
+            continue;
+          }
+
+          if (act === 'KEY_RENT_CANCEL') {
+            ctx.waitUntil(kvDel(env, keyRentFlowKey));
+            await errorReplyOrPush(env, replyToken, chatId, 'ยกเลิกคำขอเช่ากุญแจแล้วค่ะ');
+            continue;
+          }
+
+          const paymentMethod = act === 'KEY_RENT_CASH' ? 'CASH' : 'MOBILE_BANKING';
+          const keyRent = keyRentFlow.keyRent || {};
+          const payload = {
+            type: 'KEY_RENT',
+            room: keyRent.room,
+            items: keyRent.items,
+            amount: keyRent.amount,
+            rawText: keyRent.rawText,
+            userId: keyRentFlow.userId || ev?.source?.userId || null,
+            chatId: keyRentFlow.chatId || chatId || null,
+            sourceType: keyRentFlow.sourceType || ev?.source?.type || null,
+            messageId: keyRentFlow.messageId || null,
+            receivedAt: keyRentFlow.receivedAt || new Date().toISOString(),
+            paymentMethod
+          };
+
+          const messages = [];
+          if (paymentMethod === 'MOBILE_BANKING') {
+            messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
+          }
+          messages.push({ type: 'text', text: buildKeyRentAckText(keyRent) });
+          messages.push({ type: 'text', text: '✅ ขอบคุณค่ะ' });
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
+          }
+
+          ctx.waitUntil(
+            notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
+          );
+          ctx.waitUntil(kvDel(env, keyRentFlowKey));
+          continue;
+        }
+
         // Fridge received confirmation (querystring postback)
         const fridgeType = String(data.type || '').trim().toLowerCase();
         const fridgeAction = String(data.action || '').trim().toLowerCase();
@@ -1636,31 +1732,23 @@ export default {
               continue;
             }
 
-            const timestamp = new Date().toISOString();
-            const keyPayload = {
-              type: 'KEY_RENT',
-              room: keyRent.room,
-              items: keyRent.items,
-              amount: keyRent.amount,
-              rawText: keyRent.rawText,
+            const keyRentFlowKey = stateKey + ':keyrent_flow';
+            const flow = {
+              keyRent,
               userId: userId || null,
               chatId: chatId || null,
               sourceType: ev?.source?.type || null,
               messageId: m?.id || null,
-              receivedAt: timestamp
+              receivedAt: new Date().toISOString(),
+              ts: Date.now()
             };
-            ctx.waitUntil(
-              notifyN8nKeyWebhook(env, keyPayload).catch((err) => console.error('key webhook failed', err))
-            );
+            ctx.waitUntil(kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS));
 
-            const itemSummary = keyRent.items
-              .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
-              .join(', ');
-            const ackText = `รับคำเช่า${keyRent.mode === 'SET' ? 'ชุดกุญแจ' : (keyRent.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ')} ห้อง ${keyRent.room} แล้ว (${itemSummary})`;
+            const paymentMsg = buildKeyRentPaymentMessage(keyRent);
             if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [paymentMsg]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [paymentMsg]).catch(console.error));
             }
             continue;
           }
