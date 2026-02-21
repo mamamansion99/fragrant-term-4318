@@ -289,14 +289,11 @@ const KEY_RENT_MOBILE_BANKING_TEXT = [
 ].join('\n');
 
 function buildKeyRentAckText(keyRent) {
-  const itemSummary = (keyRent?.items || [])
-    .map((it) => `${it.assetType === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ'} x${it.qty}`)
-    .join(', ');
   const modeLabel = keyRent?.mode === 'SET'
     ? 'ชุดกุญแจ'
     : (keyRent?.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ');
   const roomLabel = keyRent?.room || '-';
-  return `รับคำเช่า${modeLabel} ห้อง ${roomLabel} แล้ว (${itemSummary})`;
+  return `รับคำขอเช่า${modeLabel} ห้อง ${roomLabel} เรียบร้อยแล้ว โปรดรอการตรวจสอบและสร้างบิลสักครู่ค่ะ`;
 }
 
 function buildKeyRentPaymentMessage(keyRent) {
@@ -1337,7 +1334,6 @@ export default {
             messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
           }
           messages.push({ type: 'text', text: buildKeyRentAckText(keyRent) });
-          messages.push({ type: 'text', text: '✅ ขอบคุณค่ะ' });
 
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
