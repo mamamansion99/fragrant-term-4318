@@ -539,6 +539,75 @@ function getAutoImgGas(env) {
   return env.AUTO_IMG_URL || '';
 }
 
+function getGitRepo(env) {
+  return String(env.GITHUB_REPO || env.GIT_REPO || '').trim();
+}
+
+function getGitBranch(env) {
+  return String(env.GITHUB_BRANCH || env.GIT_BRANCH || 'main').trim() || 'main';
+}
+
+function getGitToken(env) {
+  return String(env.GITHUB_TOKEN || env.GIT_TOKEN || '').trim();
+}
+
+function normalizeGitRepo(repo) {
+  const value = String(repo || '').trim();
+  if (!value) return '';
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value)) {
+    throw new Error('invalid GitHub repo format; expected owner/repo');
+  }
+  return value;
+}
+
+async function fetchLatestGitCommit(env, options = {}) {
+  const repo = normalizeGitRepo(options.repo || getGitRepo(env));
+  if (!repo) {
+    throw new Error('missing GITHUB_REPO (expected owner/repo)');
+  }
+
+  const branch = String(options.branch || getGitBranch(env)).trim() || 'main';
+  const token = getGitToken(env);
+  const headers = {
+    'Accept': 'application/vnd.github+json',
+    'User-Agent': 'fragrant-term-4318-worker'
+  };
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const endpoint = `https://api.github.com/repos/${repo}/commits/${encodeURIComponent(branch)}`;
+  const res = await fetch(endpoint, { method: 'GET', headers });
+  const bodyText = await res.text();
+  let data: Record<string, any> = {};
+  try {
+    data = JSON.parse(bodyText || '{}');
+  } catch (_) {
+    data = {};
+  }
+
+  if (!res.ok) {
+    const message = typeof data?.message === 'string' ? data.message : bodyText.slice(0, 200);
+    throw new Error(`github_api_error:${res.status}:${message || 'unknown error'}`);
+  }
+
+  const message = String(data?.commit?.message || '');
+  const sha = String(data?.sha || '');
+  return {
+    repo,
+    branch,
+    sha,
+    shortSha: sha ? sha.slice(0, 7) : '',
+    message,
+    messageTitle: message.split('\n')[0] || '',
+    authorName: String(data?.commit?.author?.name || ''),
+    authorEmail: String(data?.commit?.author?.email || ''),
+    authoredAt: String(data?.commit?.author?.date || ''),
+    committedAt: String(data?.commit?.committer?.date || ''),
+    url: String(data?.html_url || '')
+  };
+}
+
 
 function corsHeaders(origin) {
   return {
@@ -555,6 +624,12 @@ function getPayRentGas(env) {
 
 function getN8nPayRentUrl(env) {
   return env.N8N_PAYRENT_URL || '';
+}
+
+const DEFAULT_N8N_RENT_KEY_RECEIVER_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/rent-key-receiver';
+function getRentKeyReceiverUrl(env) {
+  // Env var: N8N_RENT_KEY_RECEIVER_URL (optional). If unset, the default webhook URL above is used.
+  return env.N8N_RENT_KEY_RECEIVER_URL || DEFAULT_N8N_RENT_KEY_RECEIVER_URL;
 }
 
 async function fetchLineImageAsDataUrl(channelToken, messageId) {
@@ -792,6 +867,33 @@ export default {
       return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (request.method === 'GET' && url.pathname === '/git/latest-commit') {
+      const secret = String(env.WORKER_SECRET || '').trim();
+      if (secret && request.headers.get('x-worker-secret') !== secret) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const repo = String(url.searchParams.get('repo') || '').trim();
+      const branch = String(url.searchParams.get('branch') || '').trim();
+
+      try {
+        const latest = await fetchLatestGitCommit(env, { repo, branch });
+        return new Response(JSON.stringify({ ok: true, ...latest }), {
+          status: 200,
+          headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        console.error('latest_commit_lookup_failed', err);
+        return new Response(JSON.stringify({
+          ok: false,
+          error: String(err?.message || err)
+        }), {
+          status: 500,
+          headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
 
     // Custom callback for tenant ID change completion
     if (request.method === 'POST' && url.pathname === '/tenant-change-complete') {
@@ -856,7 +958,80 @@ export default {
        * POSTBACK HANDLER
        * --------------------- */
       if (ev.type === 'postback') {
-        const data = parsePostbackData(ev.postback?.data || '');
+        const postbackDataString = String(ev?.postback?.data || '');
+        let data: Record<string, string> = {};
+        try {
+          if (typeof parsePostbackData === 'function') {
+            const parsed = parsePostbackData(postbackDataString);
+            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+              for (const [key, value] of Object.entries(parsed)) {
+                if (!key) continue;
+                data[key] = String(value ?? '');
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('rent_key_postback_parsePostbackData_failed', err);
+        }
+        if (Object.keys(data).length === 0) {
+          try {
+            const qs = postbackDataString.startsWith('?') ? postbackDataString.slice(1) : postbackDataString;
+            data = Object.fromEntries(new URLSearchParams(qs));
+          } catch (err) {
+            console.warn('rent_key_postback_fallback_parse_failed', err);
+            data = {};
+          }
+        }
+
+        // BEGIN RENT KEY POSTBACK FORWARD
+        const rentKeyAction = String(data.act || data.type || '').trim();
+        if (rentKeyAction === 'KEY_CASH_CONFIRM' || rentKeyAction === 'KEY_CASH_REJECT') {
+          const billId = String(data.billId || '');
+          const room = String(data.room || '');
+          const billIdLabel = billId || '-';
+          const quickReplyText = rentKeyAction === 'KEY_CASH_CONFIRM'
+            ? `✅ บันทึกว่า 'รับเงินแล้ว' (BillID: ${billIdLabel})`
+            : `❌ บันทึกว่า 'ยังไม่ได้รับเงิน' (BillID: ${billIdLabel})`;
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: quickReplyText }
+            ]).catch((err) => console.error('rent_key_postback_reply_failed', err));
+          } else {
+            const chatId = getChatId(ev);
+            if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, quickReplyText).catch((err) => console.error('rent_key_postback_push_failed', err)));
+            }
+          }
+
+          const rentKeyReceiverUrl = getRentKeyReceiverUrl(env);
+          const headers: Record<string, string> = { 'content-type': 'application/json' };
+          const workerSecret = String(env?.WORKER_SECRET || '').trim();
+          if (workerSecret) {
+            headers['x-worker-secret'] = workerSecret;
+          }
+
+          const payloadToN8n = {
+            source: 'line',
+            receivedAt: new Date().toISOString(),
+            action: rentKeyAction,
+            billId,
+            room,
+            parsed: data,
+            event: ev
+          };
+
+          ctx.waitUntil(
+            fetch(rentKeyReceiverUrl, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(payloadToN8n)
+            }).catch((err) => console.error('rent_key_postback_forward_failed', err))
+          );
+          continue;
+        }
+        // END RENT KEY POSTBACK FORWARD
+
         const act = String(data.act || '').trim();
         // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
         if (act === 'confirm' || act === 'slip_yes' || act === 'slip_no' || act === 'id_yes' || act === 'id_no' || act === 'booking_confirm') {
@@ -1692,8 +1867,6 @@ export default {
           const payRentKey = stateKey + ':payrent_flow';
           const payRentFlow = await kvGet(env, payRentKey);
           const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
-          const keyRent = parseKeyRent(textIn);
-          const keyForgot = parseKeyKeyword(textIn); // simple “key A101 20” legacy path
 
           const forwardPayRent = () => {
             const rentUrl = getPayRentGas(env);
@@ -1716,6 +1889,47 @@ export default {
               notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
             );
           };
+          // While waiting for penalty reason, treat the next text as reason first.
+          if (penaltyReasonNeeded) {
+            const reason = (textIn || '').trim();
+            if (!reason) {
+              const askAgain = (penaltyFlow?.type || '') === 'Others_payment'
+                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
+                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: askAgain }
+                ]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
+              }
+              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
+              continue;
+            }
+
+            const updated = {
+              ...penaltyFlow,
+              reason: normalizePenaltyReason(reason),
+              ts: Date.now(),
+              chatId,
+              userId
+            };
+            ctx.waitUntil(kvPut(env, penaltyKey, updated, PENALTY_FLOW_TTL_SECONDS));
+
+            const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
+            const askSlip = `บันทึก${typeLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: askSlip }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
+            }
+            continue;
+          }
+
+          const keyRent = parseKeyRent(textIn);
+          const keyForgot = parseKeyKeyword(textIn); // simple "key A101 20" legacy path
 
           if (keyRent) {
             if (keyRent.error === 'MISSING_ROOM') {
@@ -1851,7 +2065,6 @@ export default {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
 
-            const typeLabel = penaltyType === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
             const askReason = penaltyType === 'Others_payment'
               ? 'เป็นค่าอะไรคะ เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม, ค่าผ้า ฯลฯ'
               : 'ค่าปรับเรื่องอะไรคะ เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
@@ -1904,44 +2117,6 @@ export default {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
             }
             ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now(), chatId, userId }, PENALTY_FLOW_TTL_SECONDS));
-            continue;
-          }
-
-          if (penaltyReasonNeeded) {
-            const reason = (textIn || '').trim();
-            if (!reason) {
-              const askAgain = (penaltyFlow?.type || '') === 'Others_payment'
-                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
-                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: askAgain }
-                ]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
-              }
-              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
-              continue;
-            }
-
-            const updated = {
-              ...penaltyFlow,
-              reason: normalizePenaltyReason(reason),
-              ts: Date.now(),
-              chatId,
-              userId
-            };
-            ctx.waitUntil(kvPut(env, penaltyKey, updated, PENALTY_FLOW_TTL_SECONDS));
-
-            const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
-            const askSlip = `บันทึก${typeLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: askSlip }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
-            }
             continue;
           }
 
@@ -2798,6 +2973,7 @@ function isResAct(a) { return typeof a === 'string' && a.startsWith('RES_'); }
 function normalizePenaltyReason(reason) {
   const text = (reason || '').trim();
   if (!text) return text;
+
   const compact = text
     .toLowerCase()
     .replace(/[^a-z0-9ก-๙]/g, '')
@@ -2805,18 +2981,15 @@ function normalizePenaltyReason(reason) {
 
   const isKeyRelated =
     compact.includes('กุญแจ') ||
-    compact.includes('กุญเเจ') ||
     compact.includes('คีย์การ์ด') ||
-    compact.includes('คีย์การ์ท') ||
-    compact.includes('คีย์กาด') ||
-    compact.includes('คีย์การ์ต') ||
-    compact.includes('คีย์ก์ด') ||
     compact.includes('keycard');
 
-  if (isKeyRelated) return 'KEY';
+  const isRentRelated =
+    compact.includes('ค่าเช่า');
+
+  if (isKeyRelated || isRentRelated) return 'KEY_RENT';
   return text;
 }
-
 /* =========================================
  * 6) Message builders
  * ========================================= */

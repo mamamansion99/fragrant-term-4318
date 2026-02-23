@@ -6,6 +6,8 @@
   "preview_urls": true,
   "vars": {
     "ALLOWED_ORIGIN": "https://mamamansion-ar2.pages.dev",
+    "GITHUB_REPO": "mamamansion99/fragrant-term-4318",
+    "GITHUB_BRANCH": "main",
     "BOOKING_URL": "https://mamamansion-ar2.pages.dev/",
     "MAPS_URL": "https://maps.app.goo.gl/Qktm2mDGPappQ8EZA",
     "FB_PAGE_URL": "https://www.facebook.com/MamaMansion37/",
