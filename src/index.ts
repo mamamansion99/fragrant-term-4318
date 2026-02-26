@@ -2979,15 +2979,21 @@ function normalizePenaltyReason(reason) {
     .replace(/[^a-z0-9ก-๙]/g, '')
     .replace(/เเ/g, 'แ');
 
-  const isKeyRelated =
-    compact.includes('กุญแจ') ||
+  const hasRentWord =
+    compact.includes('เช่า') ||
+    compact.includes('ค่าเช่า');
+  const hasKeyWord = compact.includes('กุญแจ');
+  const hasKeySetWord = compact.includes('ชุดกุญแจ');
+  const hasKeycardWord =
     compact.includes('คีย์การ์ด') ||
     compact.includes('keycard');
 
-  const isRentRelated =
-    compact.includes('ค่าเช่า');
+  const isRentKeyReason =
+    hasKeySetWord ||
+    hasKeycardWord ||
+    (hasRentWord && hasKeyWord);
 
-  if (isKeyRelated || isRentRelated) return 'KEY_RENT';
+  if (isRentKeyReason) return 'KEY_RENT';
   return text;
 }
 /* =========================================
