@@ -2979,19 +2979,32 @@ function normalizePenaltyReason(reason) {
     .replace(/[^a-z0-9ก-๙]/g, '')
     .replace(/เเ/g, 'แ');
 
-  const hasRentWord =
-    compact.includes('เช่า') ||
-    compact.includes('ค่าเช่า');
-  const hasKeyWord = compact.includes('กุญแจ');
-  const hasKeySetWord = compact.includes('ชุดกุญแจ');
-  const hasKeycardWord =
+  const hasKeyWord =
+    compact.includes('กุญแจ') ||
     compact.includes('คีย์การ์ด') ||
-    compact.includes('keycard');
+    compact.includes('keycard') ||
+    compact.includes('key');
+  const hasForgotOrLostWord =
+    compact.includes('ลืม') ||
+    compact.includes('หาย') ||
+    compact.includes('ทำหาย');
 
-  const isRentKeyReason =
-    hasKeySetWord ||
-    hasKeycardWord ||
-    (hasRentWord && hasKeyWord);
+  // Keep normal reason text for forgot/lost-key intents (e.g. "ลืมกุญแจ").
+  if (hasKeyWord && hasForgotOrLostWord) return text;
+
+  const rentKeyPatterns = [
+    'เช่ากุญแจ',
+    'เช่าชุดกุญแจ',
+    'เช่าคีย์การ์ด',
+    'ค่าเช่ากุญแจ',
+    'ค่าเช่าชุดกุญแจ',
+    'ค่าเช่าคีย์การ์ด',
+    'rentkey',
+    'rentkeycard',
+    'rentkeyset',
+    'keyrent'
+  ];
+  const isRentKeyReason = rentKeyPatterns.some((pattern) => compact.includes(pattern));
 
   if (isRentKeyReason) return 'KEY_RENT';
   return text;
