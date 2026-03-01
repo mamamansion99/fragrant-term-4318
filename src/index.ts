@@ -115,18 +115,18 @@ function parseCheckinCommand(text) {
   return match[1].toUpperCase();
 }
 
-const CHECKOUT_TRIGGER_RE = /\b(?:Checkout|checkout)\b/;
+const CHECKOUT_TRIGGER_RE = /(เช็ค\s*เอ[้๊]?[า]?ท์?|checkout)/i;
 function parseCheckoutTrigger(text) {
   if (!text) return null;
   const raw = String(text || '').trim();
   if (!CHECKOUT_TRIGGER_RE.test(raw)) return null;
 
   const compact = raw.replace(/\s+/g, '');
-  const roomMatchSpaced = raw.match(/\b(?:Checkout|checkout)\b\s*(?:ห้อง|room)?\s*([aA]\d{3,4})\b/);
-  const roomMatchCompact = compact.match(/(?:Checkout|checkout)(?:ห้อง|room)?([aA]\d{3,4})\b/);
+  const roomMatchSpaced = raw.match(/(?:เช็ค\s*เอ[้๊]?[า]?ท์?|checkout)\s*(?:ห้อง|room)?\s*([ab]\d{3,4})\b/i);
+  const roomMatchCompact = compact.match(/(?:เช็คเอ[้๊]?[า]?ท์?|checkout)(?:ห้อง|room)?([ab]\d{3,4})\b/i);
   const roomToken = (roomMatchSpaced?.[1] || roomMatchCompact?.[1] || '').toUpperCase();
   if (!roomToken) return null;
-  if (!/^A\d{3,4}$/.test(roomToken)) return null;
+  if (!/^[AB]\d{3,4}$/.test(roomToken)) return null;
   return roomToken;
 }
 
