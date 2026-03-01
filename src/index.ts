@@ -130,6 +130,77 @@ function parseCheckoutTrigger(text) {
   return roomToken;
 }
 
+const CO_ADMIN_ALLOWED_LINE_USER_ID = 'Ue90558b73d62863e2287ac32e69541a3';
+const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
+const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
+
+function parseRoomToken(token) {
+  const room = String(token || '').trim().toUpperCase();
+  if (!/^[AB]\d{3,4}$/.test(room)) return null;
+  return room;
+}
+
+function parseCoAdminShortcut(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const tokens = raw.toLowerCase().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return null;
+
+  if (tokens[0] === 'co') {
+    if (tokens[1] === 'done') {
+      if (tokens.length < 3 || tokens.length > 4) return null;
+      const roomId = parseRoomToken(tokens[2]);
+      if (!roomId) return null;
+      const outcome = tokens.length === 4 ? tokens[3] : '';
+      if (outcome && !CO_ADMIN_OUTCOME_SET.has(outcome)) return null;
+      return {
+        type: 'co_done',
+        roomId,
+        outcome: outcome || null,
+        normalizedCommand: outcome ? `co done ${roomId.toLowerCase()} ${outcome}` : `co done ${roomId.toLowerCase()}`
+      };
+    }
+
+    if (tokens[1] === 'status') {
+      if (tokens.length !== 3) return null;
+      const roomId = parseRoomToken(tokens[2]);
+      if (!roomId) return null;
+      return {
+        type: 'co_status',
+        roomId,
+        outcome: null,
+        normalizedCommand: `co status ${roomId.toLowerCase()}`
+      };
+    }
+
+    if (tokens.length < 2 || tokens.length > 3) return null;
+    const roomId = parseRoomToken(tokens[1]);
+    if (!roomId) return null;
+    const outcome = tokens.length === 3 ? tokens[2] : '';
+    if (outcome && !CO_ADMIN_OUTCOME_SET.has(outcome)) return null;
+    return {
+      type: 'co',
+      roomId,
+      outcome: outcome || null,
+      normalizedCommand: outcome ? `co ${roomId.toLowerCase()} ${outcome}` : `co ${roomId.toLowerCase()}`
+    };
+  }
+
+  if (tokens[0] === 'ready') {
+    if (tokens.length !== 2) return null;
+    const roomId = parseRoomToken(tokens[1]);
+    if (!roomId) return null;
+    return {
+      type: 'ready',
+      roomId,
+      outcome: null,
+      normalizedCommand: `ready ${roomId.toLowerCase()}`
+    };
+  }
+
+  return null;
+}
+
 function buildBookingFlowKey(userId, chatId) {
   if (userId) return `booking_flow:${userId}`;
   if (chatId) return `booking_flow:${chatId}`;
@@ -1807,6 +1878,44 @@ export default {
               }
             };
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [msg]).catch(console.error);
+            continue;
+          }
+
+          const coAdminShortcut = parseCoAdminShortcut(textIn);
+          if (coAdminShortcut) {
+            if (userId !== CO_ADMIN_ALLOWED_LINE_USER_ID) {
+              console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
+              continue;
+            }
+
+            const payload = {
+              source: 'line_message',
+              intent: 'co_admin_shortcut',
+              shortcutType: coAdminShortcut.type,
+              roomId: coAdminShortcut.roomId,
+              outcome: coAdminShortcut.outcome,
+              command: coAdminShortcut.normalizedCommand,
+              text: textIn,
+              lineUserId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            const webhookOk = await notifyN8nCoAdminWebhook(env, payload);
+            const ackText = webhookOk
+              ? `Command received: ${coAdminShortcut.normalizedCommand}`
+              : 'Command received, but webhook failed';
+
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackText }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
             continue;
           }
 
@@ -4324,6 +4433,36 @@ async function notifyN8nExpense(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nExpense error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCoAdminWebhook(env, payload) {
+  const url = env.N8N_CO_ADMIN_WEBHOOK_URL || CO_ADMIN_WEBHOOK_URL;
+  if (!url) {
+    console.warn('notifyN8nCoAdminWebhook: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCoAdminWebhook: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCoAdminWebhook error', err);
     return false;
   }
 }
