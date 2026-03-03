@@ -255,11 +255,32 @@ const ROOM_VISIT_KEYWORDS = new Set([
   'ชมหอ',
   'ดูหอ'
 ]);
+const ROOM_VISIT_INTENT_RE = /(ดูห้อง|ชมห้อง|เข้าไปดู(?:ห้อง|หอ)?|เข้ามาดู(?:ห้อง|หอ)?|ชมหอ|ดูหอ|ดูห้องตัวอย่าง|ชมห้องตัวอย่าง|นัดดูห้อง|นัดชมห้อง)/i;
+const ROOM_VISIT_VERB_RE = /(ดู|ชม|เยี่ยมชม|นัดดู|นัดชม|ขอดู|ขอชม|อยากดู|อยากชม|visit|view|see|tour|walk-?in)/i;
+const ROOM_VISIT_TARGET_RE = /(ห้องตัวอย่าง|ห้องพัก|ห้อง|หอ|แมนชั่น|sample\s*room|show\s*room|showroom|room|dorm|mansion)/i;
+const ROOM_VISIT_EXCLUDE_RE = /(ห้องน้ำ|ห้องครัว|ห้องเก็บของ|ห้องเครื่อง|ห้องซักผ้า|ห้องแม่บ้าน)/i;
 
 function isRoomVisitIntent(text) {
-  const compact = String(text || '').trim().replace(/\s+/g, '');
-  if (!compact) return false;
-  return ROOM_VISIT_KEYWORDS.has(compact);
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+  const compact = raw.replace(/\s+/g, '');
+  const lower = raw.toLowerCase();
+
+  if (ROOM_VISIT_KEYWORDS.has(compact)) return true;
+  if (ROOM_VISIT_INTENT_RE.test(compact) || ROOM_VISIT_INTENT_RE.test(lower)) return true;
+  if (ROOM_VISIT_EXCLUDE_RE.test(compact) || ROOM_VISIT_EXCLUDE_RE.test(lower)) return false;
+
+  const hasVerb =
+    ROOM_VISIT_VERB_RE.test(raw) ||
+    ROOM_VISIT_VERB_RE.test(compact) ||
+    ROOM_VISIT_VERB_RE.test(lower);
+  if (!hasVerb) return false;
+
+  const hasTarget =
+    ROOM_VISIT_TARGET_RE.test(raw) ||
+    ROOM_VISIT_TARGET_RE.test(compact) ||
+    ROOM_VISIT_TARGET_RE.test(lower);
+  return hasTarget;
 }
 
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
