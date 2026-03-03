@@ -246,6 +246,22 @@ const AVAILABILITY_EXCLUDE_REGEXES = [
   /room\s*(tonight|tomorrow)/i
 ];
 
+const ROOM_VISIT_REPLY_TEXT = 'สามารถมาเยี่ยมชมมามา แมนชั่นได้ทุกวัน 08:00 น. ถึง 17:00 น. ครับผม';
+const ROOM_VISIT_KEYWORDS = new Set([
+  'ดูห้อง',
+  'ชมห้อง',
+  'เข้าไปดู',
+  'เข้ามาดู',
+  'ชมหอ',
+  'ดูหอ'
+]);
+
+function isRoomVisitIntent(text) {
+  const compact = String(text || '').trim().replace(/\s+/g, '');
+  if (!compact) return false;
+  return ROOM_VISIT_KEYWORDS.has(compact);
+}
+
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
 function isParkingIntent(text) {
   const normalized = (text || '').trim();
@@ -3500,6 +3516,10 @@ function leadQuestion(step) {
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
+
+  if (isRoomVisitIntent(normalized)) {
+    return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
+  }
 
   const lower = normalized.toLowerCase();
   const includesAny = (haystack, keywords) => keywords.some((kw) => haystack.includes(kw));
