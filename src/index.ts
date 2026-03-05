@@ -3751,15 +3751,15 @@ async function quickKeywordReply(text, env, userId) {
 
   if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
     const quickItems = [
+      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' },
+      { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
+      { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
       { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
       { label: 'เฟอร์นิเจอร์', act: 'ROOM_FURNITURE' },
       { label: 'เครื่องใช้ไฟฟ้า', act: 'ROOM_APPLIANCE' },
       { label: 'ค่าเช่า', act: 'ROOM_RENT' },
-      { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
       { label: 'เงินประกัน/สัญญา', act: 'ROOM_DEPOSIT' },
-      { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
-      { label: 'เข้าอยู่เร็วสุด', act: 'ROOM_EARLIEST' },
-      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' }
+      { label: 'เข้าอยู่เร็วสุด', act: 'ROOM_EARLIEST' }
     ]
       .filter(Boolean)
       .map(({ label, act }) => ({
