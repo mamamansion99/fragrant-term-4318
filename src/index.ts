@@ -11,6 +11,107 @@ function getStateKey(ev) {
   return `${chat}:${uid}`;
 }
 
+const ROOM_RENT_DRIVE_IMAGE_IDS = [
+  '1j7ss_o3t4RpNLd12mV31T167WjC3m9Ca',
+  '1Os-hVZgZ47l7AJwEpY8UKw7Jd9t624Cz',
+  '1WLAPvEo9ZXnELZjQ8smVcOTNbTaw-WtN'
+];
+
+const ROOM_RENT_IMG_WIDTH_ORIGINAL = 1600;
+const ROOM_RENT_IMG_WIDTH_PREVIEW = 640;
+const LINE_IMAGE_MAX_ORIGINAL_BYTES = 10 * 1024 * 1024;
+const LINE_IMAGE_MAX_PREVIEW_BYTES = 1 * 1024 * 1024;
+
+function buildRoomRentImageMessages(origin) {
+  return ROOM_RENT_DRIVE_IMAGE_IDS.map((_, idx) => {
+    const originalUrl = `${origin}/media/room-rent/${idx + 1}?v=orig`;
+    const previewUrl = `${origin}/media/room-rent/${idx + 1}?v=preview`;
+    return {
+      type: 'image',
+      originalContentUrl: originalUrl,
+      previewImageUrl: previewUrl
+    };
+  });
+}
+
+function resolveRoomRentVariant(url) {
+  return String(url.searchParams.get('v') || '').toLowerCase() === 'preview' ? 'preview' : 'orig';
+}
+
+async function fetchGoogleDriveImage(fileId, variant = 'orig') {
+  const width = variant === 'preview' ? ROOM_RENT_IMG_WIDTH_PREVIEW : ROOM_RENT_IMG_WIDTH_ORIGINAL;
+  const maxBytes = variant === 'preview' ? LINE_IMAGE_MAX_PREVIEW_BYTES : LINE_IMAGE_MAX_ORIGINAL_BYTES;
+  const candidates = [
+    `https://lh3.googleusercontent.com/d/${encodeURIComponent(fileId)}=w${width}`,
+    `https://drive.google.com/uc?export=download&id=${encodeURIComponent(fileId)}`,
+    `https://drive.google.com/uc?export=view&id=${encodeURIComponent(fileId)}`
+  ];
+
+  for (const sourceUrl of candidates) {
+    let res;
+    try {
+      res = await fetch(sourceUrl, {
+        method: 'GET',
+        redirect: 'follow',
+        headers: {
+          'Accept': 'image/*,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (compatible; MamaMansionImageProxy/1.0)'
+        }
+      });
+    } catch (err) {
+      console.warn('drive_image_fetch_network_error', { fileId, sourceUrl, err: String(err) });
+      continue;
+    }
+
+    if (!res.ok) {
+      console.warn('drive_image_fetch_bad_status', { fileId, sourceUrl, status: res.status });
+      continue;
+    }
+
+    const ctRaw = String(res.headers.get('content-type') || '').toLowerCase();
+    const contentLength = Number(res.headers.get('content-length') || '0');
+    if (contentLength && contentLength > maxBytes) {
+      console.warn('drive_image_fetch_too_large', { fileId, variant, sourceUrl, contentLength, maxBytes });
+      continue;
+    }
+
+    if (ctRaw.startsWith('image/')) {
+      const contentType = ctRaw.split(';')[0] || 'image/jpeg';
+      return { res, contentType };
+    }
+  }
+
+  throw new Error(`drive image unavailable for fileId=${fileId}, variant=${variant}`);
+}
+
+async function serveRoomRentImage(request, url) {
+  const seg = url.pathname.split('/').filter(Boolean).pop() || '';
+  const index = Number(seg);
+  if (!Number.isInteger(index) || index < 1 || index > ROOM_RENT_DRIVE_IMAGE_IDS.length) {
+    return new Response('Not found', { status: 404 });
+  }
+
+  const fileId = ROOM_RENT_DRIVE_IMAGE_IDS[index - 1];
+  const variant = resolveRoomRentVariant(url);
+  try {
+    const { res, contentType } = await fetchGoogleDriveImage(fileId, variant);
+    const headers = new Headers();
+    headers.set('Content-Type', contentType || 'image/jpeg');
+    headers.set('Cache-Control', variant === 'preview' ? 'public, max-age=604800' : 'public, max-age=86400');
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Access-Control-Allow-Origin', '*');
+
+    if (request.method === 'HEAD') {
+      return new Response(null, { status: 200, headers });
+    }
+
+    return new Response(res.body, { status: 200, headers });
+  } catch (err) {
+    console.error('serve_room_rent_image_failed', { fileId, variant, err: String(err) });
+    return new Response('Image unavailable', { status: 502, headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+  }
+}
+
 function formatDateBangkok(date = new Date()) {
   const inBkk = new Date(date.toLocaleString('en-US', { timeZone: 'Asia/Bangkok' }));
   const y = inBkk.getFullYear();
@@ -936,6 +1037,10 @@ export default {
       return new Response(null, { status: 204, headers: corsHeaders(env.ALLOWED_ORIGIN) });
     }
 
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith('/media/room-rent/')) {
+      return serveRoomRentImage(request, url);
+    }
+
     // Frontend API → proxy to GAS #2
     if (url.pathname.startsWith('/api/moveout')) {
       // base GAS #2 URL (must be your Web App /exec)
@@ -1698,13 +1803,22 @@ export default {
         }
 
         if (data.act === 'parking_rent_request') {
-          const sanitizedParking = {
+          const selectedParkingSegment = getParkingSegmentByKey(data.customerType);
+          const baseParking = {
             ...data,
             type: 'parking',
             plan: 'parking',
             lineUserId: ev?.source?.userId || data.lineUserId || null,
             chatId: getChatId(ev) || data.chatId || null
           };
+          const sanitizedParking = selectedParkingSegment
+            ? {
+              ...baseParking,
+              customerType: selectedParkingSegment.key,
+              customerLabel: selectedParkingSegment.label,
+              pricePerMonth: selectedParkingSegment.pricePerMonth
+            }
+            : baseParking;
           const parkingPayload = {
             source: 'line_postback',
             channel: 'parking',
@@ -1714,8 +1828,11 @@ export default {
           };
 
           if (replyToken) {
+            const ackText = selectedParkingSegment
+              ? `รับคำขอเช่าที่จอดรถ (${selectedParkingSegment.label} ${selectedParkingSegment.pricePerMonth.toLocaleString('th-TH')} บาท/เดือน) แล้วครับ กำลังตรวจสอบความว่างให้ทันที`
+              : 'รับคำขอที่จอดรถแล้วครับ กำลังตรวจสอบความว่างให้ทันที';
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'รับคำขอที่จอดรถแล้วครับ กำลังตรวจสอบความว่างให้ทันที' }
+              { type: 'text', text: ackText }
             ]).catch(console.error);
           }
 
@@ -1736,24 +1853,10 @@ export default {
 
           // Special branch: ROOM_RENT_IMG → send 3 images
           if (data.act === 'ROOM_RENT_IMG') {
+            const imageMessages = buildRoomRentImageMessages(url.origin);
             const out = [
               { type: 'text', text: text || '[ราคา + ภาพ]' },
-
-              {
-                type: 'image',
-                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht',
-                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1JhPEZkaGXMrpW3csld5UfzTkKpRXBiht'
-              },
-              {
-                type: 'image',
-                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r',
-                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1tc4ru8gKYB22W3nmw72lgKi1u17V6S5r'
-              },
-              {
-                type: 'image',
-                originalContentUrl: 'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o',
-                previewImageUrl: 'https://drive.google.com/uc?export=view&id=1_Ic_e61aOaOdrcTtl9pJQoJSF1C8ch5o'
-              },
+              ...imageMessages
             ];
 
             ctx.waitUntil(
@@ -2303,7 +2406,8 @@ export default {
               chatId: getChatId(ev) || null
             };
             const replies = [
-              parkingButtonsMessage(buildParkingPostbackPayload(commonOptions))
+              parkingPlanTextMessage(),
+              parkingButtonsMessage(commonOptions)
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
             continue;
@@ -3573,8 +3677,8 @@ async function quickKeywordReply(text, env, userId) {
   }
   if (wantsParkingInfo && !isUrgent) {
     return [
-      { type: 'text', text: 'ที่จอดรถภายในหอพักมามาแมนชั่น 800 บาท/เดือน' },
-      parkingButtonsMessage(buildParkingPostbackPayload({ lineUserId: userId || null }))
+      parkingPlanTextMessage(),
+      parkingButtonsMessage({ lineUserId: userId || null })
     ];
   }
 
@@ -3997,40 +4101,144 @@ function buildPaymentOptionsFlex() {
   };
 }
 
+const PARKING_CUSTOMER_SEGMENTS = {
+  outsider: { key: 'outsider', label: 'บุคคลภายนอก', pricePerMonth: 1000 }
+};
+
+function getParkingSegmentByKey(segmentKey) {
+  const key = String(segmentKey || '').toLowerCase();
+  return PARKING_CUSTOMER_SEGMENTS[key] || null;
+}
+
 function buildParkingPostbackPayload(options = {}) {
-  return {
+  // Keep tenant payload backward-compatible for existing n8n flows.
+  const basePayload = {
     act: 'parking_rent_request',
     type: 'parking',
     plan: 'parking',
     lineUserId: options.lineUserId || null,
     chatId: options.chatId || null
   };
+
+  const segment = getParkingSegmentByKey(options.customerType);
+  if (!segment) {
+    return basePayload;
+  }
+
+  return {
+    ...basePayload,
+    customerType: segment.key,
+    customerLabel: segment.label,
+    pricePerMonth: segment.pricePerMonth
+  };
 }
 
-function parkingButtonsMessage(payloadRoofed) {
-  let dataRoofed = '{}';
+function parkingPlanTextMessage() {
+  return {
+    type: 'text',
+    text: 'ค่าจอดรถรายเดือน\n1) ลูกหอ 800 บาท/เดือน\n2) บุคคลภายนอก 1,000 บาท/เดือน\nเลือกประเภทผู้เช่าจากการ์ดด้านล่างได้เลย'
+  };
+}
+
+function parkingButtonsMessage(options = {}) {
+  let tenantData = '{}';
+  let outsiderData = '{}';
 
   try {
-    dataRoofed = JSON.stringify(payloadRoofed);
+    tenantData = JSON.stringify(
+      buildParkingPostbackPayload({
+        ...options,
+        customerType: 'tenant'
+      })
+    );
+    outsiderData = JSON.stringify(
+      buildParkingPostbackPayload({
+        ...options,
+        customerType: 'outsider'
+      })
+    );
   } catch (err) {
     console.error('parkingButtonsMessage stringify error', err);
   }
 
   return {
-    type: 'template',
-    altText: 'เช่าที่จอดรถ',
-    template: {
-      type: 'buttons',
-      title: 'ที่จอดรถ',
-      text: 'ที่จอดรถภายในหอพักมามาแมนชั่น 800 บาท/เดือน',
-      actions: [
-        {
-          type: 'postback',
-          label: 'เช่าเลย',
-          data: dataRoofed,
-          displayText: 'เช่าที่จอดรถ'
-        }
-      ]
+    type: 'flex',
+    altText: 'เลือกแพ็กเกจที่จอดรถ',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#1F4E79',
+        paddingAll: '14px',
+        contents: [
+          {
+            type: 'text',
+            text: 'ที่จอดรถ',
+            color: '#FFFFFF',
+            weight: 'bold',
+            size: 'lg'
+          },
+          {
+            type: 'text',
+            text: 'เลือกประเภทผู้เช่า',
+            color: '#DCE9F5',
+            size: 'sm',
+            margin: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: 'ลูกหอ', weight: 'bold', flex: 3, size: 'sm' },
+              { type: 'text', text: '800 บาท/เดือน', flex: 4, size: 'sm', align: 'end' }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'baseline',
+            contents: [
+              { type: 'text', text: 'บุคคลภายนอก', weight: 'bold', flex: 3, size: 'sm' },
+              { type: 'text', text: '1,000 บาท/เดือน', flex: 4, size: 'sm', align: 'end' }
+            ]
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#1F4E79',
+            action: {
+              type: 'postback',
+              label: 'สำหรับลูกหอ',
+              data: tenantData,
+              displayText: 'สนใจเช่าที่จอดรถ (ลูกหอ)'
+            }
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            action: {
+              type: 'postback',
+              label: 'บุคคลภายนอก',
+              data: outsiderData,
+              displayText: 'สนใจเช่าที่จอดรถ (บุคคลภายนอก)'
+            }
+          }
+        ]
+      }
     }
   };
 }
