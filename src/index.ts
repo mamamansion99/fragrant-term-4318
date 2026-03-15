@@ -507,6 +507,14 @@ function buildKeyRentAckText(keyRent) {
   return `รับคำขอเช่า${modeLabel} ห้อง ${roomLabel} เรียบร้อยแล้ว โปรดรอการตรวจสอบและสร้างบิลสักครู่ค่ะ`;
 }
 
+function buildKeyRentSlipPrompt(keyRent) {
+  const modeLabel = keyRent?.mode === 'SET'
+    ? 'ชุดกุญแจ'
+    : (keyRent?.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ');
+  const roomLabel = keyRent?.room ? ` ห้อง ${keyRent.room}` : '';
+  return `หากชำระค่า${modeLabel}${roomLabel}แล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ`;
+}
+
 function buildKeyRentPaymentMessage(keyRent) {
   const amount = Number(keyRent?.amount || 0);
   const room = keyRent?.room ? `ห้อง ${keyRent.room}` : '';
@@ -528,6 +536,37 @@ function buildKeyRentPaymentMessage(keyRent) {
   };
 }
 
+function parseBuildingRoomToken(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const compact = raw.replace(/\s+/g, '');
+  const match = compact.match(/^((?:a|b)|(?:เอ)|(?:บี))(\d{2,4})$/i);
+  if (!match) return null;
+
+  const buildingToken = match[1] || '';
+  const building = /^a$/i.test(buildingToken) || /^เอ$/i.test(buildingToken)
+    ? 'A'
+    : (/^b$/i.test(buildingToken) || /^บี$/i.test(buildingToken) ? 'B' : null);
+  if (!building) return null;
+
+  return `${building}${match[2]}`;
+}
+
+function buildKeyRentDetails(mode, room, rawText) {
+  const items = [];
+  if (mode === 'SET' || mode === 'KEYCARD') {
+    items.push({ assetType: 'KEYCARD', qty: 1, unitPrice: 100, amount: 100 });
+  }
+  if (mode === 'SET' || mode === 'KEY') {
+    items.push({ assetType: 'KEY', qty: 1, unitPrice: 500, amount: 500 });
+  }
+  if (!items.length) return null;
+
+  const amount = items.reduce((sum, item) => sum + item.amount, 0);
+  return { mode, room, items, amount, rawText: rawText || `${mode} ${room}` };
+}
+
 // Rent key/keycard/set commands
 function parseKeyRent(textRaw) {
   const raw = String(textRaw || '').trim();
@@ -540,20 +579,12 @@ function parseKeyRent(textRaw) {
   else if (compact.startsWith('เช่ากุญแจ')) mode = 'KEY';
   else return null; // not a rent-key trigger
 
-  const m = compact.match(/([AB])(\d{2,4})/i);
-  if (!m) return { error: 'MISSING_ROOM' };
-  const room = `${m[1].toUpperCase()}${m[2]}`;
+  const roomMatch = compact.match(/((?:a|b)|(?:เอ)|(?:บี))(\d{2,4})/i);
+  if (!roomMatch) return { error: 'MISSING_ROOM' };
+  const room = parseBuildingRoomToken(`${roomMatch[1]}${roomMatch[2]}`);
+  if (!room) return { error: 'MISSING_ROOM' };
 
-  const items = [];
-  if (mode === 'SET' || mode === 'KEYCARD') {
-    items.push({ assetType: 'KEYCARD', qty: 1, unitPrice: 100, amount: 100 });
-  }
-  if (mode === 'SET' || mode === 'KEY') {
-    items.push({ assetType: 'KEY', qty: 1, unitPrice: 500, amount: 500 });
-  }
-  const amount = items.reduce((s, it) => s + it.amount, 0);
-
-  return { mode, room, items, amount, rawText: raw };
+  return buildKeyRentDetails(mode, room, raw);
 }
 
 // Legacy "key A101 20" parser for forgot-key flow
@@ -1690,6 +1721,7 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const keyRentFlowKey = stateKey + ':keyrent_flow';
+          const penaltyKey = stateKey + ':penalty_flow';
           const keyRentFlow = await kvGet(env, keyRentFlowKey);
 
           if (!keyRentFlow || !keyRentFlow.keyRent) {
@@ -1722,6 +1754,7 @@ export default {
           const messages = [];
           if (paymentMethod === 'MOBILE_BANKING') {
             messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
+            messages.push({ type: 'text', text: buildKeyRentSlipPrompt(keyRent) });
           }
           messages.push({ type: 'text', text: buildKeyRentAckText(keyRent) });
 
@@ -1734,6 +1767,24 @@ export default {
           ctx.waitUntil(
             notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
           );
+          if (paymentMethod === 'MOBILE_BANKING') {
+            ctx.waitUntil(
+              kvPut(
+                env,
+                penaltyKey,
+                {
+                  ts: Date.now(),
+                  chatId: keyRentFlow.chatId || chatId || null,
+                  userId: keyRentFlow.userId || ev?.source?.userId || null,
+                  type: 'Others_payment',
+                  reason: normalizePenaltyReason(keyRent.rawText || 'ค่าเช่ากุญแจ')
+                },
+                PENALTY_FLOW_TTL_SECONDS
+              )
+            );
+          } else {
+            ctx.waitUntil(kvDel(env, penaltyKey));
+          }
           ctx.waitUntil(kvDel(env, keyRentFlowKey));
           continue;
         }
@@ -2102,6 +2153,18 @@ export default {
           const checkinRoomCode = parseCheckinCommand(textIn);
           const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+          const presetOtherPaymentReason =
+            /^\s*จ่ายค่าเช่าที่จอดรถ\s*$/i.test(textIn)
+              ? 'CAR'
+              : (
+                /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ)\s*$/i.test(textIn)
+                  ? 'KEY_RENT'
+                  : (
+                    /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย)\s*$/i.test(textIn)
+                      ? 'KEY_FORGOT'
+                      : null
+                  )
+              );
           const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
           const isPenaltyPayment = !!penaltyMatch;
           const penaltyType = penaltyMatch
@@ -2139,6 +2202,70 @@ export default {
             ctx.waitUntil(
               notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
             );
+          };
+          const armOtherPaymentSlipFlow = (reasonText) => {
+            const normalizedReason = normalizePenaltyReason(reasonText || '');
+            return kvPut(
+              env,
+              penaltyKey,
+              {
+                ts: Date.now(),
+                chatId,
+                userId,
+                type: 'Others_payment',
+                reason: normalizedReason || reasonText || 'ค่าอื่นๆ'
+              },
+              PENALTY_FLOW_TTL_SECONDS
+            );
+          };
+          const startKeyRentPayment = async (keyRent, rawTextOverride) => {
+            const keyRentFlowKey = stateKey + ':keyrent_flow';
+            const flow = {
+              keyRent: {
+                ...keyRent,
+                rawText: rawTextOverride || keyRent?.rawText || textIn
+              },
+              userId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              messageId: m?.id || null,
+              receivedAt: new Date().toISOString(),
+              ts: Date.now()
+            };
+            ctx.waitUntil(kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS));
+
+            const paymentMsg = buildKeyRentPaymentMessage(flow.keyRent);
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [paymentMsg]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [paymentMsg]).catch(console.error));
+            }
+          };
+          const submitKeyForgot = async (keyForgotPayload, rawTextOverride, penaltyReasonOverride) => {
+            const timestamp = new Date().toISOString();
+            const payload = {
+              ...keyForgotPayload,
+              text: rawTextOverride || textIn,
+              userId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              messageId: m?.id || null,
+              receivedAt: timestamp
+            };
+            ctx.waitUntil(
+              notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
+            );
+            ctx.waitUntil(armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT'));
+
+            const ackText = [
+              `ส่งข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} ให้เจ้าหน้าที่แล้วค่ะ`,
+              'หากชำระแล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ'
+            ].join('\n');
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
           };
           // While waiting for penalty reason, treat the next text as reason first.
           if (penaltyReasonNeeded) {
@@ -2179,6 +2306,18 @@ export default {
             continue;
           }
 
+          if (presetOtherPaymentReason) {
+            ctx.waitUntil(kvDel(env, payRentKey));
+            ctx.waitUntil(armOtherPaymentSlipFlow(presetOtherPaymentReason));
+            const askSlip = `บันทึกรายการ${presetOtherPaymentReason}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
+            }
+            continue;
+          }
+
           const keyRent = parseKeyRent(textIn);
           const keyForgot = parseKeyKeyword(textIn); // simple "key A101 20" legacy path
 
@@ -2193,48 +2332,12 @@ export default {
               continue;
             }
 
-            const keyRentFlowKey = stateKey + ':keyrent_flow';
-            const flow = {
-              keyRent,
-              userId: userId || null,
-              chatId: chatId || null,
-              sourceType: ev?.source?.type || null,
-              messageId: m?.id || null,
-              receivedAt: new Date().toISOString(),
-              ts: Date.now()
-            };
-            ctx.waitUntil(kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS));
-
-            const paymentMsg = buildKeyRentPaymentMessage(keyRent);
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [paymentMsg]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [paymentMsg]).catch(console.error));
-            }
+            await startKeyRentPayment(keyRent, textIn);
             continue;
           }
 
           if (keyForgot) {
-            const timestamp = new Date().toISOString();
-            const payload = {
-              ...keyForgot,
-              text: textIn,
-              userId: userId || null,
-              chatId: chatId || null,
-              sourceType: ev?.source?.type || null,
-              messageId: m?.id || null,
-              receivedAt: timestamp
-            };
-            ctx.waitUntil(
-              notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
-            );
-
-            const ackText = `ส่งข้อมูลคีย์ตึก ${keyForgot.building} ห้อง ${keyForgot.room} จำนวน ${keyForgot.amount} ให้เจ้าหน้าที่แล้วค่ะ`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-            }
+            await submitKeyForgot(keyForgot, textIn);
             continue;
           }
 
@@ -4046,41 +4149,106 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const primaryColor = '#0F62FE';
+  const optionCard = (title, description, text, accentColor) => ({
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    paddingAll: '14px',
+    cornerRadius: '16px',
+    backgroundColor: '#F8FAFC',
+    borderWidth: '1px',
+    borderColor: '#D9E2F2',
+    action: { type: 'message', label: title, text },
+    contents: [
+      {
+        type: 'text',
+        text: title,
+        weight: 'bold',
+        size: 'md',
+        color: '#0F172A'
+      },
+      {
+        type: 'text',
+        text: description,
+        wrap: true,
+        size: 'sm',
+        color: '#475569'
+      },
+      {
+        type: 'text',
+        text: 'แตะเพื่อเริ่ม',
+        size: 'xs',
+        color: accentColor,
+        weight: 'bold'
+      }
+    ]
+  });
+
   return {
     type: 'flex',
-    altText: 'เลือกการชำระเงิน',
+    altText: 'เลือกประเภทการชำระเงิน',
     contents: {
       type: 'bubble',
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'lg',
+        spacing: 'md',
         contents: [
-          { type: 'text', text: 'เลือกสิ่งที่ต้องการชำระ', weight: 'bold', size: 'lg' },
           {
             type: 'box',
             layout: 'vertical',
-            spacing: 'md',
+            spacing: 'xs',
             contents: [
               {
-                type: 'button',
-                style: 'primary',
-                color: primaryColor,
-                action: { type: 'message', label: 'ชำระค่าเช่า', text: 'ชำระค่าเช่า' }
+                type: 'text',
+                text: 'เลือกประเภทการชำระเงิน',
+                weight: 'bold',
+                size: 'xl',
+                color: '#0F172A'
               },
               {
-                type: 'button',
-                style: 'primary',
-                color: primaryColor,
-                action: { type: 'message', label: 'ชำระค่าปรับ', text: 'ชำระค่าปรับ' }
-              },
-              {
-                type: 'button',
-                style: 'primary',
-                color: primaryColor,
-                action: { type: 'message', label: 'อื่นๆ', text: 'ชำระค่าอื่นๆ' }
+                type: 'text',
+                text: 'เริ่มจากหมวดที่ตรงกับรายการที่ต้องการชำระ เพื่อให้บอทพาไปขั้นตอนถัดไปได้ตรงขึ้น',
+                wrap: true,
+                size: 'sm',
+                color: '#475569'
               }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'sm',
+            margin: 'md',
+            contents: [
+              {
+                type: 'text',
+                text: 'ค่าห้องและค่าใช้จ่ายทั่วไป',
+                size: 'sm',
+                weight: 'bold',
+                color: '#1E3A8A'
+              },
+              optionCard('ชำระค่าเช่า', 'ส่งสลิปค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า', '#2563EB'),
+              optionCard('ชำระค่าปรับ', 'กรณีค่าปรับ เช่น เสียงดัง หรือจอดรถผิดจุด', 'ชำระค่าปรับ', '#DC2626'),
+              optionCard('ชำระค่าอื่นๆ', 'รายการอื่นที่ไม่ใช่ค่าเช่า เช่น ค่าน้ำดื่มหรือค่าซักผ้า', 'ชำระค่าอื่นๆ', '#EA580C')
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'sm',
+            margin: 'md',
+            contents: [
+              {
+                type: 'text',
+                text: 'บริการเพิ่มเติม',
+                size: 'sm',
+                weight: 'bold',
+                color: '#92400E'
+              },
+              optionCard('จ่ายค่าเช่าที่จอดรถ', 'ส่งสลิปค่าเช่าที่จอดรถเข้าระบบค่าอื่นๆ', 'จ่ายค่าเช่าที่จอดรถ', '#B45309'),
+              optionCard('จ่ายค่าเช่ากุญแจ', 'ส่งสลิปสำหรับค่าเช่ากุญแจหรือค่ายืมกุญแจเข้าระบบค่าอื่นๆ', 'จ่ายค่าเช่ากุญแจ', '#B45309'),
+              optionCard('จ่ายเงินค่าลืมกุญแจ', 'ส่งสลิปสำหรับค่าลืมกุญแจเข้าระบบค่าอื่นๆ', 'จ่ายเงินค่าลืมกุญแจ', '#B45309')
             ]
           }
         ]
@@ -4092,8 +4260,8 @@ function buildPaymentOptionsFlex() {
           type: 'action',
           action: {
             type: 'message',
-            label: 'วิธีการชำระเงิน',
-            text: 'วิธีการชำระเงิน'
+            label: 'เปิดเมนูชำระเงิน',
+            text: 'จ่ายเงินมามาแมนชั่น'
           }
         }
       ]
