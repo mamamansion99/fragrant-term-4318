@@ -199,6 +199,8 @@ const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
 const PENALTY_FLOW_TTL_MS = PENALTY_FLOW_TTL_SECONDS * 1000;
 const CHECKOUT_FLOW_TTL_SECONDS = 10 * 60;
 const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
+const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
+const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
 
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
@@ -498,6 +500,50 @@ const KEY_RENT_MOBILE_BANKING_TEXT = [
   'ชื่อบัญชี: ธิมา สุภานุรัตน์',
   ''
 ].join('\n');
+
+const KEY_RENT_MODE_LABELS = {
+  KEY: 'กุญแจ',
+  KEYCARD: 'คีย์การ์ด',
+  SET: 'ชุดกุญแจ'
+};
+
+function normalizeKeyRentMode(modeRaw) {
+  const mode = String(modeRaw || '').trim().toUpperCase();
+  if (mode === 'KEY' || mode === 'KEYCARD' || mode === 'SET') return mode;
+  return '';
+}
+
+function keyRentModeLabel(modeRaw) {
+  const mode = normalizeKeyRentMode(modeRaw);
+  return KEY_RENT_MODE_LABELS[mode] || 'กุญแจ';
+}
+
+function buildKeyRentStartInstructionText(env) {
+  const override = String(env?.KEY_RENT_START_INSTRUCTION_TEXT || '').trim();
+  if (override) return override;
+  return [
+    'ขั้นตอนขอเช่ากุญแจเพิ่ม',
+    '1) เลือกประเภทกุญแจที่ต้องการเช่าจากปุ่มด้านล่าง',
+    '2) ระบบจะส่งคำขอไปยังเจ้าหน้าที่อัตโนมัติ',
+    '3) เจ้าหน้าที่จะส่งขั้นตอนถัดไปให้ในแชตนี้'
+  ].join('\n');
+}
+
+function buildKeyRentStartOptionsMessage() {
+  return {
+    type: 'template',
+    altText: 'เลือกประเภทการเช่ากุญแจ',
+    template: {
+      type: 'buttons',
+      text: 'เลือกประเภทการเช่ากุญแจ',
+      actions: [
+        { type: 'postback', label: '1) rent key', data: 'act=KEY_RENT_START&mode=KEY', displayText: 'เช่ากุญแจ' },
+        { type: 'postback', label: '2) rent keycard', data: 'act=KEY_RENT_START&mode=KEYCARD', displayText: 'เช่าคีย์การ์ด' },
+        { type: 'postback', label: '3) rent both', data: 'act=KEY_RENT_START&mode=SET', displayText: 'เช่าชุดกุญแจ' }
+      ]
+    }
+  };
+}
 
 function buildKeyRentAckText(keyRent) {
   const modeLabel = keyRent?.mode === 'SET'
@@ -1279,6 +1325,72 @@ export default {
         // END RENT KEY POSTBACK FORWARD
 
         const act = String(data.act || '').trim();
+        if (act === 'KEY_RENT_START') {
+          const chatId = getChatId(ev);
+          const userId = ev?.source?.userId || null;
+          const stateKey = getStateKey(ev);
+          const mode = normalizeKeyRentMode(data.mode || '');
+          if (!mode) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ไม่พบประเภทการเช่ากุญแจ กรุณาเลือกใหม่อีกครั้งค่ะ');
+            continue;
+          }
+
+          const eventId = String(ev?.webhookEventId || '');
+          if (eventId) {
+            const eventDedupeKey = `idem:keyrent_start:event:${eventId}`;
+            const eventSeen = await kvGet(env, eventDedupeKey);
+            if (eventSeen) {
+              await errorReplyOrPush(env, replyToken, chatId, `ได้รับคำขอเช่า${keyRentModeLabel(mode)}แล้ว กำลังดำเนินการค่ะ`);
+              continue;
+            }
+            await kvPut(
+              env,
+              eventDedupeKey,
+              { ts: Date.now(), eventId, mode, userId, chatId },
+              KEY_RENT_START_EVENT_TTL_SECONDS
+            );
+          }
+
+          const tapGuardKey = `idem:keyrent_start:tap:${stateKey}:${mode}`;
+          const recentTap = await kvGet(env, tapGuardKey);
+          if (recentTap) {
+            await errorReplyOrPush(env, replyToken, chatId, `รับคำขอเช่า${keyRentModeLabel(mode)}ล่าสุดแล้ว กรุณารอสักครู่ค่ะ`);
+            continue;
+          }
+
+          await kvPut(
+            env,
+            tapGuardKey,
+            { ts: Date.now(), mode, eventId, userId, chatId },
+            KEY_RENT_START_TAP_GUARD_TTL_SECONDS
+          );
+
+          const idempotencyKey = eventId
+            ? `line:${eventId}`
+            : `line:keyrent:${stateKey}:${mode}:${Date.now()}`;
+          const modeLabel = keyRentModeLabel(mode);
+          const payload = {
+            source: 'line_postback',
+            intent: 'key_rent_start',
+            action: 'KEY_RENT_START',
+            mode,
+            modeLabel,
+            idempotencyKey,
+            eventId,
+            timestamp: ev?.timestamp || Date.now(),
+            userId,
+            chatId: chatId || null,
+            replyToken: replyToken || null,
+            postbackData: data,
+            event: ev
+          };
+
+          await errorReplyOrPush(env, replyToken, chatId, `รับคำขอเช่า${modeLabel}แล้วค่ะ กำลังส่งข้อมูลให้เจ้าหน้าที่`);
+          ctx.waitUntil(
+            notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key_rent_start webhook failed', err))
+          );
+          continue;
+        }
         // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
         if (act === 'confirm' || act === 'slip_yes' || act === 'slip_no' || act === 'id_yes' || act === 'id_no' || act === 'booking_confirm') {
           const resvUrl = getReservationGas(env);
@@ -1737,9 +1849,15 @@ export default {
 
           const paymentMethod = act === 'KEY_RENT_CASH' ? 'CASH' : 'MOBILE_BANKING';
           const keyRent = keyRentFlow.keyRent || {};
+          const eventId = String(ev?.webhookEventId || ev?.replyToken || '');
+          const idempotencyKey = eventId
+            ? `line:${eventId}`
+            : `line:keyrent:payment:${stateKey}:${paymentMethod}:${Date.now()}`;
           const payload = {
             type: 'KEY_RENT',
+            intent: 'key_rent_payment',
             room: keyRent.room,
+            mode: keyRent.mode || null,
             items: keyRent.items,
             amount: keyRent.amount,
             rawText: keyRent.rawText,
@@ -1748,7 +1866,9 @@ export default {
             sourceType: keyRentFlow.sourceType || ev?.source?.type || null,
             messageId: keyRentFlow.messageId || null,
             receivedAt: keyRentFlow.receivedAt || new Date().toISOString(),
-            paymentMethod
+            paymentMethod,
+            eventId,
+            idempotencyKey
           };
 
           const messages = [];
@@ -2314,6 +2434,19 @@ export default {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
+            }
+            continue;
+          }
+
+          if (textIn === 'เช่าชุดกุญแจ') {
+            const messages = [
+              { type: 'text', text: buildKeyRentStartInstructionText(env) },
+              buildKeyRentStartOptionsMessage()
+            ];
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
             }
             continue;
           }
