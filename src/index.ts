@@ -549,8 +549,8 @@ function buildKeyRentAckText(keyRent) {
   const modeLabel = keyRent?.mode === 'SET'
     ? 'ชุดกุญแจ'
     : (keyRent?.mode === 'KEYCARD' ? 'คีย์การ์ด' : 'กุญแจ');
-  const roomLabel = keyRent?.room || '-';
-  return `รับคำขอเช่า${modeLabel} ห้อง ${roomLabel} เรียบร้อยแล้ว โปรดรอการตรวจสอบและสร้างบิลสักครู่ค่ะ`;
+  const roomLabel = keyRent?.room ? ` ห้อง ${keyRent.room}` : '';
+  return `รับคำขอเช่า${modeLabel}${roomLabel} เรียบร้อยแล้ว โปรดรอการตรวจสอบและสร้างบิลสักครู่ค่ะ`;
 }
 
 function buildKeyRentSlipPrompt(keyRent) {
@@ -1329,6 +1329,7 @@ export default {
           const chatId = getChatId(ev);
           const userId = ev?.source?.userId || null;
           const stateKey = getStateKey(ev);
+          const keyRentFlowKey = stateKey + ':keyrent_flow';
           const mode = normalizeKeyRentMode(data.mode || '');
           if (!mode) {
             await errorReplyOrPush(env, replyToken, chatId, 'ไม่พบประเภทการเช่ากุญแจ กรุณาเลือกใหม่อีกครั้งค่ะ');
@@ -1365,30 +1366,35 @@ export default {
             KEY_RENT_START_TAP_GUARD_TTL_SECONDS
           );
 
-          const idempotencyKey = eventId
-            ? `line:${eventId}`
-            : `line:keyrent:${stateKey}:${mode}:${Date.now()}`;
           const modeLabel = keyRentModeLabel(mode);
-          const payload = {
-            source: 'line_postback',
-            intent: 'key_rent_start',
-            action: 'KEY_RENT_START',
-            mode,
-            modeLabel,
-            idempotencyKey,
-            eventId,
-            timestamp: ev?.timestamp || Date.now(),
+          const keyRent = buildKeyRentDetails(mode, null, `เช่า${modeLabel}`);
+          if (!keyRent) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ไม่สามารถสร้างรายการเช่ากุญแจได้ กรุณาลองใหม่อีกครั้งค่ะ');
+            continue;
+          }
+
+          const flow = {
+            keyRent,
             userId,
             chatId: chatId || null,
-            replyToken: replyToken || null,
-            postbackData: data,
-            event: ev
+            sourceType: ev?.source?.type || null,
+            messageId: null,
+            receivedAt: new Date().toISOString(),
+            startAction: 'KEY_RENT_START',
+            startEventId: eventId || null,
+            ts: Date.now()
           };
+          await kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS);
 
-          await errorReplyOrPush(env, replyToken, chatId, `รับคำขอเช่า${modeLabel}แล้วค่ะ กำลังส่งข้อมูลให้เจ้าหน้าที่`);
-          ctx.waitUntil(
-            notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key_rent_start webhook failed', err))
-          );
+          const messages = [
+            { type: 'text', text: `เลือกวิธีชำระค่า${modeLabel}ได้เลยค่ะ` },
+            buildKeyRentPaymentMessage(flow.keyRent)
+          ];
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
+          }
           continue;
         }
         // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
@@ -1860,7 +1866,6 @@ export default {
             mode: keyRent.mode || null,
             items: keyRent.items,
             amount: keyRent.amount,
-            rawText: keyRent.rawText,
             userId: keyRentFlow.userId || ev?.source?.userId || null,
             chatId: keyRentFlow.chatId || chatId || null,
             sourceType: keyRentFlow.sourceType || ev?.source?.type || null,
@@ -1871,12 +1876,9 @@ export default {
             idempotencyKey
           };
 
-          const messages = [];
-          if (paymentMethod === 'MOBILE_BANKING') {
-            messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
-            messages.push({ type: 'text', text: buildKeyRentSlipPrompt(keyRent) });
-          }
-          messages.push({ type: 'text', text: buildKeyRentAckText(keyRent) });
+          const messages = [
+            { type: 'text', text: buildKeyRentAckText(keyRent) }
+          ];
 
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
