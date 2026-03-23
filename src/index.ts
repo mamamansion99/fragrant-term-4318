@@ -1975,6 +1975,39 @@ export default {
           continue;
         }
 
+        if (data.act === 'parking_owner_approve' || data.act === 'parking_owner_reject') {
+          const ownerAction = data.act === 'parking_owner_approve' ? 'approve' : 'reject';
+          const parkingOwnerPayload = {
+            source: 'line_postback',
+            channel: 'parking_owner',
+            action: ownerAction,
+            event: ev,
+            data: {
+              ...data,
+              lineUserId: data.lineUserId || null,
+              roomId: data.roomId || null,
+              slotId: data.slotId || null,
+              actedByLineUserId: ev?.source?.userId || null,
+              chatId: getChatId(ev) || data.chatId || null
+            },
+            receivedAt: new Date().toISOString()
+          };
+
+          ctx.waitUntil(
+            notifyN8nParking(env, parkingOwnerPayload).catch((err) => console.error('parking owner decision notify failed', err))
+          );
+
+          if (replyToken) {
+            const ackText = ownerAction === 'approve'
+              ? 'บันทึกการอนุมัติที่จอดรถแล้วครับ'
+              : 'บันทึกการปฏิเสธที่จอดรถแล้วครับ';
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: ackText }
+            ]).catch(console.error);
+          }
+          continue;
+        }
+
         if (data.act === 'parking_rent_request') {
           const selectedParkingSegment = getParkingSegmentByKey(data.customerType);
           const baseParking = {
@@ -3529,7 +3562,9 @@ function roomDetailByKey(key) {
 หากต้องการเช่า 6 เดือน เพิ่มค่าเช่า 200 บ./เดือน
 (รายละเอียดเงินประกัน/ล่วงหน้า ระบุในวันทำสัญญา)`,
     ROOM_PARKING: `[ที่จอดรถ]
-🚗ที่จอดรถภายในหอพักมามาแมนชั่น 800 บาท/เดือน
+🚗ลูกหอ 800 บาท/เดือน (เช่าต่อเนื่องเกิน 3 เดือน)
+หากเช่าไม่ต่อเนื่อง คิดค่าบริการ 200 บาท/ครั้ง
+🚗บุคคลภายนอก 1,000 บาท/เดือน
 🏍️มอเตอร์ไซต์ฟรี`,
     ROOM_EARLIEST: `[เข้าอยู่เร็วสุด]
     ชำระครบเต็มจำนวนแล้วสามารถเข้าอยู่ได้
@@ -4439,7 +4474,7 @@ function buildParkingPostbackPayload(options = {}) {
 function parkingPlanTextMessage() {
   return {
     type: 'text',
-    text: 'ค่าจอดรถรายเดือน\n1) ลูกหอ 800 บาท/เดือน\n2) บุคคลภายนอก 1,000 บาท/เดือน\nเลือกประเภทผู้เช่าจากการ์ดด้านล่างได้เลย'
+    text: 'ค่าจอดรถรายเดือน\n1) ลูกหอ 800 บาท/เดือน (เช่าต่อเนื่องเกิน 3 เดือน)\nหากเช่าไม่ต่อเนื่อง คิดค่าบริการ 200 บาท/ครั้ง\n2) บุคคลภายนอก 1,000 บาท/เดือน\nเลือกประเภทผู้เช่าจากการ์ดด้านล่างได้เลย'
   };
 }
 
@@ -4484,10 +4519,11 @@ function parkingButtonsMessage(options = {}) {
           },
           {
             type: 'text',
-            text: 'เลือกประเภทผู้เช่า',
+            text: 'หากสนใจเช่าที่จอดรถ กดเลือกตัวเลือกด้านล่าง',
             color: '#DCE9F5',
             size: 'sm',
-            margin: 'sm'
+            margin: 'sm',
+            wrap: true
           }
         ]
       },
@@ -4503,6 +4539,13 @@ function parkingButtonsMessage(options = {}) {
               { type: 'text', text: 'ลูกหอ', weight: 'bold', flex: 3, size: 'sm' },
               { type: 'text', text: '800 บาท/เดือน', flex: 4, size: 'sm', align: 'end' }
             ]
+          },
+          {
+            type: 'text',
+            text: 'สำหรับเช่าต่อเนื่องเกิน 3 เดือน หากเช่าไม่ต่อเนื่อง คิดค่าบริการ 200 บาท/ครั้ง',
+            size: 'xs',
+            color: '#5B6470',
+            wrap: true
           },
           {
             type: 'box',
