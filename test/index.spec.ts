@@ -41,6 +41,24 @@ describe('Worker routes', () => {
 		expect(parsed.trig).toBe('60');
 	});
 
+	it('parses renewal admin pipe postback format', async () => {
+		const encoded = encodeURIComponent('renewal_admin|action=ADMIN_SIGN_TEXT&inq=INQ123&room=A101&userId=Ue90558b73d62863e2287ac32e69541a3&end=2026-05-31&td=60');
+		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+		expect(response.status).toBe(200);
+		const body = await response.json() as Record<string, unknown>;
+		const parsed = body.parsed as Record<string, string>;
+		expect(parsed.eventType).toBe('renewal_admin');
+		expect(parsed.action).toBe('ADMIN_SIGN_TEXT');
+		expect(parsed.room).toBe('A101');
+		expect(parsed.inq).toBe('INQ123');
+		expect(parsed.userId).toBe('Ue90558b73d62863e2287ac32e69541a3');
+		expect(parsed.end).toBe('2026-05-31');
+		expect(parsed.td).toBe('60');
+	});
+
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/git/latest-commit?repo=invalid-repo-format');
 		const ctx = createExecutionContext();

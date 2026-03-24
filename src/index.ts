@@ -10,6 +10,34 @@ function getStateKey(ev) {
   const uid = ev?.source?.userId || 'anon';
   return `${chat}:${uid}`;
 }
+const DEFAULT_OWNER_GROUP_IDS = [
+  'C07e625728aee936d59df1bca18bed149'
+];
+
+function getOwnerGroupIds(env) {
+  const raw = String(env?.OWNER_GROUP_ID || '').trim();
+  const envIds = raw
+    ? raw.split(',').map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  return Array.from(new Set([...envIds, ...DEFAULT_OWNER_GROUP_IDS]));
+}
+
+function isOwnerGroupChat(env, chatId) {
+  if (!chatId) return false;
+  return getOwnerGroupIds(env).includes(chatId);
+}
+
+function pushToOwnerGroups(env, messages) {
+  const ownerGroupIds = getOwnerGroupIds(env);
+  if (!ownerGroupIds.length) return Promise.resolve([]);
+  return Promise.allSettled(ownerGroupIds.map((groupId) => linePush(env.LINE_ACCESS_TOKEN, groupId, messages)));
+}
+
+function pushTextToOwnerGroups(env, text) {
+  const ownerGroupIds = getOwnerGroupIds(env);
+  if (!ownerGroupIds.length) return Promise.resolve([]);
+  return Promise.allSettled(ownerGroupIds.map((groupId) => linePushText(env.LINE_ACCESS_TOKEN, groupId, text)));
+}
 
 const ROOM_RENT_DRIVE_IMAGE_IDS = [
   '1j7ss_o3t4RpNLd12mV31T167WjC3m9Ca',
@@ -1651,9 +1679,8 @@ export default {
 
         // ===== Admin switch postbacks (OWNER GROUP only) =====
         if (act === 'CFG_SCREEN_ON' || act === 'CFG_SCREEN_OFF' || act === 'CFG_SCREEN_STATUS') {
-          const ownerGroupId = env.OWNER_GROUP_ID || '';
           const chatId = getChatId(ev);
-          if (!ownerGroupId || chatId !== ownerGroupId) {
+          if (!isOwnerGroupChat(env, chatId)) {
             await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้นครับ');
             continue;
           }
@@ -1750,8 +1777,7 @@ export default {
                 { type: 'text', text: 'ขอบคุณครับ 🙏 ได้รับข้อมูลเรียบร้อยแล้ว\nแอดมินจะตรวจสอบและติดต่อกลับอีกครั้งใน LINE ครับ ✅' }
               ]).catch(console.error);
 
-              const ownerGroupId = env.OWNER_GROUP_ID || '';
-              if (ownerGroupId) {
+              if (getOwnerGroupIds(env).length) {
                 const a = lead.answers || {};
                 const valueMap = {
                   movein: { IN3: 'ภายใน 3 วัน', IN7: 'ภายใน 7 วัน', IN30: 'ภายในเดือนนี้', UNSURE: 'ยังไม่แน่ใจ' },
@@ -1789,7 +1815,7 @@ export default {
                   }
                 ];
 
-                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, ownerGroupId, msg).catch(console.error));
+                ctx.waitUntil(pushToOwnerGroups(env, msg).catch(console.error));
               }
               continue;
             }
@@ -1811,9 +1837,8 @@ export default {
 
         // ===== Owner Approve / Reject lead =====
         if (act === 'LEAD_APPROVE' || act === 'LEAD_REJECT') {
-          const ownerGroupId = env.OWNER_GROUP_ID || '';
           const chatId = getChatId(ev);
-          if (!ownerGroupId || chatId !== ownerGroupId) {
+          if (!isOwnerGroupChat(env, chatId)) {
             await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้นครับ');
             continue;
           }
@@ -1876,9 +1901,10 @@ export default {
         const isRenewalPipeEvent =
           renewalEventType === 'renewal_reply' ||
           renewalEventType === 'renewal_followup';
+        const isRenewalAdminEvent = renewalEventType === 'renewal_admin';
         const actionRaw = normalize(
           data.action ||
-          ((act === 'renew_decision' || isRenewalPipeEvent) ? data.ans : data.act)
+          ((act === 'renew_decision' || isRenewalPipeEvent || isRenewalAdminEvent) ? data.ans : data.act)
         );
         const action = actionRaw.toUpperCase();
         const room = normalize(data.room || data.roomId || data.r);
@@ -1889,13 +1915,18 @@ export default {
         const slotKey = normalize(data.slotKey);
         const slotStart = normalize(data.slotStart);
         const slotEnd = normalize(data.slotEnd);
-        const userId = ev?.source?.userId || '';
+        const actorUserId = ev?.source?.userId || '';
+        const payloadUserId = normalize(data.userId || data.lineUserId || data.uid);
+        const renewalUserId = payloadUserId || actorUserId;
         const postbackLog = {
+          eventType: renewalEventType || '',
           action,
           room,
           end,
           inq,
-          userId,
+          actorUserId,
+          payloadUserId,
+          renewalUserId,
           timestamp: new Date(ev?.timestamp || Date.now()).toISOString()
         };
         console.log('line_postback', postbackLog);
@@ -1941,15 +1972,23 @@ export default {
 
         const isSignSlot = action === 'SIGN_SLOT';
         const isSignAskAdmin = action === 'SIGN_ASK_ADMIN';
+        const isRenewalAdminAction =
+          action === 'ADMIN_SIGN_TEXT' ||
+          action === 'ADMIN_SIGN_CALL' ||
+          action === 'ADMIN_SIGN_NOW' ||
+          action === 'ADMIN_SEND_SLOT' ||
+          action === 'ADMIN_HOLD';
         const isContractRenewalAction =
           action === 'CONTINUE' ||
           action === 'LEAVE' ||
           action === 'UNDECIDED' ||
           isSignSlot ||
-          isSignAskAdmin;
+          isSignAskAdmin ||
+          isRenewalAdminAction;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
           isRenewalPipeEvent ||
+          isRenewalAdminEvent ||
           Object.prototype.hasOwnProperty.call(data, 'inq') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiry') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
@@ -1967,12 +2006,23 @@ export default {
         }
 
         if (isContractRenewalAction) {
+          const chatId = getChatId(ev);
+          if (isRenewalAdminAction) {
+            if (!isOwnerGroupChat(env, chatId)) {
+              await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้น');
+              continue;
+            }
+          }
 
           const renewalPayload = {
             source: 'line_postback',
+            eventType: renewalEventType || (isRenewalAdminAction ? 'renewal_admin' : ''),
             eventId: ev?.webhookEventId || eventId || ev?.replyToken || '',
             timestamp: ev?.timestamp || Date.now(),
-            userId,
+            userId: renewalUserId,
+            actorUserId,
+            payloadUserId,
+            chatId: chatId || '',
             replyToken: replyToken || '',
             action,
             inquiryId: inq,
@@ -1990,7 +2040,7 @@ export default {
             if (!slotEnd) missingFields.push('slotEnd');
             if (!inq) missingFields.push('inquiryId');
             if (!room) missingFields.push('roomId');
-            if (!userId) missingFields.push('userId');
+            if (!renewalUserId) missingFields.push('userId');
             if (missingFields.length > 0) {
               renewalPayload.missingCritical = true;
               renewalPayload.missingFields = missingFields;
@@ -2015,9 +2065,8 @@ export default {
           }
 
           if (action === 'LEAVE') {
-            const ownerGroupId = env.OWNER_GROUP_ID || '';
             const leavePushEnabled = String(env.ENABLE_LEAVE_PUSH || '').toLowerCase() === 'true';
-            if (ownerGroupId && leavePushEnabled) {
+            if (getOwnerGroupIds(env).length && leavePushEnabled) {
               const now = `${formatDateBangkok()} ${formatTimeBangkok()}`;
               const summary = [
                 '🚚 Tenant plans to leave',
@@ -2028,7 +2077,7 @@ export default {
               ].join('\n');
 
               ctx.waitUntil(
-                linePushText(env.LINE_ACCESS_TOKEN, ownerGroupId, summary)
+                pushTextToOwnerGroups(env, summary)
                   .catch((err) => console.error('contract_renewal_leave_push_fail', err))
               );
             }
@@ -2442,8 +2491,7 @@ export default {
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
 
-          const ownerGroupId = env.OWNER_GROUP_ID || '';
-          if (ownerGroupId && chatId === ownerGroupId && /โหมดคัดกรอง/i.test(textIn)) {
+          if (isOwnerGroupChat(env, chatId) && /โหมดคัดกรอง/i.test(textIn)) {
             const msg = {
               type: 'template',
               altText: 'สวิตช์โหมดคัดกรอง',
@@ -4042,10 +4090,10 @@ function parsePostbackData(raw) {
         }
         out.eventType = eventType;
         out.postbackType = eventType;
-        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup') && !out.action && out.ans) {
+        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup' || eventType === 'renewal_admin') && !out.action && out.ans) {
           out.action = String(out.ans);
         }
-        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup') && !out.td && out.trig) {
+        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup' || eventType === 'renewal_admin') && !out.td && out.trig) {
           out.td = String(out.trig);
         }
         if (Object.keys(out).length > 0) {
@@ -5360,3 +5408,4 @@ async function notifyN8nGroupImage(env, payload) {
     return false;
   }
 }
+
