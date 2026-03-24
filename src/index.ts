@@ -531,16 +531,144 @@ function buildKeyRentStartInstructionText(env) {
 
 function buildKeyRentStartOptionsMessage() {
   return {
-    type: 'template',
+    type: 'flex',
     altText: 'เลือกประเภทการเช่ากุญแจ',
-    template: {
-      type: 'buttons',
-      text: 'เลือกประเภทการเช่ากุญแจ',
-      actions: [
-        { type: 'postback', label: '1) rent key', data: 'act=KEY_RENT_START&mode=KEY', displayText: 'เช่ากุญแจ' },
-        { type: 'postback', label: '2) rent keycard', data: 'act=KEY_RENT_START&mode=KEYCARD', displayText: 'เช่าคีย์การ์ด' },
-        { type: 'postback', label: '3) rent both', data: 'act=KEY_RENT_START&mode=SET', displayText: 'เช่าชุดกุญแจ' }
-      ]
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        backgroundColor: '#0F4C81',
+        contents: [
+          {
+            type: 'text',
+            text: 'เช่ากุญแจเพิ่ม',
+            color: '#FFFFFF',
+            size: 'lg',
+            weight: 'bold'
+          },
+          {
+            type: 'text',
+            text: 'เลือกแบบที่ต้องการ แล้วระบบจะพาไปขั้นตอนชำระเงินทันที',
+            color: '#D6E7F6',
+            size: 'xs',
+            wrap: true,
+            margin: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'vertical',
+            cornerRadius: '12px',
+            paddingAll: '10px',
+            backgroundColor: '#F8FAFC',
+            borderColor: '#D9E2EC',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: '🔑 กุญแจ', size: 'sm', weight: 'bold', color: '#0F172A', flex: 4 },
+                  { type: 'text', text: '500 บาท', size: 'sm', align: 'end', color: '#0F172A', weight: 'bold', flex: 2 }
+                ]
+              },
+              {
+                type: 'text',
+                text: 'เหมาะกับผู้ที่ต้องการกุญแจเพิ่มอย่างเดียว',
+                size: 'xs',
+                color: '#475569',
+                wrap: true,
+                margin: 'sm'
+              }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            cornerRadius: '12px',
+            paddingAll: '10px',
+            backgroundColor: '#F8FAFC',
+            borderColor: '#D9E2EC',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: '💳 คีย์การ์ด', size: 'sm', weight: 'bold', color: '#0F172A', flex: 4 },
+                  { type: 'text', text: '100 บาท', size: 'sm', align: 'end', color: '#0F172A', weight: 'bold', flex: 2 }
+                ]
+              },
+              {
+                type: 'text',
+                text: 'สำหรับขอคีย์การ์ดเพิ่ม',
+                size: 'xs',
+                color: '#475569',
+                wrap: true,
+                margin: 'sm'
+              }
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            cornerRadius: '12px',
+            paddingAll: '10px',
+            backgroundColor: '#FFF7ED',
+            borderColor: '#FDBA74',
+            borderWidth: '1px',
+            contents: [
+              {
+                type: 'box',
+                layout: 'baseline',
+                contents: [
+                  { type: 'text', text: '🧩 ชุดกุญแจ', size: 'sm', weight: 'bold', color: '#7C2D12', flex: 4 },
+                  { type: 'text', text: '600 บาท', size: 'sm', align: 'end', color: '#7C2D12', weight: 'bold', flex: 2 }
+                ]
+              },
+              {
+                type: 'text',
+                text: 'รวมกุญแจ + คีย์การ์ด ในครั้งเดียว',
+                size: 'xs',
+                color: '#9A3412',
+                wrap: true,
+                margin: 'sm'
+              }
+            ]
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            action: { type: 'postback', label: 'เช่ากุญแจ', data: 'act=KEY_RENT_START&mode=KEY', displayText: 'เช่ากุญแจ' }
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            action: { type: 'postback', label: 'เช่าคีย์การ์ด', data: 'act=KEY_RENT_START&mode=KEYCARD', displayText: 'เช่าคีย์การ์ด' }
+          },
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#C2410C',
+            action: { type: 'postback', label: 'เช่าชุดกุญแจ', data: 'act=KEY_RENT_START&mode=SET', displayText: 'เช่าชุดกุญแจ' }
+          }
+        ]
+      }
     }
   };
 }
@@ -564,20 +692,120 @@ function buildKeyRentSlipPrompt(keyRent) {
 function buildKeyRentPaymentMessage(keyRent) {
   const amount = Number(keyRent?.amount || 0);
   const room = keyRent?.room ? `ห้อง ${keyRent.room}` : '';
-  const amountLabel = amount > 0 ? `ยอด ${amount} บาท` : '';
-  const parts = ['เลือกวิธีชำระค่าเช่ากุญแจ', room, amountLabel].filter(Boolean);
+  const amountLabel = amount > 0 ? `${amount} บาท` : 'ตรวจสอบยอดกับเจ้าหน้าที่';
+  const modeLabel = keyRentModeLabel(keyRent?.mode);
 
   return {
-    type: 'template',
+    type: 'flex',
     altText: 'เลือกวิธีชำระค่าเช่ากุญแจ',
-    template: {
-      type: 'buttons',
-      text: parts.join(' • '),
-      actions: [
-        { type: 'postback', label: 'เงินสด', data: 'act=KEY_RENT_CASH', displayText: 'ชำระเงินสด' },
-        { type: 'postback', label: 'โอนจ่าย', data: 'act=KEY_RENT_BANK', displayText: 'โอนจ่าย' },
-        { type: 'postback', label: 'ยกเลิก', data: 'act=KEY_RENT_CANCEL', displayText: 'ยกเลิก' }
-      ]
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        backgroundColor: '#0B4F6C',
+        contents: [
+          {
+            type: 'text',
+            text: 'เลือกวิธีชำระเงิน',
+            color: '#FFFFFF',
+            weight: 'bold',
+            size: 'lg'
+          },
+          {
+            type: 'text',
+            text: `ค่าเช่า${modeLabel}`,
+            color: '#D5EAF2',
+            size: 'sm',
+            margin: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'box',
+                layout: 'vertical',
+                flex: 3,
+                cornerRadius: '12px',
+                paddingAll: '10px',
+                backgroundColor: '#F8FAFC',
+                borderColor: '#D9E2EC',
+                borderWidth: '1px',
+                contents: [
+                  { type: 'text', text: 'รายการ', size: 'xs', color: '#64748B' },
+                  { type: 'text', text: modeLabel, size: 'sm', weight: 'bold', color: '#0F172A', margin: 'xs' }
+                ]
+              },
+              {
+                type: 'box',
+                layout: 'vertical',
+                flex: 3,
+                cornerRadius: '12px',
+                paddingAll: '10px',
+                backgroundColor: '#FFF7ED',
+                borderColor: '#FDBA74',
+                borderWidth: '1px',
+                contents: [
+                  { type: 'text', text: 'ยอดชำระ', size: 'xs', color: '#9A3412' },
+                  { type: 'text', text: amountLabel, size: 'sm', weight: 'bold', color: '#7C2D12', margin: 'xs' }
+                ]
+              }
+            ]
+          },
+          room
+            ? {
+              type: 'box',
+              layout: 'horizontal',
+              cornerRadius: '10px',
+              paddingAll: '10px',
+              backgroundColor: '#EEF2FF',
+              contents: [
+                { type: 'text', text: 'ห้อง', size: 'sm', color: '#3730A3', flex: 2 },
+                { type: 'text', text: room.replace(/^ห้อง\s*/, ''), size: 'sm', color: '#1E1B4B', weight: 'bold', align: 'end', flex: 3 }
+              ]
+            }
+            : {
+              type: 'text',
+              text: 'เลือกรูปแบบการชำระด้านล่างได้เลย',
+              size: 'sm',
+              color: '#475569',
+              wrap: true
+            }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            action: { type: 'postback', label: 'เงินสด', data: 'act=KEY_RENT_CASH', displayText: 'ชำระเงินสด' }
+          },
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#0369A1',
+            action: { type: 'postback', label: 'โอนจ่าย', data: 'act=KEY_RENT_BANK', displayText: 'โอนจ่าย' }
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            action: { type: 'postback', label: 'ยกเลิก', data: 'act=KEY_RENT_CANCEL', displayText: 'ยกเลิก' }
+          }
+        ]
+      }
     }
   };
 }
@@ -618,14 +846,15 @@ function parseKeyRent(textRaw) {
   const raw = String(textRaw || '').trim();
   if (!raw) return null;
   const compact = raw.replace(/\s+/g, '');
+  const compactNormalized = compact.replace(/^ขอ/, '');
 
   let mode = null;
-  if (compact.startsWith('เช่าชุดกุญแจ')) mode = 'SET';
-  else if (compact.startsWith('เช่าคีย์การ์ด')) mode = 'KEYCARD';
-  else if (compact.startsWith('เช่ากุญแจ')) mode = 'KEY';
+  if (compactNormalized.startsWith('เช่าชุดกุญแจ')) mode = 'SET';
+  else if (compactNormalized.startsWith('เช่าคีย์การ์ด')) mode = 'KEYCARD';
+  else if (compactNormalized.startsWith('เช่ากุญแจ')) mode = 'KEY';
   else return null; // not a rent-key trigger
 
-  const roomMatch = compact.match(/((?:a|b)|(?:เอ)|(?:บี))(\d{2,4})/i);
+  const roomMatch = compactNormalized.match(/((?:a|b)|(?:เอ)|(?:บี))(\d{2,4})/i);
   if (!roomMatch) return { error: 'MISSING_ROOM' };
   const room = parseBuildingRoomToken(`${roomMatch[1]}${roomMatch[2]}`);
   if (!room) return { error: 'MISSING_ROOM' };
@@ -1643,15 +1872,19 @@ export default {
           if (v === undefined || v === null) return '';
           return String(pickFirst(v) || '').trim();
         };
+        const renewalEventType = normalize(data.eventType || data.postbackType).toLowerCase();
+        const isRenewalPipeEvent =
+          renewalEventType === 'renewal_reply' ||
+          renewalEventType === 'renewal_followup';
         const actionRaw = normalize(
           data.action ||
-          (act === 'renew_decision' ? data.ans : data.act)
+          ((act === 'renew_decision' || isRenewalPipeEvent) ? data.ans : data.act)
         );
         const action = actionRaw.toUpperCase();
         const room = normalize(data.room || data.roomId || data.r);
         const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
         const inq = normalize(data.inq || data.inquiry || data.inquiryId);
-        const td = normalize(data.td || (act === 'renew_decision' ? data.trig : ''));
+        const td = normalize(data.td || ((act === 'renew_decision' || isRenewalPipeEvent) ? data.trig : ''));
         const eventId = normalize(data.eventId || data.eid);
         const slotKey = normalize(data.slotKey);
         const slotStart = normalize(data.slotStart);
@@ -1716,6 +1949,7 @@ export default {
           isSignAskAdmin;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
+          isRenewalPipeEvent ||
           Object.prototype.hasOwnProperty.call(data, 'inq') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiry') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
@@ -2473,7 +2707,7 @@ export default {
             continue;
           }
 
-          if (textIn === 'เช่าชุดกุญแจ') {
+          if (/^\s*(?:ขอ)?เช่าชุดกุญแจ\s*$/i.test(textIn)) {
             const messages = [
               { type: 'text', text: buildKeyRentStartInstructionText(env) },
               buildKeyRentStartOptionsMessage()
@@ -3785,6 +4019,41 @@ function parsePostbackData(raw) {
       }
     } catch (err) {
       console.warn('parsePostbackData JSON parse failed', err);
+    }
+  }
+
+  const pipeIndex = input.indexOf('|');
+  if (pipeIndex > 0 && pipeIndex < input.length - 1) {
+    const eventType = input.slice(0, pipeIndex).trim();
+    const rhsRaw = input.slice(pipeIndex + 1).trim();
+    const rhs = rhsRaw.startsWith('?') ? rhsRaw.slice(1) : rhsRaw;
+
+    if (eventType && rhs) {
+      try {
+        const parsed = parseKv(rhs);
+        const out = {};
+        for (const [key, value] of Object.entries(parsed)) {
+          if (!key) continue;
+          if (Array.isArray(value)) {
+            out[key] = String(value[value.length - 1] || '');
+          } else {
+            out[key] = String(value ?? '');
+          }
+        }
+        out.eventType = eventType;
+        out.postbackType = eventType;
+        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup') && !out.action && out.ans) {
+          out.action = String(out.ans);
+        }
+        if ((eventType === 'renewal_reply' || eventType === 'renewal_followup') && !out.td && out.trig) {
+          out.td = String(out.trig);
+        }
+        if (Object.keys(out).length > 0) {
+          return out;
+        }
+      } catch (err) {
+        console.warn('parsePostbackData pipe format parse failed', err);
+      }
     }
   }
 
