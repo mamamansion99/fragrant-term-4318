@@ -10,21 +10,35 @@ function getStateKey(ev) {
   const uid = ev?.source?.userId || 'anon';
   return `${chat}:${uid}`;
 }
-const DEFAULT_OWNER_GROUP_IDS = [
+const DEFAULT_OWNER_GROUP_IDS = [];
+const DEFAULT_RENEWAL_ADMIN_GROUP_IDS = [
   'C07e625728aee936d59df1bca18bed149'
 ];
 
-function getOwnerGroupIds(env) {
-  const raw = String(env?.OWNER_GROUP_ID || '').trim();
+function getConfiguredGroupIds(rawValue, defaultIds = []) {
+  const raw = String(rawValue || '').trim();
   const envIds = raw
     ? raw.split(',').map((id) => String(id || '').trim()).filter(Boolean)
     : [];
-  return Array.from(new Set([...envIds, ...DEFAULT_OWNER_GROUP_IDS]));
+  return Array.from(new Set([...envIds, ...defaultIds]));
+}
+
+function getOwnerGroupIds(env) {
+  return getConfiguredGroupIds(env?.OWNER_GROUP_ID, DEFAULT_OWNER_GROUP_IDS);
 }
 
 function isOwnerGroupChat(env, chatId) {
   if (!chatId) return false;
   return getOwnerGroupIds(env).includes(chatId);
+}
+
+function getRenewalAdminGroupIds(env) {
+  return getConfiguredGroupIds(env?.RENEWAL_ADMIN_GROUP_ID, DEFAULT_RENEWAL_ADMIN_GROUP_IDS);
+}
+
+function isRenewalAdminGroupChat(env, chatId) {
+  if (!chatId) return false;
+  return getRenewalAdminGroupIds(env).includes(chatId);
 }
 
 function pushToOwnerGroups(env, messages) {
@@ -2008,7 +2022,7 @@ export default {
         if (isContractRenewalAction) {
           const chatId = getChatId(ev);
           if (isRenewalAdminAction) {
-            if (!isOwnerGroupChat(env, chatId)) {
+            if (!isRenewalAdminGroupChat(env, chatId)) {
               await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้น');
               continue;
             }
