@@ -1911,19 +1911,36 @@ export default {
           if (v === undefined || v === null) return '';
           return String(pickFirst(v) || '').trim();
         };
-        const renewalEventType = normalize(data.eventType || data.postbackType).toLowerCase();
+        const room = normalize(data.room || data.roomId || data.r);
+        const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
+        const inq = normalize(data.inq || data.inquiry || data.inquiryId);
+        const actionField = normalize(data.action);
+        const actionFieldLower = actionField.toLowerCase();
+        const renewalActionFieldIsEventType =
+          actionFieldLower === 'renewal_reply' ||
+          actionFieldLower === 'renewal_followup' ||
+          actionFieldLower === 'renewal_admin';
+        const renewalEventType = normalize(
+          data.eventType ||
+          data.postbackType ||
+          (renewalActionFieldIsEventType ? actionField : '')
+        ).toLowerCase();
         const isRenewalPipeEvent =
           renewalEventType === 'renewal_reply' ||
           renewalEventType === 'renewal_followup';
         const isRenewalAdminEvent = renewalEventType === 'renewal_admin';
+        const renewalAnswer = data.ans || data.answer;
+        const isRenewalAliasPayload =
+          !!inq ||
+          act === 'renew_decision' ||
+          renewalActionFieldIsEventType ||
+          isRenewalPipeEvent ||
+          isRenewalAdminEvent;
         const actionRaw = normalize(
-          data.action ||
-          ((act === 'renew_decision' || isRenewalPipeEvent || isRenewalAdminEvent) ? data.ans : data.act)
+          (renewalActionFieldIsEventType ? '' : actionField) ||
+          (isRenewalAliasPayload ? renewalAnswer : data.act)
         );
         const action = actionRaw.toUpperCase();
-        const room = normalize(data.room || data.roomId || data.r);
-        const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
-        const inq = normalize(data.inq || data.inquiry || data.inquiryId);
         const td = normalize(data.td || ((act === 'renew_decision' || isRenewalPipeEvent) ? data.trig : ''));
         const eventId = normalize(data.eventId || data.eid);
         const slotKey = normalize(data.slotKey);
