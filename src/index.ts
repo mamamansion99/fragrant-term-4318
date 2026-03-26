@@ -2003,6 +2003,7 @@ export default {
 
         const isSignSlot = action === 'SIGN_SLOT';
         const isSignAskAdmin = action === 'SIGN_ASK_ADMIN';
+        const isLeavePickCheckoutAction = action === 'LEAVE_PICK_CHECKOUT';
         const isRenewalAdminAction =
           action === 'ADMIN_SIGN_TEXT' ||
           action === 'ADMIN_SIGN_CALL' ||
@@ -2013,6 +2014,7 @@ export default {
           action === 'CONTINUE' ||
           action === 'LEAVE' ||
           action === 'UNDECIDED' ||
+          isLeavePickCheckoutAction ||
           isSignSlot ||
           isSignAskAdmin ||
           isRenewalAdminAction;
@@ -2099,6 +2101,18 @@ export default {
             notifyN8nRenewalPostback(env, renewalPayload)
               .catch((err) => console.error('contract_renewal_notify_fail', err))
           );
+
+          if (isLeavePickCheckoutAction) {
+            const leaveCheckoutAck = selectedDateTime
+              ? `Received your checkout date/time: ${selectedDateTime.replace('T', ' ')}`
+              : 'Received your checkout date/time.';
+            try {
+              await replyToLine(replyToken, [{ type: 'text', text: leaveCheckoutAck }]);
+            } catch (err) {
+              console.error('contract_renewal_reply_fail', err);
+            }
+            continue;
+          }
 
           const roomLabel = room || 'ไม่ระบุ';
           const replyMap = {
