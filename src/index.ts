@@ -2038,6 +2038,15 @@ export default {
 
         if (isContractRenewalAction) {
           const chatId = getChatId(ev);
+          const sourceType = String(ev?.source?.type || '');
+          const groupId = String(ev?.source?.groupId || '');
+          const lineRoomId = String(ev?.source?.roomId || '');
+          const postbackParams = (ev?.postback?.params && typeof ev.postback.params === 'object' && !Array.isArray(ev.postback.params))
+            ? ev.postback.params
+            : {};
+          const selectedDateTime = String(postbackParams.datetime || '');
+          const selectedDate = String(postbackParams.date || '');
+          const selectedTime = String(postbackParams.time || '');
           if (isRenewalAdminAction) {
             if (!isRenewalAdminGroupChat(env, chatId)) {
               await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้น');
@@ -2047,14 +2056,23 @@ export default {
 
           const renewalPayload = {
             source: 'line_postback',
+            type: ev?.type || '',
+            sourceType,
             eventType: renewalEventType || (isRenewalAdminAction ? 'renewal_admin' : ''),
             eventId: ev?.webhookEventId || eventId || ev?.replyToken || '',
             timestamp: ev?.timestamp || Date.now(),
             userId: renewalUserId,
             actorUserId,
             payloadUserId,
+            groupId,
+            lineRoomId,
             chatId: chatId || '',
             replyToken: replyToken || '',
+            postbackData: postbackDataString,
+            postbackParams,
+            selectedDateTime,
+            selectedDate,
+            selectedTime,
             action,
             inquiryId: inq,
             roomId: room || '',
