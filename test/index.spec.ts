@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
 import { describe, it, expect } from 'vitest';
 import worker from '../src';
+import { __testables } from '../src/index';
 
 describe('Worker routes', () => {
 	it('returns OK for non-POST requests outside known GET routes', async () => {
@@ -57,6 +58,54 @@ describe('Worker routes', () => {
 		expect(parsed.userId).toBe('Ue90558b73d62863e2287ac32e69541a3');
 		expect(parsed.end).toBe('2026-05-31');
 		expect(parsed.td).toBe('60');
+	});
+
+	it('normalizes manager renewal decision postbacks for n8n routing', () => {
+		const parsed = __testables.parsePostbackData('action=manager_renewal_decision&decision=APPROVE&roomId=A101&end=2026-05-08&inquiryId=RI-A101-2026-05-08&triggerDay=60');
+		const meta = __testables.buildRenewalPostbackMeta(parsed, {
+			source: {
+				type: 'group',
+				groupId: 'C-manager-group',
+				userId: 'U-manager'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('MANAGER_DECISION');
+		expect(meta.action).toBe('APPROVE');
+		expect(meta.managerDecision).toBe('APPROVE');
+		expect(meta.inq).toBe('RI-A101-2026-05-08');
+		expect(meta.room).toBe('A101');
+		expect(meta.end).toBe('2026-05-08');
+		expect(meta.td).toBe('60');
+		expect(meta.managerDecisionBy).toBe('U-manager');
+		expect(meta.managerChatId).toBe('C-manager-group');
+		expect(meta.normalizedEventType).toBe('manager_renewal_decision');
+	});
+
+	it('marks tenant renewal replies with ActionType for downstream switch routing', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'CONTINUE',
+			inquiryId: 'RI-A101-2026-05-08',
+			roomId: 'A101',
+			end: '2026-05-08',
+			triggerDay: '60'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('CONTINUE');
+		expect(meta.renewalUserId).toBe('U-tenant');
+		expect(meta.td).toBe('60');
+	});
+
+	it('normalizes manager decision aliases', () => {
+		expect(__testables.normalizeManagerDecision('approved')).toBe('APPROVE');
+		expect(__testables.normalizeManagerDecision('decline')).toBe('REJECT');
+		expect(__testables.normalizeManagerDecision('pending')).toBe('HOLD');
 	});
 
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {

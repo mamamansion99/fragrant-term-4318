@@ -1906,52 +1906,42 @@ export default {
           }
         }
 
-        const pickFirst = (v) => Array.isArray(v) ? v[0] : v;
-        const normalize = (v) => {
-          if (v === undefined || v === null) return '';
-          return String(pickFirst(v) || '').trim();
-        };
-        const room = normalize(data.room || data.roomId || data.r);
-        const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
-        const inq = normalize(data.inq || data.inquiry || data.inquiryId);
-        const actionField = normalize(data.action);
-        const actionFieldLower = actionField.toLowerCase();
-        const renewalActionFieldIsEventType =
-          actionFieldLower === 'renewal_reply' ||
-          actionFieldLower === 'renewal_followup' ||
-          actionFieldLower === 'renewal_admin';
-        const renewalEventType = normalize(
-          data.eventType ||
-          data.postbackType ||
-          (renewalActionFieldIsEventType ? actionField : '')
-        ).toLowerCase();
-        const isRenewalPipeEvent =
-          renewalEventType === 'renewal_reply' ||
-          renewalEventType === 'renewal_followup';
-        const isRenewalAdminEvent = renewalEventType === 'renewal_admin';
-        const renewalAnswer = data.ans || data.answer;
-        const isRenewalAliasPayload =
-          !!inq ||
-          act === 'renew_decision' ||
-          renewalActionFieldIsEventType ||
-          isRenewalPipeEvent ||
-          isRenewalAdminEvent;
-        const actionRaw = normalize(
-          (renewalActionFieldIsEventType ? '' : actionField) ||
-          (isRenewalAliasPayload ? renewalAnswer : data.act)
-        );
-        const action = actionRaw.toUpperCase();
-        const td = normalize(data.td || ((act === 'renew_decision' || isRenewalPipeEvent) ? data.trig : ''));
-        const eventId = normalize(data.eventId || data.eid);
-        const slotKey = normalize(data.slotKey);
-        const slotStart = normalize(data.slotStart);
-        const slotEnd = normalize(data.slotEnd);
-        const actorUserId = ev?.source?.userId || '';
-        const payloadUserId = normalize(data.userId || data.lineUserId || data.uid);
-        const renewalUserId = payloadUserId || actorUserId;
-        const postbackLog = {
-          eventType: renewalEventType || '',
+        const renewalMeta = buildRenewalPostbackMeta(data, ev, act);
+        const {
+          room,
+          end,
+          inq,
+          actionField,
+          actionFieldLower,
+          renewalEventType,
+          normalizedEventType,
+          managerDecision,
+          actionType,
           action,
+          td,
+          eventId,
+          slotKey,
+          slotStart,
+          slotEnd,
+          actorUserId,
+          payloadUserId,
+          renewalUserId,
+          sourceType,
+          groupId,
+          lineRoomId,
+          chatId,
+          managerDecisionBy,
+          managerChatId,
+          isRenewalPipeEvent,
+          isRenewalAdminEvent,
+          isManagerDecisionEvent
+        } = renewalMeta;
+        const postbackLog = {
+          eventType: normalizedEventType || '',
+          actionField,
+          action,
+          actionType,
+          managerDecision,
           room,
           end,
           inq,
@@ -2017,18 +2007,31 @@ export default {
           isLeavePickCheckoutAction ||
           isSignSlot ||
           isSignAskAdmin ||
-          isRenewalAdminAction;
+          isRenewalAdminAction ||
+          isManagerDecisionEvent;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
           isRenewalPipeEvent ||
           isRenewalAdminEvent ||
+          isManagerDecisionEvent ||
           Object.prototype.hasOwnProperty.call(data, 'inq') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiry') ||
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
 
-        if (looksLikeContractRenewal && (!action || !inq)) {
+        const missingRenewalFields = [];
+        if (!inq) missingRenewalFields.push('inquiryId');
+        if (isManagerDecisionEvent) {
+          if (!managerDecision) missingRenewalFields.push('decision');
+        } else if (!action && !isSignSlot) {
+          missingRenewalFields.push('action');
+        }
+
+        if (looksLikeContractRenewal && missingRenewalFields.length > 0) {
           if (!isSignSlot) {
-            console.warn('contract_renewal_postback_missing_fields', postbackLog);
+            console.warn('contract_renewal_postback_missing_fields', {
+              ...postbackLog,
+              missingFields: missingRenewalFields
+            });
             try {
               await replyToLine(replyToken, [{ type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่อีกครั้ง' }]);
             } catch (err) {
@@ -2039,10 +2042,6 @@ export default {
         }
 
         if (isContractRenewalAction) {
-          const chatId = getChatId(ev);
-          const sourceType = String(ev?.source?.type || '');
-          const groupId = String(ev?.source?.groupId || '');
-          const lineRoomId = String(ev?.source?.roomId || '');
           const postbackParams = (ev?.postback?.params && typeof ev.postback.params === 'object' && !Array.isArray(ev.postback.params))
             ? ev.postback.params
             : {};
@@ -2060,7 +2059,7 @@ export default {
             source: 'line_postback',
             type: ev?.type || '',
             sourceType,
-            eventType: renewalEventType || (isRenewalAdminAction ? 'renewal_admin' : ''),
+            eventType: normalizedEventType,
             eventId: ev?.webhookEventId || eventId || ev?.replyToken || '',
             timestamp: ev?.timestamp || Date.now(),
             userId: renewalUserId,
@@ -2076,6 +2075,18 @@ export default {
             selectedDate,
             selectedTime,
             action,
+            actionField,
+            actionType,
+            ActionType: actionType,
+            queryActionRaw: actionFieldLower,
+            ManagerDecision: managerDecision,
+            Decision: managerDecision,
+            ManagerDecisionBy: managerDecisionBy,
+            ManagerChatId: managerChatId,
+            InquiryId: inq,
+            RoomID: room || '',
+            ContractEndDateISO: end || '',
+            TriggerDay: td || '',
             inquiryId: inq,
             roomId: room || '',
             contractEnd: end || '',
@@ -2115,6 +2126,11 @@ export default {
           }
 
           const roomLabel = room || 'ไม่ระบุ';
+          const managerReplyMap = {
+            APPROVE: `Recorded manager approval for room ${roomLabel}.`,
+            REJECT: `Recorded manager rejection for room ${roomLabel}.`,
+            HOLD: `Recorded manager hold for room ${roomLabel}.`
+          };
           const replyMap = {
             CONTINUE: `รับทราบค่ะ ✅ ห้อง ${roomLabel} แจ้งว่า “อยู่ต่อ” แล้ว`,
             LEAVE: `รับทราบค่ะ 🚚 ห้อง ${roomLabel} แจ้งว่า “ย้ายออก” แล้ว แอดมินจะติดต่อกลับเพื่อขั้นตอนถัดไป`,
@@ -2122,7 +2138,10 @@ export default {
           };
 
           try {
-            await replyToLine(replyToken, [{ type: 'text', text: replyMap[action] || 'รับทราบค่ะ' }]);
+            const ackText = isManagerDecisionEvent
+              ? (managerReplyMap[managerDecision] || 'Recorded manager decision.')
+              : (replyMap[action] || 'รับทราบค่ะ');
+            await replyToLine(replyToken, [{ type: 'text', text: ackText }]);
           } catch (err) {
             console.error('contract_renewal_reply_fail', err);
           }
@@ -4204,6 +4223,127 @@ function parsePostbackData(raw) {
   return {};
 }
 
+function normalizeManagerDecision(value) {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) return '';
+  if (['APPROVE', 'APPROVED', 'YES', 'Y', 'ALLOW', 'OK'].includes(normalized)) return 'APPROVE';
+  if (['REJECT', 'REJECTED', 'NO', 'N', 'DENY', 'DECLINE'].includes(normalized)) return 'REJECT';
+  if (['HOLD', 'WAIT', 'PENDING', 'UNDECIDED'].includes(normalized)) return 'HOLD';
+  return normalized;
+}
+
+function buildRenewalPostbackMeta(data, ev, act = '') {
+  const pickFirst = (value) => Array.isArray(value) ? value[0] : value;
+  const normalize = (value) => {
+    if (value === undefined || value === null) return '';
+    return String(pickFirst(value) || '').trim();
+  };
+
+  const room = normalize(data.room || data.roomId || data.r);
+  const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
+  const inq = normalize(data.inq || data.inquiry || data.inquiryId);
+  const actionField = normalize(data.action);
+  const actionFieldLower = actionField.toLowerCase();
+  const renewalActionFieldIsEventType =
+    actionFieldLower === 'renewal_reply' ||
+    actionFieldLower === 'renewal_followup' ||
+    actionFieldLower === 'renewal_admin';
+  const renewalEventType = normalize(
+    data.eventType ||
+    data.postbackType ||
+    (renewalActionFieldIsEventType ? actionField : '')
+  ).toLowerCase();
+  const isRenewalPipeEvent =
+    renewalEventType === 'renewal_reply' ||
+    renewalEventType === 'renewal_followup';
+  const isRenewalAdminEvent = renewalEventType === 'renewal_admin';
+  const isManagerDecisionEvent =
+    actionFieldLower === 'manager_renewal_decision' ||
+    renewalEventType === 'manager_renewal_decision';
+  const renewalAnswer = normalize(data.ans || data.answer);
+  const decisionRaw = normalize(data.decision || data.dec);
+  const managerDecision = normalizeManagerDecision(decisionRaw);
+  const isRenewalAliasPayload =
+    !!inq ||
+    act === 'renew_decision' ||
+    renewalActionFieldIsEventType ||
+    isRenewalPipeEvent ||
+    isRenewalAdminEvent ||
+    isManagerDecisionEvent;
+  const actionRaw = normalize(
+    isManagerDecisionEvent
+      ? managerDecision
+      : (
+        (renewalActionFieldIsEventType ? '' : actionField) ||
+        (isRenewalAliasPayload ? renewalAnswer : data.act)
+      )
+  );
+  const action = actionRaw.toUpperCase();
+  const actionType = isManagerDecisionEvent
+    ? 'MANAGER_DECISION'
+    : (
+      renewalEventType === 'renewal_reply' ||
+      renewalEventType === 'renewal_followup' ||
+      actionFieldLower === 'renewal_reply' ||
+      action === 'CONTINUE' ||
+      action === 'LEAVE' ||
+      action === 'UNDECIDED' ||
+      action === 'LEAVE_PICK_CHECKOUT' ||
+      action === 'SIGN_SLOT' ||
+      action === 'SIGN_ASK_ADMIN'
+        ? 'TENANT_RENEWAL_REPLY'
+        : ''
+    );
+  const td = normalize(data.td || data.triggerDay || data.trig || ((act === 'renew_decision' || isRenewalPipeEvent) ? data.trig : ''));
+  const eventId = normalize(data.eventId || data.eid);
+  const slotKey = normalize(data.slotKey);
+  const slotStart = normalize(data.slotStart);
+  const slotEnd = normalize(data.slotEnd);
+  const actorUserId = ev?.source?.userId || '';
+  const payloadUserId = normalize(data.userId || data.lineUserId || data.uid);
+  const renewalUserId = payloadUserId || actorUserId;
+  const sourceType = String(ev?.source?.type || '');
+  const groupId = String(ev?.source?.groupId || '');
+  const lineRoomId = String(ev?.source?.roomId || '');
+  const chatId = getChatId(ev);
+  const normalizedEventType = renewalEventType || (isRenewalAdminEvent ? 'renewal_admin' : (isManagerDecisionEvent ? 'manager_renewal_decision' : ''));
+  const managerDecisionBy = normalize(actorUserId || renewalUserId);
+  const managerChatId = normalize(chatId || groupId || lineRoomId || renewalUserId);
+
+  return {
+    room,
+    end,
+    inq,
+    actionField,
+    actionFieldLower,
+    renewalEventType,
+    normalizedEventType,
+    renewalAnswer,
+    decisionRaw,
+    managerDecision,
+    actionType,
+    actionRaw,
+    action,
+    td,
+    eventId,
+    slotKey,
+    slotStart,
+    slotEnd,
+    actorUserId,
+    payloadUserId,
+    renewalUserId,
+    sourceType,
+    groupId,
+    lineRoomId,
+    chatId,
+    managerDecisionBy,
+    managerChatId,
+    isRenewalPipeEvent,
+    isRenewalAdminEvent,
+    isManagerDecisionEvent
+  };
+}
+
 async function moveoutTextGate(env, stateKey, textIn, replyToken) {
   // Fallback implementation: forward all handling to GAS by returning false.
   // Existing MOVEOUT flows handled in GAS will continue to work.
@@ -5471,4 +5611,10 @@ async function notifyN8nGroupImage(env, payload) {
     return false;
   }
 }
+
+export const __testables = {
+  parsePostbackData,
+  normalizeManagerDecision,
+  buildRenewalPostbackMeta
+};
 
