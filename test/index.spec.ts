@@ -143,6 +143,18 @@ describe('Worker routes', () => {
 		expect(__testables.normalizeManagerDecision('pending')).toBe('HOLD');
 	});
 
+	it('routes only new renewal flex actions to CONTINUE_TERM_REPLY webhook', () => {
+		const mockEnv = {
+			N8N_RENEWAL_POSTBACK_URL: 'https://example.com/renewal-postback',
+			N8N_CONTINUE_TERM_REPLY_URL: 'https://example.com/continue-term-reply'
+		} as any;
+
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ACCEPT_TERMS')).toBe('https://example.com/continue-term-reply');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ASK_MORE')).toBe('https://example.com/continue-term-reply');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'CONTINUE')).toBe('https://example.com/renewal-postback');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
+	});
+
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/git/latest-commit?repo=invalid-repo-format');
 		const ctx = createExecutionContext();

@@ -1192,8 +1192,16 @@ function getRentKeyReceiverUrl(env) {
 }
 
 const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
-function getRenewalPostbackWebhookUrl(env) {
-  return env.N8N_CONTINUE_TERM_REPLY_URL || env.N8N_RENEWAL_POSTBACK_URL || DEFAULT_N8N_CONTINUE_TERM_REPLY_URL;
+function isContinueTermReplyAction(action) {
+  const normalized = String(action || '').trim().toUpperCase();
+  return normalized === 'RENEWAL_ACCEPT_TERMS' || normalized === 'RENEWAL_ASK_MORE';
+}
+
+function getRenewalPostbackWebhookUrl(env, action) {
+  if (isContinueTermReplyAction(action)) {
+    return env.N8N_CONTINUE_TERM_REPLY_URL || DEFAULT_N8N_CONTINUE_TERM_REPLY_URL;
+  }
+  return env.N8N_RENEWAL_POSTBACK_URL || '';
 }
 
 async function fetchLineImageAsDataUrl(channelToken, messageId) {
@@ -4065,9 +4073,10 @@ function errorReplyOrPush(env, replyToken, chatId, text) {
 }
 
 async function notifyN8nRenewalPostback(env, payload) {
-  const url = getRenewalPostbackWebhookUrl(env);
+  const action = String(payload?.action || '').trim().toUpperCase();
+  const url = getRenewalPostbackWebhookUrl(env, action);
   if (!url) {
-    console.warn('notifyN8nRenewalPostback: missing webhook URL');
+    console.warn('notifyN8nRenewalPostback: missing webhook URL', { action });
     return false;
   }
 
@@ -5638,5 +5647,7 @@ async function notifyN8nGroupImage(env, payload) {
 export const __testables = {
   parsePostbackData,
   normalizeManagerDecision,
-  buildRenewalPostbackMeta
+  buildRenewalPostbackMeta,
+  isContinueTermReplyAction,
+  getRenewalPostbackWebhookUrl
 };
