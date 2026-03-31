@@ -102,6 +102,41 @@ describe('Worker routes', () => {
 		expect(meta.td).toBe('60');
 	});
 
+	it('accepts CONTINUE_TERM_REPLY-style actions with roomId-only payload', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'RENEWAL_ACCEPT_TERMS',
+			roomId: 'A101'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ACCEPT_TERMS');
+		expect(meta.room).toBe('A101');
+		expect(meta.inq).toBe('');
+		expect(meta.renewalUserId).toBe('U-tenant');
+	});
+
+	it('parses renewalId alias as inquiry identifier', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'RENEWAL_ASK_MORE',
+			roomId: 'A101',
+			renewalId: 'RI-000123'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ASK_MORE');
+		expect(meta.inq).toBe('RI-000123');
+	});
+
 	it('normalizes manager decision aliases', () => {
 		expect(__testables.normalizeManagerDecision('approved')).toBe('APPROVE');
 		expect(__testables.normalizeManagerDecision('decline')).toBe('REJECT');

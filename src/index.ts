@@ -1191,6 +1191,11 @@ function getRentKeyReceiverUrl(env) {
   return env.N8N_RENT_KEY_RECEIVER_URL || DEFAULT_N8N_RENT_KEY_RECEIVER_URL;
 }
 
+const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
+function getRenewalPostbackWebhookUrl(env) {
+  return env.N8N_CONTINUE_TERM_REPLY_URL || env.N8N_RENEWAL_POSTBACK_URL || DEFAULT_N8N_CONTINUE_TERM_REPLY_URL;
+}
+
 async function fetchLineImageAsDataUrl(channelToken, messageId) {
   if (!channelToken || !messageId) throw new Error('missing token or messageId');
   const res = await fetch(`https://api-data.line.me/v2/bot/message/${messageId}/content`, {
@@ -2004,6 +2009,8 @@ export default {
           action === 'CONTINUE' ||
           action === 'LEAVE' ||
           action === 'UNDECIDED' ||
+          action === 'RENEWAL_ACCEPT_TERMS' ||
+          action === 'RENEWAL_ASK_MORE' ||
           isLeavePickCheckoutAction ||
           isSignSlot ||
           isSignAskAdmin ||
@@ -2019,7 +2026,9 @@ export default {
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
 
         const missingRenewalFields = [];
-        if (!inq) missingRenewalFields.push('inquiryId');
+        const inquiryOptionalActions = ['RENEWAL_ACCEPT_TERMS', 'RENEWAL_ASK_MORE'];
+        const requiresInquiryId = !inquiryOptionalActions.includes(action);
+        if (!inq && requiresInquiryId) missingRenewalFields.push('inquiryId');
         if (isManagerDecisionEvent) {
           if (!managerDecision) missingRenewalFields.push('decision');
         } else if (!action && !isSignSlot) {
@@ -2058,11 +2067,13 @@ export default {
           const renewalPayload = {
             source: 'line_postback',
             type: ev?.type || '',
+            eventTypeRaw: ev?.type || '',
             sourceType,
             eventType: normalizedEventType,
             eventId: ev?.webhookEventId || eventId || ev?.replyToken || '',
             timestamp: ev?.timestamp || Date.now(),
             userId: renewalUserId,
+            lineUserId: renewalUserId,
             actorUserId,
             payloadUserId,
             groupId,
@@ -2070,6 +2081,7 @@ export default {
             chatId: chatId || '',
             replyToken: replyToken || '',
             postbackData: postbackDataString,
+            rawData: postbackDataString,
             postbackParams,
             selectedDateTime,
             selectedDate,
@@ -2088,6 +2100,7 @@ export default {
             ContractEndDateISO: end || '',
             TriggerDay: td || '',
             inquiryId: inq,
+            renewalId: inq || '',
             roomId: room || '',
             contractEnd: end || '',
             td: td || '',
@@ -2134,7 +2147,9 @@ export default {
           const replyMap = {
             CONTINUE: `รับทราบค่ะ ✅ ห้อง ${roomLabel} แจ้งว่า “อยู่ต่อ” แล้ว`,
             LEAVE: `รับทราบค่ะ 🚚 ห้อง ${roomLabel} แจ้งว่า “ย้ายออก” แล้ว แอดมินจะติดต่อกลับเพื่อขั้นตอนถัดไป`,
-            UNDECIDED: `รับทราบค่ะ 🤔 ห้อง ${roomLabel} แจ้งว่า “ยังไม่แน่ใจ” แล้ว หากพร้อมเมื่อไหร่กดเลือกได้อีกครั้ง`
+            UNDECIDED: `รับทราบค่ะ 🤔 ห้อง ${roomLabel} แจ้งว่า “ยังไม่แน่ใจ” แล้ว หากพร้อมเมื่อไหร่กดเลือกได้อีกครั้ง`,
+            RENEWAL_ACCEPT_TERMS: `รับทราบค่ะ ✅ ห้อง ${roomLabel} ยืนยันรับทราบเงื่อนไขต่อสัญญาแล้ว`,
+            RENEWAL_ASK_MORE: `รับทราบค่ะ 📝 ห้อง ${roomLabel} ขอรายละเอียดเพิ่มเติมแล้ว แอดมินจะติดต่อกลับ`
           };
 
           try {
@@ -4050,16 +4065,22 @@ function errorReplyOrPush(env, replyToken, chatId, text) {
 }
 
 async function notifyN8nRenewalPostback(env, payload) {
-  const url = env.N8N_RENEWAL_POSTBACK_URL || '';
+  const url = getRenewalPostbackWebhookUrl(env);
   if (!url) {
     console.warn('notifyN8nRenewalPostback: missing webhook URL');
     return false;
   }
 
   try {
+    const headers = { 'Content-Type': 'application/json' };
+    const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+    if (secret) {
+      headers['x-worker-secret'] = secret;
+    }
+
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify(payload)
     });
     const text = await res.text().catch(() => '');
@@ -4241,7 +4262,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
 
   const room = normalize(data.room || data.roomId || data.r);
   const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
-  const inq = normalize(data.inq || data.inquiry || data.inquiryId);
+  const inq = normalize(data.inq || data.inquiry || data.inquiryId || data.renewalId || data.renewalRecordId);
   const actionField = normalize(data.action);
   const actionFieldLower = actionField.toLowerCase();
   const renewalActionFieldIsEventType =
@@ -4288,6 +4309,8 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
       action === 'CONTINUE' ||
       action === 'LEAVE' ||
       action === 'UNDECIDED' ||
+      action === 'RENEWAL_ACCEPT_TERMS' ||
+      action === 'RENEWAL_ASK_MORE' ||
       action === 'LEAVE_PICK_CHECKOUT' ||
       action === 'SIGN_SLOT' ||
       action === 'SIGN_ASK_ADMIN'
@@ -5617,4 +5640,3 @@ export const __testables = {
   normalizeManagerDecision,
   buildRenewalPostbackMeta
 };
-
