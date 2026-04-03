@@ -120,6 +120,26 @@ describe('Worker routes', () => {
 		expect(meta.renewalUserId).toBe('U-tenant');
 	});
 
+	it('marks renewal signing slot postbacks as tenant renewal replies', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'RENEWAL_SIGN_SLOT_CONFIRM',
+			roomId: 'A101',
+			InquiryId: 'RI-ALIAS-001',
+			slotKey: 'SLOT-2026-04-12-1300'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_SIGN_SLOT_CONFIRM');
+		expect(meta.inq).toBe('RI-ALIAS-001');
+		expect(meta.slotKey).toBe('SLOT-2026-04-12-1300');
+		expect(meta.renewalUserId).toBe('U-tenant');
+	});
+
 	it('parses renewalId alias as inquiry identifier', () => {
 		const meta = __testables.buildRenewalPostbackMeta({
 			action: 'RENEWAL_ASK_MORE',
@@ -137,6 +157,28 @@ describe('Worker routes', () => {
 		expect(meta.inq).toBe('RI-000123');
 	});
 
+	it('parses InquiryId and LeaseID aliases for CONTINUE_TERM_REPLY payloads', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'RENEWAL_ACCEPT_TERMS',
+			RoomID: 'A101',
+			InquiryId: 'RI-ALIAS-001',
+			LeaseID: 'LEASE-0099',
+			ContractEndDateISO: '2027-05-30'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ACCEPT_TERMS');
+		expect(meta.room).toBe('A101');
+		expect(meta.inq).toBe('RI-ALIAS-001');
+		expect(meta.leaseId).toBe('LEASE-0099');
+		expect(meta.end).toBe('2027-05-30');
+	});
+
 	it('normalizes manager decision aliases', () => {
 		expect(__testables.normalizeManagerDecision('approved')).toBe('APPROVE');
 		expect(__testables.normalizeManagerDecision('decline')).toBe('REJECT');
@@ -151,6 +193,8 @@ describe('Worker routes', () => {
 
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ACCEPT_TERMS')).toBe('https://example.com/continue-term-reply');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ASK_MORE')).toBe('https://example.com/continue-term-reply');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_SIGN_SLOT_CONFIRM')).toBe('https://example.com/continue-term-reply');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_SIGN_SLOT_CHANGE')).toBe('https://example.com/continue-term-reply');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'CONTINUE')).toBe('https://example.com/renewal-postback');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});

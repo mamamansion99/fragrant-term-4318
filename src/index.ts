@@ -1194,7 +1194,12 @@ function getRentKeyReceiverUrl(env) {
 const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
 function isContinueTermReplyAction(action) {
   const normalized = String(action || '').trim().toUpperCase();
-  return normalized === 'RENEWAL_ACCEPT_TERMS' || normalized === 'RENEWAL_ASK_MORE';
+  return (
+    normalized === 'RENEWAL_ACCEPT_TERMS' ||
+    normalized === 'RENEWAL_ASK_MORE' ||
+    normalized === 'RENEWAL_SIGN_SLOT_CONFIRM' ||
+    normalized === 'RENEWAL_SIGN_SLOT_CHANGE'
+  );
 }
 
 function getRenewalPostbackWebhookUrl(env, action) {
@@ -1924,6 +1929,7 @@ export default {
           room,
           end,
           inq,
+          leaseId,
           actionField,
           actionFieldLower,
           renewalEventType,
@@ -1958,6 +1964,7 @@ export default {
           room,
           end,
           inq,
+          leaseId,
           actorUserId,
           payloadUserId,
           renewalUserId,
@@ -2006,6 +2013,8 @@ export default {
 
         const isSignSlot = action === 'SIGN_SLOT';
         const isSignAskAdmin = action === 'SIGN_ASK_ADMIN';
+        const isRenewalSignSlotConfirmAction = action === 'RENEWAL_SIGN_SLOT_CONFIRM';
+        const isRenewalSignSlotChangeAction = action === 'RENEWAL_SIGN_SLOT_CHANGE';
         const isLeavePickCheckoutAction = action === 'LEAVE_PICK_CHECKOUT';
         const isRenewalAdminAction =
           action === 'ADMIN_SIGN_TEXT' ||
@@ -2019,6 +2028,8 @@ export default {
           action === 'UNDECIDED' ||
           action === 'RENEWAL_ACCEPT_TERMS' ||
           action === 'RENEWAL_ASK_MORE' ||
+          isRenewalSignSlotConfirmAction ||
+          isRenewalSignSlotChangeAction ||
           isLeavePickCheckoutAction ||
           isSignSlot ||
           isSignAskAdmin ||
@@ -2104,10 +2115,12 @@ export default {
             ManagerDecisionBy: managerDecisionBy,
             ManagerChatId: managerChatId,
             InquiryId: inq,
+            LeaseID: leaseId || '',
             RoomID: room || '',
             ContractEndDateISO: end || '',
             TriggerDay: td || '',
             inquiryId: inq,
+            leaseId: leaseId || '',
             renewalId: inq || '',
             roomId: room || '',
             contractEnd: end || '',
@@ -2157,7 +2170,9 @@ export default {
             LEAVE: `รับทราบค่ะ 🚚 ห้อง ${roomLabel} แจ้งว่า “ย้ายออก” แล้ว แอดมินจะติดต่อกลับเพื่อขั้นตอนถัดไป`,
             UNDECIDED: `รับทราบค่ะ 🤔 ห้อง ${roomLabel} แจ้งว่า “ยังไม่แน่ใจ” แล้ว หากพร้อมเมื่อไหร่กดเลือกได้อีกครั้ง`,
             RENEWAL_ACCEPT_TERMS: `รับทราบค่ะ ✅ ห้อง ${roomLabel} ยืนยันรับทราบเงื่อนไขต่อสัญญาแล้ว`,
-            RENEWAL_ASK_MORE: `รับทราบค่ะ 📝 ห้อง ${roomLabel} ขอรายละเอียดเพิ่มเติมแล้ว แอดมินจะติดต่อกลับ`
+            RENEWAL_ASK_MORE: `รับทราบค่ะ 📝 ห้อง ${roomLabel} ขอรายละเอียดเพิ่มเติมแล้ว แอดมินจะติดต่อกลับ`,
+            RENEWAL_SIGN_SLOT_CONFIRM: `รับทราบค่ะ ✅ ยืนยันวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`,
+            RENEWAL_SIGN_SLOT_CHANGE: `รับทราบค่ะ 🗓️ รับคำขอเปลี่ยนวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`
           };
 
           try {
@@ -4269,9 +4284,32 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
     return String(pickFirst(value) || '').trim();
   };
 
-  const room = normalize(data.room || data.roomId || data.r);
-  const end = normalize(data.contractEnd || data.end || data.endDate || data.checkout);
-  const inq = normalize(data.inq || data.inquiry || data.inquiryId || data.renewalId || data.renewalRecordId);
+  const room = normalize(data.room || data.roomId || data.RoomID || data.roomID || data.r);
+  const end = normalize(
+    data.contractEnd ||
+    data.ContractEndDateISO ||
+    data.contractEndIso ||
+    data.ContractEndDate ||
+    data.end ||
+    data.endDate ||
+    data.checkout
+  );
+  const inq = normalize(
+    data.inq ||
+    data.inquiry ||
+    data.inquiryId ||
+    data.InquiryId ||
+    data.InquiryID ||
+    data.renewalId ||
+    data.renewalRecordId
+  );
+  const leaseId = normalize(
+    data.leaseId ||
+    data.LeaseID ||
+    data.leaseID ||
+    data.lease ||
+    data.contractLeaseId
+  );
   const actionField = normalize(data.action);
   const actionFieldLower = actionField.toLowerCase();
   const renewalActionFieldIsEventType =
@@ -4320,6 +4358,8 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
       action === 'UNDECIDED' ||
       action === 'RENEWAL_ACCEPT_TERMS' ||
       action === 'RENEWAL_ASK_MORE' ||
+      action === 'RENEWAL_SIGN_SLOT_CONFIRM' ||
+      action === 'RENEWAL_SIGN_SLOT_CHANGE' ||
       action === 'LEAVE_PICK_CHECKOUT' ||
       action === 'SIGN_SLOT' ||
       action === 'SIGN_ASK_ADMIN'
@@ -4346,6 +4386,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
     room,
     end,
     inq,
+    leaseId,
     actionField,
     actionFieldLower,
     renewalEventType,
