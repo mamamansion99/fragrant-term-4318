@@ -1198,7 +1198,8 @@ function isContinueTermReplyAction(action) {
     normalized === 'RENEWAL_ACCEPT_TERMS' ||
     normalized === 'RENEWAL_ASK_MORE' ||
     normalized === 'RENEWAL_SIGN_SLOT_CONFIRM' ||
-    normalized === 'RENEWAL_SIGN_SLOT_CHANGE'
+    normalized === 'RENEWAL_SIGN_SLOT_CHANGE' ||
+    normalized === 'RENEWAL_ADMIN_PICK_SIGNING'
   );
 }
 
@@ -2015,13 +2016,15 @@ export default {
         const isSignAskAdmin = action === 'SIGN_ASK_ADMIN';
         const isRenewalSignSlotConfirmAction = action === 'RENEWAL_SIGN_SLOT_CONFIRM';
         const isRenewalSignSlotChangeAction = action === 'RENEWAL_SIGN_SLOT_CHANGE';
+        const isRenewalAdminPickSigningAction = action === 'RENEWAL_ADMIN_PICK_SIGNING';
         const isLeavePickCheckoutAction = action === 'LEAVE_PICK_CHECKOUT';
         const isRenewalAdminAction =
           action === 'ADMIN_SIGN_TEXT' ||
           action === 'ADMIN_SIGN_CALL' ||
           action === 'ADMIN_SIGN_NOW' ||
           action === 'ADMIN_SEND_SLOT' ||
-          action === 'ADMIN_HOLD';
+          action === 'ADMIN_HOLD' ||
+          isRenewalAdminPickSigningAction;
         const isContractRenewalAction =
           action === 'CONTINUE' ||
           action === 'LEAVE' ||
@@ -2030,6 +2033,7 @@ export default {
           action === 'RENEWAL_ASK_MORE' ||
           isRenewalSignSlotConfirmAction ||
           isRenewalSignSlotChangeAction ||
+          isRenewalAdminPickSigningAction ||
           isLeavePickCheckoutAction ||
           isSignSlot ||
           isSignAskAdmin ||
@@ -2172,7 +2176,8 @@ export default {
             RENEWAL_ACCEPT_TERMS: `รับทราบค่ะ ✅ ห้อง ${roomLabel} ยืนยันรับทราบเงื่อนไขต่อสัญญาแล้ว`,
             RENEWAL_ASK_MORE: `รับทราบค่ะ 📝 ห้อง ${roomLabel} ขอรายละเอียดเพิ่มเติมแล้ว แอดมินจะติดต่อกลับ`,
             RENEWAL_SIGN_SLOT_CONFIRM: `รับทราบค่ะ ✅ ยืนยันวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`,
-            RENEWAL_SIGN_SLOT_CHANGE: `รับทราบค่ะ 🗓️ รับคำขอเปลี่ยนวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`
+            RENEWAL_SIGN_SLOT_CHANGE: `รับทราบค่ะ 🗓️ รับคำขอเปลี่ยนวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`,
+            RENEWAL_ADMIN_PICK_SIGNING: `รับทราบค่ะ ✅ ส่งวันและเวลาใหม่ของห้อง ${roomLabel} แล้ว`
           };
 
           try {
@@ -4360,6 +4365,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
       action === 'RENEWAL_ASK_MORE' ||
       action === 'RENEWAL_SIGN_SLOT_CONFIRM' ||
       action === 'RENEWAL_SIGN_SLOT_CHANGE' ||
+      action === 'RENEWAL_ADMIN_PICK_SIGNING' ||
       action === 'LEAVE_PICK_CHECKOUT' ||
       action === 'SIGN_SLOT' ||
       action === 'SIGN_ASK_ADMIN'

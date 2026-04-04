@@ -140,6 +140,27 @@ describe('Worker routes', () => {
 		expect(meta.renewalUserId).toBe('U-tenant');
 	});
 
+	it('marks admin datetime picker signing postback as renewal reply', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			action: 'RENEWAL_ADMIN_PICK_SIGNING',
+			roomId: 'A101',
+			InquiryId: 'RI-ALIAS-001',
+			leaseId: 'LEASE-0099'
+		}, {
+			source: {
+				type: 'group',
+				groupId: 'C-admin-group',
+				userId: 'U-admin'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ADMIN_PICK_SIGNING');
+		expect(meta.inq).toBe('RI-ALIAS-001');
+		expect(meta.leaseId).toBe('LEASE-0099');
+		expect(meta.managerChatId).toBe('C-admin-group');
+	});
+
 	it('parses renewalId alias as inquiry identifier', () => {
 		const meta = __testables.buildRenewalPostbackMeta({
 			action: 'RENEWAL_ASK_MORE',
@@ -195,6 +216,7 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ASK_MORE')).toBe('https://example.com/continue-term-reply');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_SIGN_SLOT_CONFIRM')).toBe('https://example.com/continue-term-reply');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_SIGN_SLOT_CHANGE')).toBe('https://example.com/continue-term-reply');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'RENEWAL_ADMIN_PICK_SIGNING')).toBe('https://example.com/continue-term-reply');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'CONTINUE')).toBe('https://example.com/renewal-postback');
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});
