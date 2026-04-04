@@ -2049,7 +2049,11 @@ export default {
           Object.prototype.hasOwnProperty.call(data, 'inquiryId');
 
         const missingRenewalFields = [];
-        const inquiryOptionalActions = ['RENEWAL_ACCEPT_TERMS', 'RENEWAL_ASK_MORE'];
+        const inquiryOptionalActions = [
+          'RENEWAL_ACCEPT_TERMS',
+          'RENEWAL_ASK_MORE',
+          'RENEWAL_ADMIN_PICK_SIGNING'
+        ];
         const requiresInquiryId = !inquiryOptionalActions.includes(action);
         if (!inq && requiresInquiryId) missingRenewalFields.push('inquiryId');
         if (isManagerDecisionEvent) {
@@ -2146,6 +2150,17 @@ export default {
               renewalPayload.missingFields = missingFields;
             }
           }
+          if (action === 'RENEWAL_ADMIN_PICK_SIGNING') {
+            console.log('renewal_admin_pick_signing_forward', {
+              inquiryId: inq || '',
+              roomId: room || '',
+              leaseId: leaseId || '',
+              selectedDateTime,
+              selectedDate,
+              selectedTime
+            });
+          }
+
           ctx.waitUntil(
             notifyN8nRenewalPostback(env, renewalPayload)
               .catch((err) => console.error('contract_renewal_notify_fail', err))
@@ -4315,7 +4330,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
     data.lease ||
     data.contractLeaseId
   );
-  const actionField = normalize(data.action);
+  const actionField = normalize(data.action || data.Action || data.ACTION);
   const actionFieldLower = actionField.toLowerCase();
   const renewalActionFieldIsEventType =
     actionFieldLower === 'renewal_reply' ||

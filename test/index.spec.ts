@@ -161,6 +161,24 @@ describe('Worker routes', () => {
 		expect(meta.managerChatId).toBe('C-admin-group');
 	});
 
+	it('parses renewal action from Action alias key', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			Action: 'RENEWAL_ADMIN_PICK_SIGNING',
+			roomId: 'A101',
+			inquiryId: 'RI-ALIAS-001'
+		}, {
+			source: {
+				type: 'group',
+				groupId: 'C-admin-group',
+				userId: 'U-admin'
+			}
+		} as any);
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ADMIN_PICK_SIGNING');
+		expect(meta.inq).toBe('RI-ALIAS-001');
+	});
+
 	it('parses renewalId alias as inquiry identifier', () => {
 		const meta = __testables.buildRenewalPostbackMeta({
 			action: 'RENEWAL_ASK_MORE',
