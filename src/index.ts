@@ -560,6 +560,36 @@ function keyRentModeLabel(modeRaw) {
   return KEY_RENT_MODE_LABELS[mode] || 'กุญแจ';
 }
 
+function normalizeKeyRentPaymentMethod(paymentRaw) {
+  const payment = String(paymentRaw || '').trim().toUpperCase();
+  if (payment === 'CASH' || payment === 'MOBILE_BANKING') return payment;
+  return '';
+}
+
+function parseKeyRentPaymentMethod(textRaw) {
+  const raw = String(textRaw || '').trim();
+  if (!raw) return '';
+
+  const compactLower = raw.toLowerCase().replace(/\s+/g, '');
+  if (
+    compactLower.endsWith('เงินสด') ||
+    compactLower.endsWith('สด') ||
+    compactLower.endsWith('cash')
+  ) {
+    return 'CASH';
+  }
+  if (
+    compactLower.endsWith('โอนจ่าย') ||
+    compactLower.endsWith('โอนเงิน') ||
+    compactLower.endsWith('โอน') ||
+    compactLower.endsWith('bank') ||
+    compactLower.endsWith('mobilebanking')
+  ) {
+    return 'MOBILE_BANKING';
+  }
+  return '';
+}
+
 function buildKeyRentStartInstructionText(env) {
   const override = String(env?.KEY_RENT_START_INSTRUCTION_TEXT || '').trim();
   if (override) return override;
@@ -900,8 +930,11 @@ function parseKeyRent(textRaw) {
   if (!roomMatch) return { error: 'MISSING_ROOM' };
   const room = parseBuildingRoomToken(`${roomMatch[1]}${roomMatch[2]}`);
   if (!room) return { error: 'MISSING_ROOM' };
-
-  return buildKeyRentDetails(mode, room, raw);
+  const keyRent = buildKeyRentDetails(mode, room, raw);
+  if (!keyRent) return null;
+  const paymentMethod = parseKeyRentPaymentMethod(raw);
+  if (paymentMethod) keyRent.paymentMethod = paymentMethod;
+  return keyRent;
 }
 
 // Legacy "key A101 20" parser for forgot-key flow
@@ -2913,12 +2946,77 @@ export default {
 
           if (keyRent) {
             if (keyRent.error === 'MISSING_ROOM') {
-              const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101”';
+              const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101 โอน”';
               if (replyToken) {
                 await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
               } else if (chatId) {
                 ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
               }
+              continue;
+            }
+
+            const paymentMethodFromText = normalizeKeyRentPaymentMethod(keyRent.paymentMethod || '');
+            if (paymentMethodFromText) {
+              const keyRentFlowKey = stateKey + ':keyrent_flow';
+              const keyRentResolved = {
+                ...keyRent,
+                rawText: textIn || keyRent.rawText || ''
+              };
+              const eventId = String(ev?.webhookEventId || ev?.replyToken || m?.id || '');
+              const idempotencyKey = eventId
+                ? `line:${eventId}`
+                : `line:keyrent:text:${stateKey}:${paymentMethodFromText}:${Date.now()}`;
+              const payload = {
+                type: 'KEY_RENT',
+                intent: 'key_rent_payment',
+                room: keyRentResolved.room,
+                mode: keyRentResolved.mode || null,
+                items: keyRentResolved.items,
+                amount: keyRentResolved.amount,
+                userId: userId || null,
+                chatId: chatId || null,
+                sourceType: ev?.source?.type || null,
+                messageId: m?.id || null,
+                receivedAt: new Date().toISOString(),
+                paymentMethod: paymentMethodFromText,
+                eventId,
+                idempotencyKey
+              };
+
+              const messages = [{ type: 'text', text: buildKeyRentAckText(keyRentResolved) }];
+              if (paymentMethodFromText === 'MOBILE_BANKING') {
+                messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
+                messages.push({ type: 'text', text: buildKeyRentSlipPrompt(keyRentResolved) });
+              }
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
+              }
+
+              ctx.waitUntil(
+                notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
+              );
+
+              if (paymentMethodFromText === 'MOBILE_BANKING') {
+                ctx.waitUntil(
+                  kvPut(
+                    env,
+                    penaltyKey,
+                    {
+                      ts: Date.now(),
+                      chatId: chatId || null,
+                      userId: userId || null,
+                      type: 'Others_payment',
+                      reason: normalizePenaltyReason(keyRentResolved.rawText || 'ค่าเช่ากุญแจ')
+                    },
+                    PENALTY_FLOW_TTL_SECONDS
+                  )
+                );
+              } else {
+                ctx.waitUntil(kvDel(env, penaltyKey));
+              }
+              ctx.waitUntil(kvDel(env, keyRentFlowKey));
               continue;
             }
 
@@ -5708,6 +5806,7 @@ async function notifyN8nGroupImage(env, payload) {
 
 export const __testables = {
   parsePostbackData,
+  parseKeyRent,
   normalizeManagerDecision,
   buildRenewalPostbackMeta,
   isContinueTermReplyAction,

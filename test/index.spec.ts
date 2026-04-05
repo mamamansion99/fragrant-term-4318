@@ -239,6 +239,33 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});
 
+	it('parses direct key-rent command with mobile banking payment suffix', () => {
+		const parsed = __testables.parseKeyRent('เช่าชุดกุญแจ A101 โอน') as Record<string, unknown>;
+		expect(parsed).toBeTruthy();
+		expect(parsed.mode).toBe('SET');
+		expect(parsed.room).toBe('A101');
+		expect(parsed.amount).toBe(600);
+		expect(parsed.paymentMethod).toBe('MOBILE_BANKING');
+	});
+
+	it('parses direct key-rent command with cash payment suffix', () => {
+		const parsed = __testables.parseKeyRent('เช่าคีย์การ์ด B514 สด') as Record<string, unknown>;
+		expect(parsed).toBeTruthy();
+		expect(parsed.mode).toBe('KEYCARD');
+		expect(parsed.room).toBe('B514');
+		expect(parsed.amount).toBe(100);
+		expect(parsed.paymentMethod).toBe('CASH');
+	});
+
+	it('keeps direct key-rent command backward compatible when payment suffix is omitted', () => {
+		const parsed = __testables.parseKeyRent('เช่ากุญแจ A102') as Record<string, unknown>;
+		expect(parsed).toBeTruthy();
+		expect(parsed.mode).toBe('KEY');
+		expect(parsed.room).toBe('A102');
+		expect(parsed.amount).toBe(500);
+		expect(parsed.paymentMethod).toBeUndefined();
+	});
+
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/git/latest-commit?repo=invalid-repo-format');
 		const ctx = createExecutionContext();
