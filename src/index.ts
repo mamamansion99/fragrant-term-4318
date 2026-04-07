@@ -2663,6 +2663,27 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
+          const inboundLogPayload = {
+            timestamp: new Date(ev?.timestamp || Date.now()).toISOString(),
+            direction: 'IN',
+            eventType: ev?.type || 'message',
+            messageType: m?.type || 'text',
+            text: textIn,
+            replyToken: replyToken || '',
+            userId: userId || '',
+            groupId: ev?.source?.groupId || '',
+            roomId: ev?.source?.roomId || '',
+            chatId: chatId || '',
+            sourceType: ev?.source?.type || '',
+            messageId: m?.id || '',
+            webhookEventId: ev?.webhookEventId || '',
+            deliveryContext: ev?.deliveryContext || null,
+            raw: ev
+          };
+
+          ctx.waitUntil(
+            notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
+          );
 
           if (isOwnerGroupChat(env, chatId) && /โหมดคัดกรอง/i.test(textIn)) {
             const msg = {
@@ -5800,6 +5821,36 @@ async function notifyN8nGroupImage(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nGroupImage error', err);
+    return false;
+  }
+}
+
+async function notifyN8nChatLog(env, payload) {
+  const url = env.N8N_CHAT_LOG_URL || 'https://n8n.srv1112305.hstgr.cloud/webhook/MM_LOG';
+  if (!url) {
+    console.warn('notifyN8nChatLog: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nChatLog: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nChatLog error', err);
     return false;
   }
 }
