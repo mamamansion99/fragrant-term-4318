@@ -1242,6 +1242,12 @@ function getRentKeyReceiverUrl(env) {
   return env.N8N_RENT_KEY_RECEIVER_URL || DEFAULT_N8N_RENT_KEY_RECEIVER_URL;
 }
 
+
+const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
+function getPrebookWebhook(env) {
+  return env.N8N_PREBOOK_WEBHOOK_URL || DEFAULT_N8N_PREBOOK_WEBHOOK_URL;
+}
+
 const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
 function isContinueTermReplyAction(action) {
   const normalized = String(action || '').trim().toUpperCase();
@@ -3378,13 +3384,14 @@ export default {
           // (Booking) Forward booking-code texts directly to reservation GAS (let GAS own state/flow)
           if (/^#?\s*PB\d{3,}$/i.test(textIn)) {
             const prebookCode = extractPrebookCode(textIn);
+            const now = Date.now();
             const prebookBinding = {
               code: prebookCode,
               userId: userId || '',
               chatId: chatId || '',
               sourceType: ev?.source?.type || '',
-              boundAt: Date.now(),
-              lastSeenAt: Date.now()
+              boundAt: now,
+              lastSeenAt: now
             };
 
             if (userId) {
@@ -3393,6 +3400,19 @@ export default {
             if (prebookCode) {
               ctx.waitUntil(kvPut(env, buildPrebookCodeKey(prebookCode), prebookBinding, PREBOOK_BIND_TTL_SECONDS));
             }
+
+            ctx.waitUntil(
+              notifyN8nPrebook(env, {
+                type: 'prebook_bind',
+                prebookCode,
+                userId: userId || '',
+                chatId: chatId || '',
+                sourceType: ev?.source?.type || '',
+                replyToken: replyToken || '',
+                timestamp: ev?.timestamp || now,
+                event: ev
+              })
+            );
 
             const ackText = [
               `รับรหัสฝากห้อง ${prebookCode} แล้วค่ะ`,
@@ -4289,6 +4309,43 @@ function errorReplyOrPush(env, replyToken, chatId, text) {
     return lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
   }
   return Promise.resolve();
+}
+
+async function notifyN8nPrebook(env, payload) {
+  const url = getPrebookWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nPrebook: missing webhook URL');
+    return false;
+  }
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    accept: 'application/json'
+  };
+  const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+  if (secret) {
+    headers['x-mm-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15000)
+    });
+    const text = await res.text().catch(() => '');
+    console.log('notifyN8nPrebook', {
+      status: res.status,
+      ok: res.ok,
+      bodyPreview: text.slice(0, 300)
+    });
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nPrebook error', err);
+    return false;
+  }
 }
 
 async function notifyN8nRenewalPostback(env, payload) {
