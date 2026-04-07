@@ -359,6 +359,24 @@ function extractBookingCode(text) {
   return code.startsWith('#') ? code : `#${code}`;
 }
 
+const PREBOOK_BIND_TTL_SECONDS = 180 * 24 * 60 * 60;
+
+function extractPrebookCode(text) {
+  const match = /PB\d{3,}/i.exec(text || '');
+  if (!match) return null;
+  const code = match[0].toUpperCase();
+  return code.startsWith('#') ? code : `#${code}`;
+}
+
+function buildPrebookUserKey(userId) {
+  return `prebook_user:${String(userId || '').trim()}`;
+}
+
+function buildPrebookCodeKey(code) {
+  const normalized = String(code || '').trim().replace(/^#/, '').toUpperCase();
+  return `prebook_code:${normalized}`;
+}
+
 const OWNER_APPROVAL_KEYWORD_RE = /^(?:อนุมัติ|ไม่อนุมัติ)\s*(?:เปลี่ยนไลน์|เปลี่ยนไอดีผู้เช่า|line\s*id\s*change)/i;
 
 const AVAILABILITY_REGEXES = [
@@ -1780,6 +1798,12 @@ export default {
             continue;
           }
 
+          if (act === 'LEAD_START') {
+            await clearLead(env, userId);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, buildPrebookPromptMessages(env, 'booking')).catch(console.error);
+            continue;
+          }
+
           if (act === 'LEAD_CANCEL') {
             await clearLead(env, userId);
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -1874,7 +1898,7 @@ export default {
                       type: 'buttons',
                       text: 'ต้องการทำอะไรกับลูกค้ารายนี้?',
                       actions: [
-                        { type: 'postback', label: '✅ ส่งลิงก์จอง', data: `act=LEAD_APPROVE&uid=${encodeURIComponent(userId)}` },
+                        { type: 'postback', label: '✅ ส่งลิงก์ฝากห้อง', data: `act=LEAD_APPROVE&uid=${encodeURIComponent(userId)}` },
                         { type: 'postback', label: '❌ ปฏิเสธสุภาพ', data: `act=LEAD_REJECT&uid=${encodeURIComponent(userId)}` }
                       ]
                     }
@@ -1925,11 +1949,21 @@ export default {
             continue;
           }
 
-          const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
+          const prebookUrl = getPrebookUrl(env);
 
           if (act === 'LEAD_APPROVE') {
             await linePush(env.LINE_ACCESS_TOKEN, uid, [
-              { type: 'text', text: `ขอบคุณที่ให้ข้อมูลครับ ✅\nสามารถจองห้องได้ที่ลิงก์นี้เลยครับ:\n${bookingUrl}` }
+              {
+                type: 'text',
+                text: [
+                  'ขอบคุณที่ให้ข้อมูลครับ ✅',
+                  `ฝากข้อมูลรับห้องว่างได้ที่ลิงก์นี้เลยครับ:`,
+                  prebookUrl,
+                  '',
+                  'หลังส่งฟอร์ม ระบบจะออกรหัส #PBxxx',
+                  'จากนั้นกดปุ่มส่งรหัสกลับเข้า LINE เพื่อให้ทีมงานค้นหาและติดต่อกลับได้เร็วขึ้น'
+                ].join('\n')
+              }
             ]).catch(console.error);
 
             lead.status = 'APPROVED';
@@ -1937,7 +1971,7 @@ export default {
             await saveLead(env, uid, lead);
 
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: '✅ ส่งลิงก์จองให้ลูกค้าแล้ว' }
+              { type: 'text', text: '✅ ส่งลิงก์ฝากห้องให้ลูกค้าแล้ว' }
             ]).catch(console.error);
             continue;
           }
@@ -3342,6 +3376,37 @@ export default {
           }
 
           // (Booking) Forward booking-code texts directly to reservation GAS (let GAS own state/flow)
+          if (/^#?\s*PB\d{3,}$/i.test(textIn)) {
+            const prebookCode = extractPrebookCode(textIn);
+            const prebookBinding = {
+              code: prebookCode,
+              userId: userId || '',
+              chatId: chatId || '',
+              sourceType: ev?.source?.type || '',
+              boundAt: Date.now(),
+              lastSeenAt: Date.now()
+            };
+
+            if (userId) {
+              ctx.waitUntil(kvPut(env, buildPrebookUserKey(userId), prebookBinding, PREBOOK_BIND_TTL_SECONDS));
+            }
+            if (prebookCode) {
+              ctx.waitUntil(kvPut(env, buildPrebookCodeKey(prebookCode), prebookBinding, PREBOOK_BIND_TTL_SECONDS));
+            }
+
+            const ackText = [
+              `รับรหัสฝากห้อง ${prebookCode} แล้วค่ะ`,
+              'หากมีห้องว่างหรือมีห้องตรงเงื่อนไข ทีมงานจะติดต่อกลับทาง LINE นี้'
+            ].join('\n');
+
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
+            continue;
+          }
+
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const resvUrl = getReservationGas(env);
             if (resvUrl) {
@@ -4644,6 +4709,58 @@ function leadQuestion(step) {
   return null;
 }
 
+function getPrebookUrl(env) {
+  const explicit = String(env?.PREBOOK_URL || '').trim();
+  if (explicit) return explicit;
+
+  const bookingUrl = String(env?.BOOKING_URL || '').trim();
+  if (bookingUrl) {
+    try {
+      const url = new URL(bookingUrl);
+      url.hash = '';
+      url.search = '';
+      url.pathname = '/prebook.html';
+      return url.toString();
+    } catch (_) {
+      // ignore and use fallback
+    }
+  }
+
+  return 'https://mm-v2.pages.dev/prebook.html';
+}
+
+function buildPrebookPromptMessages(env, reason = 'prebook') {
+  const prebookUrl = getPrebookUrl(env);
+  const introText = reason === 'availability'
+    ? 'หากต้องการให้ทีมงานตามห้องว่างให้ ฝากข้อมูลไว้ก่อนได้เลยค่ะ'
+    : 'หากต้องการให้ทีมงานติดตามห้องและติดต่อกลับ ฝากข้อมูลไว้ก่อนได้เลยค่ะ';
+
+  return [
+    {
+      type: 'text',
+      text: [
+        introText,
+        `กรอกแบบฟอร์มได้ที่: ${prebookUrl}`,
+        '',
+        'หลังส่งฟอร์ม ระบบจะออกรหัส #PBxxx',
+        'จากนั้นกดปุ่มส่งรหัสกลับเข้า LINE เพื่อให้ทีมงานค้นหาและติดต่อคุณได้เร็วขึ้น'
+      ].join('\n'),
+      quickReply: {
+        items: [
+          {
+            type: 'action',
+            action: {
+              type: 'uri',
+              label: 'ฝากข้อมูลรับห้องว่าง',
+              uri: prebookUrl
+            }
+          }
+        ]
+      }
+    }
+  ];
+}
+
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -4729,6 +4846,7 @@ async function quickKeywordReply(text, env, userId) {
     AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
   const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
   if (isAvailabilityAsk && !isAvailabilityExcluded) {
+    return buildPrebookPromptMessages(env, 'availability');
     const enabled = await getScreeningEnabled(env);
     if (enabled) {
       const lead = userId ? await getLead(env, userId) : null;
@@ -4935,6 +5053,7 @@ async function quickKeywordReply(text, env, userId) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
+    return buildPrebookPromptMessages(env, 'booking');
     const enabled = await getScreeningEnabled(env);
     if (enabled) {
       const lead = userId ? await getLead(env, userId) : null;
