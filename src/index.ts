@@ -14,6 +14,7 @@ const DEFAULT_OWNER_GROUP_IDS = [];
 const DEFAULT_RENEWAL_ADMIN_GROUP_IDS = [
   'C07e625728aee936d59df1bca18bed149'
 ];
+const DEFAULT_KEY_RENT_MANAGER_GROUP_ID = 'C8f4b1a7266e9d9e9367cab548f0491cc';
 
 function getConfiguredGroupIds(rawValue, defaultIds = []) {
   const raw = String(rawValue || '').trim();
@@ -39,6 +40,11 @@ function getRenewalAdminGroupIds(env) {
 function isRenewalAdminGroupChat(env, chatId) {
   if (!chatId) return false;
   return getRenewalAdminGroupIds(env).includes(chatId);
+}
+
+function getKeyRentManagerGroupId(env) {
+  const configured = String(env?.KEY_RENT_MANAGER_GROUP_ID || '').trim();
+  return configured || DEFAULT_KEY_RENT_MANAGER_GROUP_ID;
 }
 
 function pushToOwnerGroups(env, messages) {
@@ -243,6 +249,12 @@ const CHECKOUT_FLOW_TTL_SECONDS = 10 * 60;
 const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
 const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
 const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
+const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
+const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
+
+function getKeyRentWaitingPhotoKey(groupId) {
+  return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
+}
 
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
@@ -1242,6 +1254,36 @@ function getRentKeyReceiverUrl(env) {
   return env.N8N_RENT_KEY_RECEIVER_URL || DEFAULT_N8N_RENT_KEY_RECEIVER_URL;
 }
 
+async function notifyRentKeyReceiver(env, payload) {
+  const url = getRentKeyReceiverUrl(env);
+  if (!url) {
+    console.warn('notifyRentKeyReceiver: missing webhook URL');
+    return false;
+  }
+
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const workerSecret = String(env?.WORKER_SECRET || env?.MM_WORKER_SECRET || '').trim();
+  if (workerSecret) {
+    headers['x-worker-secret'] = workerSecret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error('notifyRentKeyReceiver non-200', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyRentKeyReceiver error', err);
+    return false;
+  }
+}
+
 const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
 function isContinueTermReplyAction(action) {
   const normalized = String(action || '').trim().toUpperCase();
@@ -1618,13 +1660,47 @@ export default {
 
         // BEGIN RENT KEY POSTBACK FORWARD
         const rentKeyAction = String(data.act || data.type || '').trim();
-        if (rentKeyAction === 'KEY_CASH_CONFIRM' || rentKeyAction === 'KEY_CASH_REJECT') {
+        if (
+          rentKeyAction === 'KEY_CASH_START_PHOTO' ||
+          rentKeyAction === 'KEY_CASH_REJECT' ||
+          rentKeyAction === 'KEY_CASH_CONFIRM'
+        ) {
+          const normalizedRentKeyAction = rentKeyAction === 'KEY_CASH_CONFIRM'
+            ? 'KEY_CASH_START_PHOTO'
+            : rentKeyAction;
           const billId = String(data.billId || '');
           const room = String(data.room || '');
+          const groupId = String(ev?.source?.groupId || '');
+          const sourceType = String(ev?.source?.type || '');
+          const startedByUserId = String(ev?.source?.userId || '');
           const billIdLabel = billId || '-';
-          const quickReplyText = rentKeyAction === 'KEY_CASH_CONFIRM'
-            ? `✅ บันทึกว่า 'รับเงินแล้ว' (BillID: ${billIdLabel})`
+          const quickReplyText = normalizedRentKeyAction === 'KEY_CASH_START_PHOTO'
+            ? `✅ บันทึกว่า 'รับเงินแล้ว / เริ่มถ่ายรูป' (BillID: ${billIdLabel})`
             : `❌ บันทึกว่า 'ยังไม่ได้รับเงิน' (BillID: ${billIdLabel})`;
+
+          if (normalizedRentKeyAction === 'KEY_CASH_START_PHOTO') {
+            if (sourceType === 'group' && groupId) {
+              const waitingPhotoState = {
+                mode: 'WAITING_KEY_PHOTO',
+                billId,
+                room,
+                groupId,
+                startedByUserId,
+                startedAt: new Date().toISOString()
+              };
+              await kvPut(
+                env,
+                getKeyRentWaitingPhotoKey(groupId),
+                waitingPhotoState,
+                KEY_RENT_WAITING_PHOTO_TTL_SECONDS
+              );
+            } else {
+              console.warn('rent_key_cash_start_photo_non_group_source', {
+                sourceType,
+                hasGroupId: !!groupId
+              });
+            }
+          }
 
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -1637,29 +1713,26 @@ export default {
             }
           }
 
-          const rentKeyReceiverUrl = getRentKeyReceiverUrl(env);
-          const headers: Record<string, string> = { 'content-type': 'application/json' };
-          const workerSecret = String(env?.WORKER_SECRET || '').trim();
-          if (workerSecret) {
-            headers['x-worker-secret'] = workerSecret;
+          const parsedPayload = {
+            ...data,
+            act: normalizedRentKeyAction
+          };
+          if (rentKeyAction !== normalizedRentKeyAction) {
+            parsedPayload.legacyAct = rentKeyAction;
           }
-
           const payloadToN8n = {
             source: 'line',
             receivedAt: new Date().toISOString(),
-            action: rentKeyAction,
+            action: normalizedRentKeyAction,
             billId,
             room,
-            parsed: data,
+            parsed: parsedPayload,
             event: ev
           };
 
           ctx.waitUntil(
-            fetch(rentKeyReceiverUrl, {
-              method: 'POST',
-              headers,
-              body: JSON.stringify(payloadToN8n)
-            }).catch((err) => console.error('rent_key_postback_forward_failed', err))
+            notifyRentKeyReceiver(env, payloadToN8n)
+              .catch((err) => console.error('rent_key_postback_forward_failed', err))
           );
           continue;
         }
@@ -2631,6 +2704,63 @@ export default {
       if (ev.type === 'message') {
         const m = ev.message || {};
         const chatId = getChatId(ev);
+
+        if (
+          m.type === 'image' &&
+          ev?.source?.type === 'group' &&
+          chatId
+        ) {
+          const waitingPhotoKey = getKeyRentWaitingPhotoKey(chatId);
+          const waitingPhotoState = await kvGet(env, waitingPhotoKey);
+          if (waitingPhotoState && waitingPhotoState.mode === 'WAITING_KEY_PHOTO') {
+            const startedByUserId = String(waitingPhotoState.startedByUserId || '');
+            const senderUserId = String(ev?.source?.userId || '');
+            if (startedByUserId && senderUserId && senderUserId !== startedByUserId) {
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                  { type: 'text', text: 'กรุณาให้ผู้ที่กดปุ่ม "รับเงินแล้ว / เริ่มถ่ายรูป" ส่งรูปเท่านั้น' }
+                ]).catch(console.error);
+              }
+              continue;
+            }
+
+            const billId = String(waitingPhotoState.billId || '');
+            const room = String(waitingPhotoState.room || '');
+            const payloadToN8n = {
+              source: 'line',
+              receivedAt: new Date().toISOString(),
+              action: 'KEY_PHOTO_RECEIVED',
+              billId,
+              room,
+              parsed: {
+                act: 'KEY_PHOTO_RECEIVED',
+                billId,
+                room
+              },
+              event: ev,
+              photoContext: {
+                fromKv: true,
+                groupId: chatId,
+                startedByUserId
+              }
+            };
+
+            const forwarded = await notifyRentKeyReceiver(env, payloadToN8n);
+            if (forwarded) {
+              await kvDel(env, waitingPhotoKey);
+            }
+
+            if (replyToken) {
+              const ackText = forwarded
+                ? '✅ รับรูปแล้ว กำลังส่งเข้าระบบ'
+                : '⚠️ รับรูปแล้ว แต่ส่งเข้าระบบไม่สำเร็จ กรุณาส่งรูปอีกครั้ง';
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackText }
+              ]).catch(console.error);
+            }
+            continue;
+          }
+        }
 
         if (m.type === 'image' && env.IMAGE_GROUP_ID && chatId === env.IMAGE_GROUP_ID) {
           const imagePayload = {
