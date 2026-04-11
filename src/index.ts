@@ -256,6 +256,12 @@ function getKeyRentWaitingPhotoKey(groupId) {
   return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
 }
 
+function getKeyRentPaymentFlowByStartAction(action) {
+  const normalized = String(action || '').trim().toUpperCase();
+  if (normalized === 'KEY_MB_START_PHOTO') return 'MOBILE_BANKING';
+  return 'CASH';
+}
+
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
     return `checkin_flow:${userId}`;
@@ -1662,26 +1668,33 @@ export default {
         const rentKeyAction = String(data.act || data.type || '').trim();
         if (
           rentKeyAction === 'KEY_CASH_START_PHOTO' ||
+          rentKeyAction === 'KEY_MB_START_PHOTO' ||
           rentKeyAction === 'KEY_CASH_REJECT' ||
           rentKeyAction === 'KEY_CASH_CONFIRM'
         ) {
           const normalizedRentKeyAction = rentKeyAction === 'KEY_CASH_CONFIRM'
             ? 'KEY_CASH_START_PHOTO'
             : rentKeyAction;
+          const isStartPhotoAction =
+            normalizedRentKeyAction === 'KEY_CASH_START_PHOTO' ||
+            normalizedRentKeyAction === 'KEY_MB_START_PHOTO';
+          const paymentFlow = getKeyRentPaymentFlowByStartAction(normalizedRentKeyAction);
           const billId = String(data.billId || '');
           const room = String(data.room || '');
           const groupId = String(ev?.source?.groupId || '');
           const sourceType = String(ev?.source?.type || '');
           const startedByUserId = String(ev?.source?.userId || '');
           const billIdLabel = billId || '-';
-          const quickReplyText = normalizedRentKeyAction === 'KEY_CASH_START_PHOTO'
-            ? `✅ บันทึกว่า 'รับเงินแล้ว / เริ่มถ่ายรูป' (BillID: ${billIdLabel})`
+          const quickReplyText = isStartPhotoAction
+            ? `✅ เริ่มขั้นตอนถ่ายรูปแล้ว กรุณาส่งรูปกุญแจ/คีย์การ์ดในกลุ่มนี้ได้เลย (BillID: ${billIdLabel})`
             : `❌ บันทึกว่า 'ยังไม่ได้รับเงิน' (BillID: ${billIdLabel})`;
 
-          if (normalizedRentKeyAction === 'KEY_CASH_START_PHOTO') {
+          if (isStartPhotoAction) {
             if (sourceType === 'group' && groupId) {
               const waitingPhotoState = {
                 mode: 'WAITING_KEY_PHOTO',
+                startAction: normalizedRentKeyAction,
+                paymentFlow,
                 billId,
                 room,
                 groupId,
@@ -1695,7 +1708,7 @@ export default {
                 KEY_RENT_WAITING_PHOTO_TTL_SECONDS
               );
             } else {
-              console.warn('rent_key_cash_start_photo_non_group_source', {
+              console.warn('rent_key_start_photo_non_group_source', {
                 sourceType,
                 hasGroupId: !!groupId
               });
@@ -1715,7 +1728,8 @@ export default {
 
           const parsedPayload = {
             ...data,
-            act: normalizedRentKeyAction
+            act: normalizedRentKeyAction,
+            paymentFlow
           };
           if (rentKeyAction !== normalizedRentKeyAction) {
             parsedPayload.legacyAct = rentKeyAction;
@@ -1724,6 +1738,7 @@ export default {
             source: 'line',
             receivedAt: new Date().toISOString(),
             action: normalizedRentKeyAction,
+            paymentFlow,
             billId,
             room,
             parsed: parsedPayload,
@@ -2726,14 +2741,24 @@ export default {
 
             const billId = String(waitingPhotoState.billId || '');
             const room = String(waitingPhotoState.room || '');
+            const startAction = String(waitingPhotoState.startAction || '');
+            const paymentFlow = String(waitingPhotoState.paymentFlow || getKeyRentPaymentFlowByStartAction(startAction) || 'CASH');
+            const actionDetail = paymentFlow === 'MOBILE_BANKING'
+              ? 'KEY_PHOTO_RECEIVED_MB'
+              : 'KEY_PHOTO_RECEIVED_CASH';
             const payloadToN8n = {
               source: 'line',
               receivedAt: new Date().toISOString(),
               action: 'KEY_PHOTO_RECEIVED',
+              actionDetail,
+              paymentFlow,
               billId,
               room,
               parsed: {
                 act: 'KEY_PHOTO_RECEIVED',
+                actionDetail,
+                paymentFlow,
+                startAction,
                 billId,
                 room
               },
@@ -2741,7 +2766,9 @@ export default {
               photoContext: {
                 fromKv: true,
                 groupId: chatId,
-                startedByUserId
+                startedByUserId,
+                startAction,
+                paymentFlow
               }
             };
 
@@ -4862,7 +4889,7 @@ function getPrebookUrl(env) {
 function buildPrebookPromptMessages(env, reason = 'prebook') {
   const prebookUrl = getPrebookUrl(env);
   const introText = reason === 'availability'
-    ? 'หากต้องการให้ทีมงานตามห้องว่างให้ ฝากข้อมูลไว้ก่อนได้เลยค่ะ'
+    ? 'ตอนนี้ห้องเต็มแต่มีคนออกเรื่อยๆ คุณลูกค้าสนใจลงชื่อไว้ไหมครับ ถ้าห้องว่างเราจะติดต่อกลับครับ (เราจะติดต่อ ตามคิว ลงก่อน ได้ก่อน)'
     : 'หากต้องการให้ทีมงานติดตามห้องและติดต่อกลับ ฝากข้อมูลไว้ก่อนได้เลยค่ะ';
 
   return [
