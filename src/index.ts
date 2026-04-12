@@ -1291,8 +1291,16 @@ async function notifyRentKeyReceiver(env, payload) {
 }
 
 const DEFAULT_N8N_CONTINUE_TERM_REPLY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY';
-function isContinueTermReplyAction(action) {
+function normalizeRenewalAction(action) {
   const normalized = String(action || '').trim().toUpperCase();
+  if (normalized === 'RENEWAL_ADMIN_PICK_SIGNING_FOLLOWUP') {
+    return 'RENEWAL_ADMIN_PICK_SIGNING';
+  }
+  return normalized;
+}
+
+function isContinueTermReplyAction(action) {
+  const normalized = normalizeRenewalAction(action);
   return (
     normalized === 'RENEWAL_ACCEPT_TERMS' ||
     normalized === 'RENEWAL_ASK_MORE' ||
@@ -4713,7 +4721,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
         (isRenewalAliasPayload ? (renewalAnswer || actField) : actField)
       )
   );
-  const action = actionRaw.toUpperCase();
+  const action = normalizeRenewalAction(actionRaw);
   const actionType = isManagerDecisionEvent
     ? 'MANAGER_DECISION'
     : (

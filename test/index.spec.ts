@@ -243,6 +243,29 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, meta.action)).toBe('https://example.com/continue-term-reply');
 	});
 
+	it('normalizes admin followup picker action to renewal admin pick signing', () => {
+		const parsed = __testables.parsePostbackData(
+			'action=RENEWAL_ADMIN_PICK_SIGNING_FOLLOWUP&taskId=RTI-A312-RI-A312-2026-05-01&inquiryId=RI-A312-2026-05-01&roomId=A312'
+		);
+		const meta = __testables.buildRenewalPostbackMeta(parsed, {
+			source: {
+				type: 'group',
+				groupId: 'C07e625728aee936d59df1bca18bed149',
+				userId: 'U-admin'
+			}
+		} as any);
+		const mockEnv = {
+			N8N_RENEWAL_POSTBACK_URL: 'https://example.com/renewal-postback',
+			N8N_CONTINUE_TERM_REPLY_URL: 'https://example.com/continue-term-reply'
+		} as any;
+
+		expect(meta.action).toBe('RENEWAL_ADMIN_PICK_SIGNING');
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.inq).toBe('RI-A312-2026-05-01');
+		expect(meta.room).toBe('A312');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, meta.action)).toBe('https://example.com/continue-term-reply');
+	});
+
 	it('keeps renewal action when payload uses act alias with InquiryId', () => {
 		const parsed = __testables.parsePostbackData(
 			'act=ADMIN_SEND_SLOT&InquiryId=RI-A507-2026-05-02&roomId=A507&leaseId=LSE-000157'
