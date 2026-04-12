@@ -243,6 +243,41 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, meta.action)).toBe('https://example.com/continue-term-reply');
 	});
 
+	it('keeps renewal action when payload uses act alias with InquiryId', () => {
+		const parsed = __testables.parsePostbackData(
+			'act=ADMIN_SEND_SLOT&InquiryId=RI-A507-2026-05-02&roomId=A507&leaseId=LSE-000157'
+		);
+		const meta = __testables.buildRenewalPostbackMeta(parsed, {
+			source: {
+				type: 'group',
+				groupId: 'C-admin-group',
+				userId: 'U-admin'
+			}
+		} as any);
+
+		expect(meta.action).toBe('ADMIN_SEND_SLOT');
+		expect(meta.inq).toBe('RI-A507-2026-05-02');
+		expect(meta.room).toBe('A507');
+		expect(meta.leaseId).toBe('LSE-000157');
+	});
+
+	it('still prefers ans for renew_decision alias payloads', () => {
+		const meta = __testables.buildRenewalPostbackMeta({
+			act: 'renew_decision',
+			ans: 'CONTINUE',
+			inquiryId: 'RI-A101-2026-05-08',
+			roomId: 'A101'
+		}, {
+			source: {
+				type: 'user',
+				userId: 'U-tenant'
+			}
+		} as any, 'renew_decision');
+
+		expect(meta.action).toBe('CONTINUE');
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+	});
+
 	it('normalizes manager decision aliases', () => {
 		expect(__testables.normalizeManagerDecision('approved')).toBe('APPROVE');
 		expect(__testables.normalizeManagerDecision('decline')).toBe('REJECT');

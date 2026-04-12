@@ -4673,14 +4673,19 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
   );
   const actionField = normalize(data.action || data.Action || data.ACTION);
   const actionFieldLower = actionField.toLowerCase();
+  const actField = normalize(data.act || data.Act || data.ACT);
+  const actFieldLower = actField.toLowerCase();
   const renewalActionFieldIsEventType =
     actionFieldLower === 'renewal_reply' ||
     actionFieldLower === 'renewal_followup' ||
-    actionFieldLower === 'renewal_admin';
+    actionFieldLower === 'renewal_admin' ||
+    actFieldLower === 'renewal_reply' ||
+    actFieldLower === 'renewal_followup' ||
+    actFieldLower === 'renewal_admin';
   const renewalEventType = normalize(
     data.eventType ||
     data.postbackType ||
-    (renewalActionFieldIsEventType ? actionField : '')
+    (renewalActionFieldIsEventType ? (actionField || actField) : '')
   ).toLowerCase();
   const isRenewalPipeEvent =
     renewalEventType === 'renewal_reply' ||
@@ -4688,6 +4693,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
   const isRenewalAdminEvent = renewalEventType === 'renewal_admin';
   const isManagerDecisionEvent =
     actionFieldLower === 'manager_renewal_decision' ||
+    actFieldLower === 'manager_renewal_decision' ||
     renewalEventType === 'manager_renewal_decision';
   const renewalAnswer = normalize(data.ans || data.answer);
   const decisionRaw = normalize(data.decision || data.dec);
@@ -4704,7 +4710,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
       ? managerDecision
       : (
         (renewalActionFieldIsEventType ? '' : actionField) ||
-        (isRenewalAliasPayload ? renewalAnswer : data.act)
+        (isRenewalAliasPayload ? (renewalAnswer || actField) : actField)
       )
   );
   const action = actionRaw.toUpperCase();
