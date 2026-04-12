@@ -218,6 +218,31 @@ describe('Worker routes', () => {
 		expect(meta.end).toBe('2027-05-30');
 	});
 
+	it('parses tenant flex renewal postback querystring payload and routes to CONTINUE_TERM_REPLY', () => {
+		const parsed = __testables.parsePostbackData(
+			'action=RENEWAL_ACCEPT_TERMS&InquiryId=RI-A101-2026-05-27&roomId=A101&leaseId=LSE-000157&contractEnd=2027-05-30'
+		);
+		const meta = __testables.buildRenewalPostbackMeta(parsed, {
+			source: {
+				type: 'user',
+				userId: 'Ue90558b73d62863e2287ac32e69541a3'
+			}
+		} as any);
+		const mockEnv = {
+			N8N_RENEWAL_POSTBACK_URL: 'https://example.com/renewal-postback',
+			N8N_CONTINUE_TERM_REPLY_URL: 'https://example.com/continue-term-reply'
+		} as any;
+
+		expect(meta.actionType).toBe('TENANT_RENEWAL_REPLY');
+		expect(meta.action).toBe('RENEWAL_ACCEPT_TERMS');
+		expect(meta.inq).toBe('RI-A101-2026-05-27');
+		expect(meta.room).toBe('A101');
+		expect(meta.leaseId).toBe('LSE-000157');
+		expect(meta.end).toBe('2027-05-30');
+		expect(meta.renewalUserId).toBe('Ue90558b73d62863e2287ac32e69541a3');
+		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, meta.action)).toBe('https://example.com/continue-term-reply');
+	});
+
 	it('normalizes manager decision aliases', () => {
 		expect(__testables.normalizeManagerDecision('approved')).toBe('APPROVE');
 		expect(__testables.normalizeManagerDecision('decline')).toBe('REJECT');
