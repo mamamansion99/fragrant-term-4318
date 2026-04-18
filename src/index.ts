@@ -5387,7 +5387,7 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (title, description, text, accentColor) => ({
+  const optionCard = (title, description, text) => ({
     type: 'box',
     layout: 'vertical',
     spacing: 'xs',
@@ -5395,7 +5395,7 @@ function buildPaymentOptionsFlex() {
     cornerRadius: '8px',
     backgroundColor: '#F8FAFC',
     borderWidth: '1px',
-    borderColor: '#E2E8F0',
+    borderColor: '#E5E7EB',
     action: { type: 'message', label: title, text },
     contents: [
       {
@@ -5410,23 +5410,23 @@ function buildPaymentOptionsFlex() {
         text: description,
         wrap: true,
         size: 'sm',
-        color: '#475569'
+        color: '#64748B'
       },
       {
         type: 'text',
         text: 'แตะเพื่อเริ่ม',
         size: 'xs',
-        color: accentColor,
+        color: '#2563EB',
         weight: 'bold'
       }
     ]
   });
-  const sectionHeader = (text, color) => ({
+  const sectionHeader = (text) => ({
     type: 'text',
     text,
     size: 'sm',
     weight: 'bold',
-    color,
+    color: '#334155',
     margin: 'md'
   });
 
@@ -5450,14 +5450,14 @@ function buildPaymentOptionsFlex() {
                 text: 'เลือกประเภทการชำระเงิน',
                 weight: 'bold',
                 size: 'xl',
-                color: '#0F172A'
+                color: '#111827'
               },
               {
                 type: 'text',
                 text: 'แตะเลือกรายการให้ตรงกับบิล เพื่อลดการส่งผิดประเภท',
                 wrap: true,
                 size: 'sm',
-                color: '#475569'
+                color: '#64748B'
               }
             ]
           },
@@ -5467,9 +5467,9 @@ function buildPaymentOptionsFlex() {
             spacing: 'sm',
             margin: 'md',
             contents: [
-              sectionHeader('ชำระบิลทั่วไป', '#1D4ED8'),
-              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่าห้อง', '#2563EB'),
-              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', '#B45309')
+              sectionHeader('ชำระบิลทั่วไป'),
+              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่าห้อง'),
+              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ')
             ]
           },
           {
@@ -5478,9 +5478,9 @@ function buildPaymentOptionsFlex() {
             spacing: 'sm',
             margin: 'md',
             contents: [
-              sectionHeader('เช่าทรัพย์สินเพิ่มเติม', '#047857'),
-              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', '#047857'),
-              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', '#0369A1')
+              sectionHeader('เช่าทรัพย์สินเพิ่มเติม'),
+              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ'),
+              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ')
             ]
           },
           {
@@ -5489,8 +5489,8 @@ function buildPaymentOptionsFlex() {
             spacing: 'sm',
             margin: 'md',
             contents: [
-              sectionHeader('ย้ายออกและเช็คเอาท์', '#7C3AED'),
-              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', '#7C3AED')
+              sectionHeader('ย้ายออกและเช็คเอาท์'),
+              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์')
             ]
           }
         ]
