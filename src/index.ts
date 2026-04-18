@@ -295,6 +295,7 @@ function parseCheckoutTrigger(text) {
 
 const CO_ADMIN_ALLOWED_LINE_USER_ID = 'Ue90558b73d62863e2287ac32e69541a3';
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
+const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
 function parseRoomToken(token) {
@@ -362,6 +363,10 @@ function parseCoAdminShortcut(text) {
   }
 
   return null;
+}
+
+function isCheckoutStartShortcut(shortcut) {
+  return shortcut?.type === 'co';
 }
 
 function buildBookingFlowKey(userId, chatId) {
@@ -2906,6 +2911,19 @@ export default {
           if (coAdminShortcut) {
             if (userId !== CO_ADMIN_ALLOWED_LINE_USER_ID) {
               console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
+              continue;
+            }
+
+            if (isCheckoutStartShortcut(coAdminShortcut)) {
+              await handleCheckoutStart(env, {
+                roomId: coAdminShortcut.roomId,
+                text: textIn,
+                event: ev,
+                replyToken,
+                shortcutType: coAdminShortcut.type,
+                outcome: coAdminShortcut.outcome,
+                command: coAdminShortcut.normalizedCommand
+              });
               continue;
             }
 
@@ -5799,7 +5817,7 @@ async function notifyN8nCheckinFlow(env, payload) {
 }
 
 function getCheckoutWebhook(env) {
-  return env.N8N_CHECKOUT_START_WEBHOOK || env.N8N_CHECKOUT_FLOW_URL || '';
+  return env.N8N_CHECKOUT_START_WEBHOOK || env.N8N_CHECKOUT_FLOW_URL || DEFAULT_N8N_CHECKOUT_START_WEBHOOK;
 }
 
 async function notifyN8nCheckoutStart(env, payload) {
@@ -5899,6 +5917,12 @@ async function handleCheckoutStart(env, opts) {
       text,
       timestamp: ts
     };
+    if (opts?.shortcutType) {
+      payload.intent = 'co_admin_shortcut';
+      payload.shortcutType = opts.shortcutType;
+      payload.outcome = opts?.outcome || null;
+      payload.command = opts?.command || '';
+    }
     const res = await notifyN8nCheckoutStart(env, payload);
     console.log('checkout_n8n_ok', { roomId, flowId: res?.flowId || '', mainUrl: res?.mainUrl ? 'yes' : 'no' });
 
@@ -6148,6 +6172,9 @@ async function notifyN8nChatLog(env, payload) {
 export const __testables = {
   parsePostbackData,
   parseKeyRent,
+  parseCoAdminShortcut,
+  isCheckoutStartShortcut,
+  getCheckoutWebhook,
   normalizeManagerDecision,
   buildRenewalPostbackMeta,
   isContinueTermReplyAction,

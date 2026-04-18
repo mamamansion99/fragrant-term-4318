@@ -322,6 +322,30 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});
 
+	it('routes co room shortcuts to the checkout start webhook', () => {
+		const shortcut = __testables.parseCoAdminShortcut('co A101 no') as Record<string, unknown>;
+		expect(shortcut).toBeTruthy();
+		expect(shortcut.type).toBe('co');
+		expect(shortcut.roomId).toBe('A101');
+		expect(shortcut.outcome).toBe('no');
+		expect(shortcut.normalizedCommand).toBe('co a101 no');
+		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(true);
+		expect(__testables.getCheckoutWebhook({} as any)).toBe('https://n8n.srv1112305.hstgr.cloud/webhook/checkout');
+	});
+
+	it('keeps non-start co admin shortcuts on the admin webhook path', () => {
+		const doneShortcut = __testables.parseCoAdminShortcut('co done A101 waive') as Record<string, unknown>;
+		const statusShortcut = __testables.parseCoAdminShortcut('co status A101') as Record<string, unknown>;
+		const readyShortcut = __testables.parseCoAdminShortcut('ready A101') as Record<string, unknown>;
+
+		expect(doneShortcut.type).toBe('co_done');
+		expect(statusShortcut.type).toBe('co_status');
+		expect(readyShortcut.type).toBe('ready');
+		expect(__testables.isCheckoutStartShortcut(doneShortcut)).toBe(false);
+		expect(__testables.isCheckoutStartShortcut(statusShortcut)).toBe(false);
+		expect(__testables.isCheckoutStartShortcut(readyShortcut)).toBe(false);
+	});
+
 	it('parses direct key-rent command with mobile banking payment suffix', () => {
 		const parsed = __testables.parseKeyRent('เช่าชุดกุญแจ A101 โอน') as Record<string, unknown>;
 		expect(parsed).toBeTruthy();
