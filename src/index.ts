@@ -3000,7 +3000,7 @@ export default {
           const parkingServiceKeyword = isParkingIntent(textIn);
           const checkinRoomCode = parseCheckinCommand(textIn);
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
-          const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+          const isPaymentMenu = isPaymentMenuBypass;
           const presetOtherPaymentReason =
             /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
               ? 'CAR'
@@ -3119,6 +3119,40 @@ export default {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
             }
           };
+
+          // Payment menu entry point should bypass any stale payment state.
+          if (isPaymentMenu) {
+            const flex = buildPaymentOptionsFlex();
+            const fallbackText = [
+              'เลือกประเภทการชำระเงิน',
+              '',
+              'ชำระบิลทั่วไป',
+              '- ชำระค่าเช่าห้อง',
+              '- ชำระค่าลืมกุญแจ',
+              '',
+              'เช่าทรัพย์สินเพิ่มเติม',
+              '- ชำระค่าเช่ากุญแจ',
+              '- ชำระค่าเช่าที่จอดรถ',
+              '',
+              'ย้ายออกและเช็คเอาท์',
+              '- ชำระค่าเช็คเอาท์'
+            ].join('\n');
+
+            try {
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [flex]);
+              } else if (chatId) {
+                await linePush(env.LINE_ACCESS_TOKEN, chatId, [flex]);
+              }
+            } catch (err) {
+              console.error('payment_menu_send_failed', err);
+              if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, fallbackText).catch((pushErr) => console.error('payment_menu_fallback_failed', pushErr)));
+              }
+            }
+            continue;
+          }
+
           // While waiting for penalty reason, treat the next text as reason first.
           if (penaltyReasonNeeded) {
             const reason = (textIn || '').trim();
@@ -3312,17 +3346,6 @@ export default {
           // (B) While inside move-out flow (รวม confirm)
           const handled = await moveoutTextGate(env, stateKey, textIn, replyToken);
           if (handled) continue;
-
-          // Payment menu entry point (rich menu: จ่ายเงินมามาแมนชั่น) + override keyword จ่ายค่าเช่ามามาแมนชั่น
-          if (isPaymentMenu || isPaymentMenuBypass) {
-            const flex = buildPaymentOptionsFlex();
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [flex]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [flex]).catch(console.error));
-            }
-            continue;
-          }
 
           // (C) Rent payment trigger
           if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|ชำระค่าเช่าห้อง|จ่ายค่าเช่า|จ่ายค่าเช่าห้อง|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
@@ -5364,72 +5387,37 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (icon, title, description, text, accentColor) => ({
+  const optionCard = (title, description, text, accentColor) => ({
     type: 'box',
-    layout: 'horizontal',
+    layout: 'vertical',
     spacing: 'xs',
-    paddingAll: '12px',
-    cornerRadius: '10px',
-    backgroundColor: '#FFFFFF',
+    paddingAll: '14px',
+    cornerRadius: '8px',
+    backgroundColor: '#F8FAFC',
     borderWidth: '1px',
     borderColor: '#E2E8F0',
     action: { type: 'message', label: title, text },
     contents: [
       {
-        type: 'box',
-        layout: 'vertical',
-        width: '34px',
-        height: '34px',
-        cornerRadius: '17px',
-        backgroundColor: accentColor,
-        justifyContent: 'center',
-        alignItems: 'center',
-        contents: [
-          {
-            type: 'text',
-            text: icon,
-            size: 'md',
-            align: 'center'
-          }
-        ]
+        type: 'text',
+        text: title,
+        weight: 'bold',
+        size: 'md',
+        color: '#111827'
       },
       {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'xxs',
-        flex: 1,
-        contents: [
-          {
-            type: 'box',
-            layout: 'horizontal',
-            spacing: 'xs',
-            contents: [
-              {
-                type: 'text',
-                text: title,
-                weight: 'bold',
-                size: 'sm',
-                color: '#111827',
-                flex: 1
-              },
-              {
-                type: 'text',
-                text: '›',
-                size: 'lg',
-                color: '#64748B',
-                align: 'end',
-                flex: 0
-              }
-            ]
-          },
-          {
-            type: 'text',
-            text: description,
-            wrap: true,
-            size: 'xs',
-            color: '#64748B'
-          }
-        ]
+        type: 'text',
+        text: description,
+        wrap: true,
+        size: 'sm',
+        color: '#475569'
+      },
+      {
+        type: 'text',
+        text: 'แตะเพื่อเริ่ม',
+        size: 'xs',
+        color: accentColor,
+        weight: 'bold'
       }
     ]
   });
@@ -5480,8 +5468,8 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ชำระบิลทั่วไป', '#1D4ED8'),
-              optionCard('🏠', 'ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่าห้อง', '#DBEAFE'),
-              optionCard('🪪', 'ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', '#FEF3C7')
+              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่าห้อง', '#2563EB'),
+              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', '#B45309')
             ]
           },
           {
@@ -5491,8 +5479,8 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('เช่าทรัพย์สินเพิ่มเติม', '#047857'),
-              optionCard('🔑', 'ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', '#D1FAE5'),
-              optionCard('🚗', 'ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', '#E0F2FE')
+              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', '#047857'),
+              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', '#0369A1')
             ]
           },
           {
@@ -5502,7 +5490,7 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ย้ายออกและเช็คเอาท์', '#7C3AED'),
-              optionCard('🚪', 'ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', '#EDE9FE')
+              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', '#7C3AED')
             ]
           }
         ]
