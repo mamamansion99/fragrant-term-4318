@@ -2999,7 +2999,7 @@ export default {
           const fridgeIntent = detectFridgeIntent(textIn);
           const parkingServiceKeyword = isParkingIntent(textIn);
           const checkinRoomCode = parseCheckinCommand(textIn);
-          const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
+          const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
           const presetOtherPaymentReason =
             /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
