@@ -3012,7 +3012,7 @@ export default {
                       ? 'KEY_FORGOT'
                       : (
                         /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
-                          ? 'CHECKOUT_PAYMENT'
+                          ? 'CHECKOUT'
                           : null
                       )
                   )
