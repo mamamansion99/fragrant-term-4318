@@ -366,7 +366,7 @@ function parseCoAdminShortcut(text) {
 }
 
 function isCheckoutStartShortcut(shortcut) {
-  return shortcut?.type === 'co';
+  return false;
 }
 
 function buildBookingFlowKey(userId, chatId) {

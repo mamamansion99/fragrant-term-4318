@@ -322,15 +322,14 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});
 
-	it('routes co room shortcuts to the checkout start webhook', () => {
+	it('routes co room shortcuts to the co admin webhook path', () => {
 		const shortcut = __testables.parseCoAdminShortcut('co A101 no') as Record<string, unknown>;
 		expect(shortcut).toBeTruthy();
 		expect(shortcut.type).toBe('co');
 		expect(shortcut.roomId).toBe('A101');
 		expect(shortcut.outcome).toBe('no');
 		expect(shortcut.normalizedCommand).toBe('co a101 no');
-		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(true);
-		expect(__testables.getCheckoutWebhook({} as any)).toBe('https://n8n.srv1112305.hstgr.cloud/webhook/checkout');
+		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(false);
 	});
 
 	it('keeps non-start co admin shortcuts on the admin webhook path', () => {
