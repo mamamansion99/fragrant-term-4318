@@ -3002,15 +3002,19 @@ export default {
           const isPaymentMenuBypass = /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass || /^\s*จ่ายเงินมามาแมนชั่น\s*$/i.test(textIn);
           const presetOtherPaymentReason =
-            /^\s*จ่ายค่าเช่าที่จอดรถ\s*$/i.test(textIn)
+            /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
               ? 'CAR'
               : (
-                /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ)\s*$/i.test(textIn)
+                /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ)\s*$/i.test(textIn)
                   ? 'KEY_RENT'
                   : (
-                    /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย)\s*$/i.test(textIn)
+                    /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย)\s*$/i.test(textIn)
                       ? 'KEY_FORGOT'
-                      : null
+                      : (
+                        /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
+                          ? 'CHECKOUT_PAYMENT'
+                          : null
+                      )
                   )
               );
           const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
@@ -3321,7 +3325,7 @@ export default {
           }
 
           // (C) Rent payment trigger
-          if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|จ่ายค่าเช่า|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
+          if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|ชำระค่าเช่าห้อง|จ่ายค่าเช่า|จ่ายค่าเช่าห้อง|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
             if (chatId) {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
@@ -5360,39 +5364,82 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (title, description, text, accentColor) => ({
+  const optionCard = (icon, title, description, text, accentColor) => ({
     type: 'box',
-    layout: 'vertical',
+    layout: 'horizontal',
     spacing: 'xs',
-    paddingAll: '14px',
-    cornerRadius: '16px',
-    backgroundColor: '#F8FAFC',
+    paddingAll: '12px',
+    cornerRadius: '10px',
+    backgroundColor: '#FFFFFF',
     borderWidth: '1px',
-    borderColor: '#D9E2F2',
+    borderColor: '#E2E8F0',
     action: { type: 'message', label: title, text },
     contents: [
       {
-        type: 'text',
-        text: title,
-        weight: 'bold',
-        size: 'md',
-        color: '#0F172A'
+        type: 'box',
+        layout: 'vertical',
+        width: '34px',
+        height: '34px',
+        cornerRadius: '17px',
+        backgroundColor: accentColor,
+        justifyContent: 'center',
+        alignItems: 'center',
+        contents: [
+          {
+            type: 'text',
+            text: icon,
+            size: 'md',
+            align: 'center'
+          }
+        ]
       },
       {
-        type: 'text',
-        text: description,
-        wrap: true,
-        size: 'sm',
-        color: '#475569'
-      },
-      {
-        type: 'text',
-        text: 'แตะเพื่อเริ่ม',
-        size: 'xs',
-        color: accentColor,
-        weight: 'bold'
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xxs',
+        flex: 1,
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'xs',
+            contents: [
+              {
+                type: 'text',
+                text: title,
+                weight: 'bold',
+                size: 'sm',
+                color: '#111827',
+                flex: 1
+              },
+              {
+                type: 'text',
+                text: '›',
+                size: 'lg',
+                color: '#64748B',
+                align: 'end',
+                flex: 0
+              }
+            ]
+          },
+          {
+            type: 'text',
+            text: description,
+            wrap: true,
+            size: 'xs',
+            color: '#64748B'
+          }
+        ]
       }
     ]
+  });
+  const sectionHeader = (text, color) => ({
+    type: 'text',
+    text,
+    size: 'sm',
+    weight: 'bold',
+    color,
+    margin: 'md'
   });
 
   return {
@@ -5419,7 +5466,7 @@ function buildPaymentOptionsFlex() {
               },
               {
                 type: 'text',
-                text: 'เริ่มจากหมวดที่ตรงกับรายการที่ต้องการชำระ เพื่อให้บอทพาไปขั้นตอนถัดไปได้ตรงขึ้น',
+                text: 'แตะเลือกรายการให้ตรงกับบิล เพื่อลดการส่งผิดประเภท',
                 wrap: true,
                 size: 'sm',
                 color: '#475569'
@@ -5432,16 +5479,9 @@ function buildPaymentOptionsFlex() {
             spacing: 'sm',
             margin: 'md',
             contents: [
-              {
-                type: 'text',
-                text: 'ค่าห้องและค่าใช้จ่ายทั่วไป',
-                size: 'sm',
-                weight: 'bold',
-                color: '#1E3A8A'
-              },
-              optionCard('ชำระค่าเช่า', 'ส่งสลิปค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า', '#2563EB'),
-              optionCard('ชำระค่าปรับ', 'กรณีค่าปรับ เช่น เสียงดัง หรือจอดรถผิดจุด', 'ชำระค่าปรับ', '#DC2626'),
-              optionCard('ชำระค่าอื่นๆ', 'รายการอื่นที่ไม่ใช่ค่าเช่า เช่น ค่าน้ำดื่มหรือค่าซักผ้า', 'ชำระค่าอื่นๆ', '#EA580C')
+              sectionHeader('ชำระบิลทั่วไป', '#1D4ED8'),
+              optionCard('🏠', 'ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่าห้อง', '#DBEAFE'),
+              optionCard('🪪', 'ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', '#FEF3C7')
             ]
           },
           {
@@ -5450,16 +5490,19 @@ function buildPaymentOptionsFlex() {
             spacing: 'sm',
             margin: 'md',
             contents: [
-              {
-                type: 'text',
-                text: 'บริการเพิ่มเติม',
-                size: 'sm',
-                weight: 'bold',
-                color: '#92400E'
-              },
-              optionCard('จ่ายค่าเช่าที่จอดรถ', 'ส่งสลิปค่าเช่าที่จอดรถเข้าระบบค่าอื่นๆ', 'จ่ายค่าเช่าที่จอดรถ', '#B45309'),
-              optionCard('จ่ายค่าเช่ากุญแจ', 'ส่งสลิปสำหรับค่าเช่ากุญแจหรือค่ายืมกุญแจเข้าระบบค่าอื่นๆ', 'จ่ายค่าเช่ากุญแจ', '#B45309'),
-              optionCard('จ่ายเงินค่าลืมกุญแจ', 'ส่งสลิปสำหรับค่าลืมกุญแจเข้าระบบค่าอื่นๆ', 'จ่ายเงินค่าลืมกุญแจ', '#B45309')
+              sectionHeader('เช่าทรัพย์สินเพิ่มเติม', '#047857'),
+              optionCard('🔑', 'ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', '#D1FAE5'),
+              optionCard('🚗', 'ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', '#E0F2FE')
+            ]
+          },
+          {
+            type: 'box',
+            layout: 'vertical',
+            spacing: 'sm',
+            margin: 'md',
+            contents: [
+              sectionHeader('ย้ายออกและเช็คเอาท์', '#7C3AED'),
+              optionCard('🚪', 'ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', '#EDE9FE')
             ]
           }
         ]
