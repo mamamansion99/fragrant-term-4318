@@ -293,7 +293,11 @@ function parseCheckoutTrigger(text) {
   return roomToken;
 }
 
-const CO_ADMIN_ALLOWED_LINE_USER_ID = 'Ue90558b73d62863e2287ac32e69541a3';
+const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
+  'Ue90558b73d62863e2287ac32e69541a3',
+  'U2855d93e108ccebbef7d1b55ec8827e5',
+  'U9293d43980e98649e20c8759a2c2d7f0'
+]);
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
@@ -366,7 +370,14 @@ function parseCoAdminShortcut(text) {
 }
 
 function isCheckoutStartShortcut(shortcut) {
-  return false;
+  if (!shortcut || shortcut.type !== 'co') return false;
+  return !shortcut.outcome;
+}
+
+function isCoAdminAllowedLineUserId(userId) {
+  const normalized = String(userId || '').trim();
+  if (!normalized) return false;
+  return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
 }
 
 function buildBookingFlowKey(userId, chatId) {
@@ -2909,7 +2920,7 @@ export default {
 
           const coAdminShortcut = parseCoAdminShortcut(textIn);
           if (coAdminShortcut) {
-            if (userId !== CO_ADMIN_ALLOWED_LINE_USER_ID) {
+            if (!isCoAdminAllowedLineUserId(userId)) {
               console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
               continue;
             }
@@ -6205,6 +6216,7 @@ export const __testables = {
   parseKeyRent,
   parseCoAdminShortcut,
   isCheckoutStartShortcut,
+  isCoAdminAllowedLineUserId,
   getCheckoutWebhook,
   normalizeManagerDecision,
   buildRenewalPostbackMeta,

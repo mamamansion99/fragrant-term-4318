@@ -322,24 +322,35 @@ describe('Worker routes', () => {
 		expect(__testables.getRenewalPostbackWebhookUrl(mockEnv, 'LEAVE')).toBe('https://example.com/renewal-postback');
 	});
 
-	it('routes co room shortcuts to the co admin webhook path', () => {
-		const shortcut = __testables.parseCoAdminShortcut('co A101 no') as Record<string, unknown>;
+	it('routes bare co room shortcuts to the checkout start webhook path', () => {
+		const shortcut = __testables.parseCoAdminShortcut('co A101') as Record<string, unknown>;
 		expect(shortcut).toBeTruthy();
 		expect(shortcut.type).toBe('co');
 		expect(shortcut.roomId).toBe('A101');
-		expect(shortcut.outcome).toBe('no');
-		expect(shortcut.normalizedCommand).toBe('co a101 no');
-		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(false);
+		expect(shortcut.outcome).toBe(null);
+		expect(shortcut.normalizedCommand).toBe('co a101');
+		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(true);
+	});
+
+	it('allows co admin shortcuts for configured LINE user IDs only', () => {
+		expect(__testables.isCoAdminAllowedLineUserId('Ue90558b73d62863e2287ac32e69541a3')).toBe(true);
+		expect(__testables.isCoAdminAllowedLineUserId('U2855d93e108ccebbef7d1b55ec8827e5')).toBe(true);
+		expect(__testables.isCoAdminAllowedLineUserId('U9293d43980e98649e20c8759a2c2d7f0')).toBe(true);
+		expect(__testables.isCoAdminAllowedLineUserId('Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx')).toBe(false);
+		expect(__testables.isCoAdminAllowedLineUserId('')).toBe(false);
 	});
 
 	it('keeps non-start co admin shortcuts on the admin webhook path', () => {
+		const coOutcomeShortcut = __testables.parseCoAdminShortcut('co A101 no') as Record<string, unknown>;
 		const doneShortcut = __testables.parseCoAdminShortcut('co done A101 waive') as Record<string, unknown>;
 		const statusShortcut = __testables.parseCoAdminShortcut('co status A101') as Record<string, unknown>;
 		const readyShortcut = __testables.parseCoAdminShortcut('ready A101') as Record<string, unknown>;
 
+		expect(coOutcomeShortcut.type).toBe('co');
 		expect(doneShortcut.type).toBe('co_done');
 		expect(statusShortcut.type).toBe('co_status');
 		expect(readyShortcut.type).toBe('ready');
+		expect(__testables.isCheckoutStartShortcut(coOutcomeShortcut)).toBe(false);
 		expect(__testables.isCheckoutStartShortcut(doneShortcut)).toBe(false);
 		expect(__testables.isCheckoutStartShortcut(statusShortcut)).toBe(false);
 		expect(__testables.isCheckoutStartShortcut(readyShortcut)).toBe(false);
