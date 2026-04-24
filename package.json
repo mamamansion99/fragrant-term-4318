@@ -4,6 +4,7 @@
 	"private": true,
 	"scripts": {
 		"deploy": "wrangler deploy",
+		"ship": "powershell -ExecutionPolicy Bypass -File scripts/ship.ps1",
 		"dev": "wrangler dev",
 		"start": "wrangler dev",
 		"test": "vitest",
