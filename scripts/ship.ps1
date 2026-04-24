@@ -11,13 +11,13 @@ Set-Location $repoRoot
 
 function Invoke-Checked {
   param(
-    [string]$Command,
-    [string[]]$Arguments
+    [string]$Exe,
+    [string[]]$ExeArgs
   )
 
-  & $Command @Arguments
+  & $Exe @ExeArgs
   if ($LASTEXITCODE -ne 0) {
-    throw "$Command failed with exit code $LASTEXITCODE"
+    throw "$Exe failed with exit code $LASTEXITCODE"
   }
 }
 
@@ -46,13 +46,13 @@ if ($status) {
     }
   }
 
-  Invoke-Checked "git" @("add", "-A")
-  Invoke-Checked "git" @("commit", "-m", $Message)
-  Invoke-Checked "git" @("push", "-u", "origin", $branch)
+  Invoke-Checked -Exe "git" -ExeArgs @("add", "-A")
+  Invoke-Checked -Exe "git" -ExeArgs @("commit", "-m", $Message)
+  Invoke-Checked -Exe "git" -ExeArgs @("push", "-u", "origin", $branch)
 } else {
   Write-Host "No pending git changes. Skipping commit and push."
 }
 
 if (-not $NoDeploy) {
-  Invoke-Checked "npm" @("run", "deploy")
+  Invoke-Checked -Exe "npm" -ExeArgs @("run", "deploy")
 }
