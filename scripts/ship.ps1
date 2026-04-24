@@ -54,5 +54,10 @@ if ($status) {
 }
 
 if (-not $NoDeploy) {
-  Invoke-Checked -Exe "npm" -ExeArgs @("run", "deploy")
+  $wrangler = Join-Path $repoRoot "node_modules/.bin/wrangler.cmd"
+  if (-not (Test-Path $wrangler)) {
+    $wrangler = "wrangler"
+  }
+
+  Invoke-Checked -Exe $wrangler -ExeArgs @("deploy")
 }
