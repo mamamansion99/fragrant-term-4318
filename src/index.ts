@@ -581,6 +581,14 @@ function isUtilityInquiry(text) {
   return englishPair;
 }
 
+function isRoomRentInquiry(text) {
+  const normalized = (text || '').trim().toLowerCase();
+  if (!normalized) return false;
+  if (/ราคา(?:ห้อง|ห้องพัก)?|(?:ห้อง|ห้องพัก)[\s\S]{0,20}ราคา|ค่าเช่า(?:ห้อง|ห้องพัก)?|(?:ห้อง|ห้องพัก)[\s\S]{0,20}ค่าเช่า/i.test(normalized)) return true;
+  if (/(?:ห้อง|ห้องพัก)[\s\S]{0,30}(เท่าไหร่|กี่บาท|ต่อเดือน|เดือนละ)/i.test(normalized)) return true;
+  return ['room price', 'room rent', 'rent per month', 'monthly rent'].some((kw) => normalized.includes(kw));
+}
+
 function isCheckinChangeIntent(text) {
   const normalized = (text || '').toLowerCase().replace(/\s+/g, '');
   if (!normalized) return false;
@@ -4989,6 +4997,31 @@ function buildPrebookPromptMessages(env, reason = 'prebook') {
   ];
 }
 
+function buildRoomRentQuickReply() {
+  return {
+    items: [
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ค่าเช่า',
+          data: 'act=ROOM_RENT',
+          displayText: 'ค่าเช่า'
+        }
+      },
+      {
+        type: 'action',
+        action: {
+          type: 'postback',
+          label: 'ภาพ + เรทราคา',
+          data: 'act=ROOM_RENT_IMG',
+          displayText: 'ภาพ + เรทราคา'
+        }
+      }
+    ]
+  };
+}
+
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -5073,6 +5106,18 @@ async function quickKeywordReply(text, env, userId) {
     AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
     AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
   const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
+  const isRoomRentAsk = isRoomRentInquiry(normalized);
+  if (isAvailabilityAsk && isRoomRentAsk) {
+    return [
+      {
+        type: 'text',
+        text: roomDetailByKey('ROOM_RENT'),
+        quickReply: buildRoomRentQuickReply()
+      },
+      ...buildPrebookPromptMessages(env, 'availability')
+    ];
+  }
+
   if (isAvailabilityAsk && !isAvailabilityExcluded) {
     return buildPrebookPromptMessages(env, 'availability');
     const enabled = await getScreeningEnabled(env);
@@ -5111,28 +5156,7 @@ async function quickKeywordReply(text, env, userId) {
     ];
   }
 
-  const utilityReplyQuickActions = {
-    items: [
-      {
-        type: 'action',
-        action: {
-          type: 'postback',
-          label: 'ค่าเช่า',
-          data: 'act=ROOM_RENT',
-          displayText: 'ค่าเช่า'
-        }
-      },
-      {
-        type: 'action',
-        action: {
-          type: 'postback',
-          label: 'ภาพ + เรทราคา',
-          data: 'act=ROOM_RENT_IMG',
-          displayText: 'ภาพ + เรทราคา'
-        }
-      }
-    ]
-  };
+  const utilityReplyQuickActions = buildRoomRentQuickReply();
 
   const contactQuickReply = {
     items: [
@@ -6222,5 +6246,7 @@ export const __testables = {
   normalizeManagerDecision,
   buildRenewalPostbackMeta,
   isContinueTermReplyAction,
-  getRenewalPostbackWebhookUrl
+  getRenewalPostbackWebhookUrl,
+  isRoomRentInquiry,
+  quickKeywordReply
 };

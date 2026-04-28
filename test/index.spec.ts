@@ -383,6 +383,19 @@ describe('Worker routes', () => {
 		expect(parsed.paymentMethod).toBeUndefined();
 	});
 
+	it('replies to combined availability and room price questions', async () => {
+		const messages = await __testables.quickKeywordReply(
+			'สวัสดีครับ ขออนุญาตสอบถามตอนนี้ที่หอพักมีห้องว่างหรือกำลังจะว่างมั้ยครับ ราคาห้องอยู่ที่เท่าไหร่ต่อเดือนครับ',
+			env,
+			'Utest'
+		) as Array<Record<string, unknown>>;
+
+		expect(messages).toHaveLength(2);
+		expect(messages[0].text).toContain('Standard (เฟอร์ครบ): 4,000 บ./ด.');
+		expect(messages[1].text).toContain('ตอนนี้ห้องเต็มแต่มีคนออกเรื่อยๆ');
+		expect(messages[1].text).toContain('https://mm-prebook.pages.dev/');
+	});
+
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/git/latest-commit?repo=invalid-repo-format');
 		const ctx = createExecutionContext();
