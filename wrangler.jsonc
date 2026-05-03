@@ -27,6 +27,7 @@
     "PENALTY_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/9bc40121-6fbe-4aa9-918c-a8b04cc88740",
     "N8N_CHECKOUT_START_WEBHOOK": "https://n8n.srv1112305.hstgr.cloud/webhook/checkout",
     "N8N_CO_ADMIN_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/co-admin",
+    "N8N_PREBOOK_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/prebook",
     "MM_WORKER_SECRET": "test123",
     // Dedicated expense group (Option 2)
     "EXPENSE_GROUP_ID": "C2190a9a8cbde42b097a9d2fd0c1599bc",

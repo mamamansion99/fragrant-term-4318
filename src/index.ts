@@ -300,6 +300,7 @@ const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
 ]);
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
+const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
 function parseRoomToken(token) {
@@ -3623,6 +3624,13 @@ export default {
             if (prebookCode) {
               ctx.waitUntil(kvPut(env, buildPrebookCodeKey(prebookCode), prebookBinding, PREBOOK_BIND_TTL_SECONDS));
             }
+            ctx.waitUntil(notifyN8nPrebookWebhook(env, {
+              ...prebookBinding,
+              text: textIn,
+              webhookEventId: ev?.webhookEventId || '',
+              replyToken: ev?.replyToken || '',
+              timestamp: ev?.timestamp || null
+            }).catch((err) => console.error('prebook webhook failed', err)));
 
             const ackText = [
               `รับรหัสฝากห้อง ${prebookCode} แล้วค่ะ`,
@@ -6082,6 +6090,40 @@ async function notifyN8nKeyForgotWebhook(env, payload) {
   }
 }
 
+function getPrebookWebhookUrl(env) {
+  return env.N8N_PREBOOK_WEBHOOK_URL || DEFAULT_N8N_PREBOOK_WEBHOOK_URL;
+}
+
+async function notifyN8nPrebookWebhook(env, payload) {
+  const url = getPrebookWebhookUrl(env);
+  if (!url) {
+    console.warn('notifyN8nPrebookWebhook: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nPrebookWebhook: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nPrebookWebhook error', err);
+    return false;
+  }
+}
+
 function getPenaltyWebhook(env) {
   return env.PENALTY_WEBHOOK_URL || '';
 }
@@ -6247,6 +6289,7 @@ export const __testables = {
   buildRenewalPostbackMeta,
   isContinueTermReplyAction,
   getRenewalPostbackWebhookUrl,
+  getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply
 };

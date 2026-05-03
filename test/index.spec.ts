@@ -356,6 +356,13 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckoutStartShortcut(readyShortcut)).toBe(false);
 	});
 
+	it('uses configured prebook webhook URL with production default fallback', () => {
+		expect(__testables.getPrebookWebhookUrl({})).toBe('https://n8n.srv1112305.hstgr.cloud/webhook/prebook');
+		expect(__testables.getPrebookWebhookUrl({
+			N8N_PREBOOK_WEBHOOK_URL: 'https://example.com/prebook'
+		})).toBe('https://example.com/prebook');
+	});
+
 	it('parses direct key-rent command with mobile banking payment suffix', () => {
 		const parsed = __testables.parseKeyRent('เช่าชุดกุญแจ A101 โอน') as Record<string, unknown>;
 		expect(parsed).toBeTruthy();
