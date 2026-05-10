@@ -5200,6 +5200,16 @@ async function quickKeywordReply(text, env, userId) {
     }
   ];
 
+  const asksCommonFee =
+    normalized.includes('ค่าส่วนกลาง') ||
+    normalized.includes('ส่วนกลาง') ||
+    normalized.includes('มีค่าส่วนกลาง') ||
+    normalized.includes('ค่าส่วนกลางไหม') ||
+    normalized.includes('ค่าส่วนกลางมั้ย');
+  if (asksCommonFee) {
+    return [{ type: 'text', text: 'ค่าส่วนกลาง 200 บาท/เดือนค่ะ' }];
+  }
+
   if (isUtilityInquiry(normalized)) {
     const utilityText = roomDetailByKey('ROOM_UTIL');
     const textMessage = {
