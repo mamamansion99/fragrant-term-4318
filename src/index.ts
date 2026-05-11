@@ -198,6 +198,7 @@ const FRIDGE_CANCEL_VERB_RE =
 // ถามข้อมูล/ราคา
 const FRIDGE_QUESTION_RE =
   /(ราคา|เท่าไหร่|คิดยังไง|คิดเงินยังไง|คิดตังยังไง|มี(?:ไหม|มั้ย|มั๊ย)|มีหรือเปล่า|พร้อมไหม|ว่างไหม|ว่างมั้ย)/i;
+const KMITL_TRAVEL_GUIDE_URL = 'https://mm-v2.pages.dev/kmitl-guide';
 
 const DEFAULT_FRIDGE_CANCEL_NOTIFY_ID = 'Ue90558b73d62863e2287ac32e69541a3';
 
@@ -480,6 +481,41 @@ function isRoomVisitIntent(text) {
     ROOM_VISIT_TARGET_RE.test(compact) ||
     ROOM_VISIT_TARGET_RE.test(lower);
   return hasTarget;
+}
+
+function isKmitlTravelGuideIntent(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+
+  const normalized = raw
+    .toLowerCase()
+    .replace(/[“”"'`]/g, '')
+    .replace(/\s+/g, '');
+
+  const mentionsCampus =
+    /(kmitl|สจล|พระจอมเกล้า(?:เจ้าคุณทหาร)?ลาดกระบัง|ลาดกระบัง|ม\.?ลาดกระบัง)/i.test(raw) ||
+    /(kmitl|สจล|พระจอมเกล้า(?:เจ้าคุณทหาร)?ลาดกระบัง|ลาดกระบัง|มลาดกระบัง)/i.test(normalized);
+
+  const mentionsSongthaew =
+    /(สองแถว|2แถว|รถสองแถว|รถแดง)/i.test(raw) ||
+    /(สองแถว|2แถว|รถสองแถว|รถแดง)/i.test(normalized);
+
+  const asksFare =
+    /(ราคา|ค่าโดยสาร|กี่บาท|เท่าไหร่|เท่าไร)/i.test(raw) ||
+    /(ราคา|ค่าโดยสาร|กี่บาท|เท่าไหร่|เท่าไร)/i.test(normalized);
+
+  const asksDistance =
+    /(ระยะทาง|ห่าง|กี่กิโล|กี่โล|กิโลเมตร|ไกลไหม)/i.test(raw) ||
+    /(ระยะทาง|ห่าง|กี่กิโล|กี่โล|กิโลเมตร|ไกลไหม)/i.test(normalized);
+
+  const asksRouteOrTransit =
+    /(เดินทาง|ไปยังไง|ไปไง|ไปยังงัย|วิธีไป|ทางไป|นั่งอะไร|ขึ้นอะไร|วิ่งผ่าน|ผ่านแถว|ถึงมอ)/i.test(raw) ||
+    /(เดินทาง|ไปยังไง|ไปไง|ไปยังงัย|วิธีไป|ทางไป|นั่งอะไร|ขึ้นอะไร|วิ่งผ่าน|ผ่านแถว|ถึงมอ)/i.test(normalized);
+
+  if (mentionsCampus && (asksRouteOrTransit || asksDistance || asksFare || mentionsSongthaew)) return true;
+  if (mentionsSongthaew && (asksFare || asksRouteOrTransit || normalized.includes('ถึงมอ'))) return true;
+
+  return false;
 }
 
 // Detects general parking interest by requiring the parking keyword plus a basic intent verb.
@@ -4456,7 +4492,9 @@ function resDetailByKey(key) {
       '• รถสองแถวสีแดงเส้นลาดกระบัง — ลงหน้ามหาวิทยาลัย',
       '• รถเมล์สาย 552 (ปรับอากาศ) ขึ้นริมถนนฉลองกรุง',
       '',
-      'Tip: ช่วงเร่งด่วนควรเผื่อเวลาเล็กน้อยก่อนเข้าเรียน'
+      'Tip: ช่วงเร่งด่วนควรเผื่อเวลาเล็กน้อยก่อนเข้าเรียน',
+      '',
+      `🔗 คู่มือการเดินทางเพิ่มเติม: ${KMITL_TRAVEL_GUIDE_URL}`
     ].join('\n');
     return [{ type: 'text', text: kmitlText }];
   }
@@ -5036,6 +5074,9 @@ async function quickKeywordReply(text, env, userId) {
 
   if (isRoomVisitIntent(normalized)) {
     return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
+  }
+  if (isKmitlTravelGuideIntent(normalized)) {
+    return resDetailByKey('RES_COMMUTE_KMITL');
   }
 
   const lower = normalized.toLowerCase();
