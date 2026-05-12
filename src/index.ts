@@ -313,6 +313,13 @@ const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
   'U2855d93e108ccebbef7d1b55ec8827e5',
   'U9293d43980e98649e20c8759a2c2d7f0'
 ]);
+const RETURN_KEY_ALLOWED_LINE_USER_IDS = new Set([
+  'Ue90558b73d62863e2287ac32e69541a3', // Ma
+  'U193cae8dd9197f7d4bd6ada8046fd98b', // KP
+  'U2855d93e108ccebbef7d1b55ec8827e5', // P'Koy
+  'U9293d43980e98649e20c8759a2c2d7f0', // P'Yu
+  'Ua3e2f84505daa64ee21b8608e8857c33'  // POCO
+]);
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
 const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key';
@@ -396,6 +403,12 @@ function isCoAdminAllowedLineUserId(userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
   return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+function isReturnKeyAllowedLineUserId(userId) {
+  const normalized = String(userId || '').trim();
+  if (!normalized) return false;
+  return RETURN_KEY_ALLOWED_LINE_USER_IDS.has(normalized);
 }
 
 function buildBookingFlowKey(userId, chatId) {
@@ -6139,6 +6152,16 @@ async function handleReturnKeyStart(env, opts) {
   const targetChatId = chatId || getChatId(ev) || '';
 
   console.log('return_key_trigger', { roomId, text: text.slice(0, 80), userId });
+
+  if (!isReturnKeyAllowedLineUserId(userId)) {
+    const denyText = 'คำสั่งคืนกุญแจใช้ได้เฉพาะผู้ได้รับสิทธิ์เท่านั้น';
+    if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: denyText }]).catch(console.error);
+    } else if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, denyText).catch(console.error);
+    }
+    return true;
+  }
 
   const ack = `รับคำขอคืนกุญแจห้อง ${roomId} แล้ว กำลังส่งให้เจ้าหน้าที่ตรวจสอบค่ะ`;
   if (replyToken) {
