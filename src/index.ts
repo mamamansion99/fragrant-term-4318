@@ -1845,15 +1845,17 @@ export default {
           const chatId = getChatId(ev);
           const roomRaw = String(data.roomId || data.room || data.roomNo || data.room_code || '').trim();
           const roomId = parseRoomToken(roomRaw) || roomRaw.toUpperCase();
-          const decision = String(
-            data.decision || data.status || data.result || data.choice || data.answer || data.ans || data.action || data.act || ''
+          const selectedItem = String(
+            data.item || data.option || data.selection || data.selectedItem || data.assetType || ''
           ).trim();
+          const decision = normalizeReturnKeyDecision(data);
           const payloadToN8n = {
             source: 'line_postback',
             intent: 'return_key_decision',
             action: postbackAction,
             roomId: roomId || '',
             decision: decision || '',
+            selectedItem: selectedItem || '',
             parsed: data,
             postbackData: postbackDataString,
             event: ev,
@@ -4687,6 +4689,22 @@ function isReturnKeyDecisionAction(action) {
   return false;
 }
 
+function normalizeReturnKeyDecision(data) {
+  const rawDecision = String(
+    data?.decision || data?.status || data?.result || data?.choice || data?.answer || data?.ans || ''
+  ).trim();
+  const rawItem = String(
+    data?.item || data?.option || data?.selection || data?.selectedItem || data?.assetType || ''
+  ).trim();
+  const merged = `${rawDecision}|${rawItem}`.toLowerCase().replace(/\s+/g, '');
+
+  if (/all|both|ทั้งหมด|คืนทั้งหมด/.test(merged)) return 'all';
+  if (/keycard_only|keycardonly|คีย์การ์ด/.test(merged)) return 'keycard_only';
+  if (/key_only|keyonly|กุญแจ/.test(merged)) return 'key_only';
+
+  return rawDecision || rawItem || '';
+}
+
 function hasReturnKeyDecisionHints(data, rawPostback = '') {
   const pick = (...keys) => {
     for (const key of keys) {
@@ -4709,7 +4727,7 @@ function hasReturnKeyDecisionHints(data, rawPostback = '') {
   const flat = `${action}|${decision}|${marker}|${raw}`;
 
   const hasDecisionWord =
-    /(approve|approved|reject|rejected|decision|desicion|yes|no|y|n|ok|deny|decline|accept|pass|fail|อนุมัติ|ปฏิเสธ)/i.test(flat);
+    /(approve|approved|reject|rejected|decision|desicion|yes|no|y|n|ok|deny|decline|accept|pass|fail|key_only|keycard_only|all|both|อนุมัติ|ปฏิเสธ|คืนทั้งหมด)/i.test(flat);
   const hasReturnKeyWord =
     /(return[_\s-]*key|key[_\s-]*return|คืนกุญแจ|คืนคีย์การ์ด|กุญแจ|rented[_\s-]*key|rent[_\s-]*key)/i.test(flat);
 
