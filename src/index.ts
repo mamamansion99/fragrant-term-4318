@@ -293,6 +293,20 @@ function parseCheckoutTrigger(text) {
   if (!/^[AB]\d{3,4}$/.test(roomToken)) return null;
   return roomToken;
 }
+const RETURN_KEY_TRIGGER_RE = /(คืน\s*กุญแจ|return\s*key)/i;
+function parseReturnKeyTrigger(text) {
+  if (!text) return null;
+  const raw = String(text || '').trim();
+  if (!RETURN_KEY_TRIGGER_RE.test(raw)) return null;
+
+  const compact = raw.replace(/\s+/g, '');
+  const roomMatchSpaced = raw.match(/(?:คืน\s*กุญแจ|return\s*key)\s*(?:ห้อง|room)?\s*([ab]\d{3,4})\b/i);
+  const roomMatchCompact = compact.match(/(?:คืนกุญแจ|returnkey)(?:ห้อง|room)?([ab]\d{3,4})\b/i);
+  const roomToken = (roomMatchSpaced?.[1] || roomMatchCompact?.[1] || '').toUpperCase();
+  if (!roomToken) return null;
+  if (!/^[AB]\d{3,4}$/.test(roomToken)) return null;
+  return roomToken;
+}
 
 const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
   'Ue90558b73d62863e2287ac32e69541a3',
@@ -301,6 +315,7 @@ const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
 ]);
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
+const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key';
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
@@ -3581,6 +3596,17 @@ export default {
             if (handled) continue;
           }
 
+          const returnKeyRoomId = parseReturnKeyTrigger(textIn);
+          if (returnKeyRoomId) {
+            const handled = await handleReturnKeyStart(env, {
+              roomId: returnKeyRoomId,
+              text: textIn,
+              event: ev,
+              replyToken
+            });
+            if (handled) continue;
+          }
+
           if (changeLineState?.state === WAIT_ROOM_STATE) {
             notifyTenantChange('tenant_id_change_room');
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -5928,6 +5954,97 @@ async function notifyN8nCheckinFlow(env, payload) {
 
 function getCheckoutWebhook(env) {
   return env.N8N_CHECKOUT_START_WEBHOOK || env.N8N_CHECKOUT_FLOW_URL || DEFAULT_N8N_CHECKOUT_START_WEBHOOK;
+}
+
+function getReturnKeyWebhook(env) {
+  return env.N8N_RETURN_KEY_WEBHOOK_URL || DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL;
+}
+
+async function notifyN8nReturnKey(env, payload) {
+  const url = getReturnKeyWebhook(env);
+  if (!url) throw new Error('missing return key webhook URL');
+
+  const headers = { 'Content-Type': 'application/json', 'accept': 'application/json' };
+  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+  if (secret) headers['x-mm-secret'] = secret;
+
+  console.log('return_key_webhook_req', { url, roomId: payload?.roomId || '', hasSecret: !!secret });
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(15000)
+  });
+  const text = await res.text().catch(() => '');
+  console.log('return_key_webhook_res', {
+    status: res.status,
+    ok: res.ok,
+    bodyPreview: text.slice(0, 300)
+  });
+
+  if (!res.ok) {
+    throw new Error(`return key webhook error ${res.status} ${text.slice(0, 200)}`);
+  }
+  return true;
+}
+
+async function handleReturnKeyStart(env, opts) {
+  const roomId = (opts?.roomId || '').toUpperCase();
+  const text = opts?.text || '';
+  const ev = opts?.event || {};
+  const replyToken = opts?.replyToken || '';
+  const userId = ev?.source?.userId || '';
+  const ts = ev?.timestamp || Date.now();
+  const chatId = getChatId(ev);
+  const targetChatId = chatId || getChatId(ev) || '';
+
+  console.log('return_key_trigger', { roomId, text: text.slice(0, 80), userId });
+
+  const ack = `รับคำขอคืนกุญแจห้อง ${roomId} แล้ว กำลังส่งให้เจ้าหน้าที่ตรวจสอบค่ะ`;
+  if (replyToken) {
+    try {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ack }]);
+    } catch (e) {
+      console.error('return_key_ack_fail', e);
+      if (targetChatId) {
+        try { await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, ack); } catch (e2) { console.error('return_key_ack_push_fail', e2); }
+      }
+    }
+  } else if (chatId) {
+    try { await linePushText(env.LINE_ACCESS_TOKEN, chatId, ack); }
+    catch (e3) { console.error('return_key_ack_push_fail', e3); }
+  }
+
+  try {
+    const payload = {
+      source: 'LINE_TEXT',
+      intent: 'return_key',
+      roomId,
+      lineUserId: userId,
+      chatId: targetChatId || null,
+      text,
+      timestamp: ts
+    };
+    await notifyN8nReturnKey(env, payload);
+    const finalText = `✅ ส่งคำขอคืนกุญแจห้อง ${roomId} เรียบร้อยแล้ว`;
+    if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, finalText).catch((err) => console.error('return_key_final_push_fail', err));
+    } else if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: finalText }]).catch((err) => console.error('return_key_final_reply_fail', err));
+    }
+  } catch (err) {
+    const errMsg = String(err && err.message ? err.message : err);
+    console.error('return_key_start_failed', { roomId, err: errMsg });
+    const failText = `ระบบมีปัญหา กรุณาลองใหม่ (return-key: ${errMsg.slice(0, 80)})`;
+    if (targetChatId) {
+      await linePushText(env.LINE_ACCESS_TOKEN, targetChatId, failText).catch(console.error);
+    } else if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: failText }]).catch(console.error);
+    }
+  }
+
+  return true;
 }
 
 async function notifyN8nCheckoutStart(env, payload) {
