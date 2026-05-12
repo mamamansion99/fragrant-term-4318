@@ -316,6 +316,7 @@ const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
 const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key';
+const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key_Desicion';
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
@@ -1839,6 +1840,43 @@ export default {
         // END RENT KEY POSTBACK FORWARD
 
         const act = String(data.act || '').trim();
+        const postbackAction = String(data.act || data.action || data.type || '').trim();
+        if (isReturnKeyDecisionAction(postbackAction)) {
+          const chatId = getChatId(ev);
+          const roomRaw = String(data.roomId || data.room || data.roomNo || data.room_code || '').trim();
+          const roomId = parseRoomToken(roomRaw) || roomRaw.toUpperCase();
+          const decision = String(data.decision || data.status || data.result || data.choice || '').trim();
+          const payloadToN8n = {
+            source: 'line_postback',
+            intent: 'return_key_decision',
+            action: postbackAction,
+            roomId: roomId || '',
+            decision: decision || '',
+            parsed: data,
+            postbackData: postbackDataString,
+            event: ev,
+            receivedAt: new Date().toISOString()
+          };
+
+          const ackBits = [
+            'รับคำสั่งคืนกุญแจแล้ว',
+            roomId ? `ห้อง ${roomId}` : '',
+            decision ? `(สถานะ: ${decision})` : ''
+          ].filter(Boolean);
+          const ackMsg = `${ackBits.join(' ')} กำลังส่งข้อมูลให้เจ้าหน้าที่ค่ะ`;
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackMsg }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+          }
+
+          ctx.waitUntil(
+            notifyN8nReturnKeyDecision(env, payloadToN8n).catch((err) => console.error('return_key_decision_postback_forward_failed', err))
+          );
+          continue;
+        }
+
         if (act === 'KEY_RENT_START') {
           const chatId = getChatId(ev);
           const userId = ev?.source?.userId || null;
@@ -4621,6 +4659,47 @@ async function notifyN8nRenewalPostback(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nRenewalPostback error', err);
+    return false;
+  }
+}
+
+function getReturnKeyDecisionWebhookUrl(env) {
+  return env.N8N_RETURN_KEY_DECISION_WEBHOOK_URL || DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL;
+}
+
+function isReturnKeyDecisionAction(action) {
+  const a = String(action || '').trim().toLowerCase();
+  if (!a) return false;
+  if (!a.includes('return_key') && !a.includes('returnkey')) return false;
+  return a.includes('decision') || a.includes('desicion') || a.includes('approve') || a.includes('reject');
+}
+
+async function notifyN8nReturnKeyDecision(env, payload) {
+  const url = getReturnKeyDecisionWebhookUrl(env);
+  if (!url) {
+    console.warn('notifyN8nReturnKeyDecision: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nReturnKeyDecision non-200', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nReturnKeyDecision error', err);
     return false;
   }
 }
