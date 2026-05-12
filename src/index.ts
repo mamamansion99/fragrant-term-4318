@@ -1840,12 +1840,14 @@ export default {
         // END RENT KEY POSTBACK FORWARD
 
         const act = String(data.act || '').trim();
-        const postbackAction = String(data.act || data.action || data.type || '').trim();
-        if (isReturnKeyDecisionAction(postbackAction)) {
+        const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
+        if (isReturnKeyDecisionAction(postbackAction) || hasReturnKeyDecisionHints(data, postbackDataString)) {
           const chatId = getChatId(ev);
           const roomRaw = String(data.roomId || data.room || data.roomNo || data.room_code || '').trim();
           const roomId = parseRoomToken(roomRaw) || roomRaw.toUpperCase();
-          const decision = String(data.decision || data.status || data.result || data.choice || '').trim();
+          const decision = String(
+            data.decision || data.status || data.result || data.choice || data.answer || data.ans || data.action || data.act || ''
+          ).trim();
           const payloadToN8n = {
             source: 'line_postback',
             intent: 'return_key_decision',
@@ -2827,6 +2829,12 @@ export default {
 
 
         // Heavy postbacks → quick ack then forward
+        console.log('postback_unmatched_fallback', {
+          action: String(data.act || data.action || data.type || ''),
+          keys: Object.keys(data || {}),
+          dataPreview: JSON.stringify(data || {}).slice(0, 300),
+          rawPreview: String(postbackDataString || '').slice(0, 300)
+        });
         ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
           { type: 'text', text: 'กำลังตรวจสอบ…' }
         ]).catch(console.error));
@@ -4670,8 +4678,42 @@ function getReturnKeyDecisionWebhookUrl(env) {
 function isReturnKeyDecisionAction(action) {
   const a = String(action || '').trim().toLowerCase();
   if (!a) return false;
-  if (!a.includes('return_key') && !a.includes('returnkey')) return false;
-  return a.includes('decision') || a.includes('desicion') || a.includes('approve') || a.includes('reject');
+  if (!(a.includes('decision') || a.includes('desicion') || a.includes('approve') || a.includes('reject'))) {
+    return false;
+  }
+  if (a.includes('return_key') || a.includes('returnkey') || a.includes('key_return')) {
+    return true;
+  }
+  return false;
+}
+
+function hasReturnKeyDecisionHints(data, rawPostback = '') {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      const val = String(data?.[key] || '').trim();
+      if (val) return val;
+    }
+    return '';
+  };
+
+  const action = String(
+    pick('act', 'action', 'type', 'eventType', 'postbackType', 'intent', 'scope')
+  ).toLowerCase();
+  const decision = String(
+    pick('decision', 'status', 'result', 'choice', 'answer', 'ans')
+  ).toLowerCase();
+  const marker = String(
+    pick('flow', 'module', 'topic', 'channel', 'context', 'feature', 'kind')
+  ).toLowerCase();
+  const raw = String(rawPostback || '').toLowerCase();
+  const flat = `${action}|${decision}|${marker}|${raw}`;
+
+  const hasDecisionWord =
+    /(approve|approved|reject|rejected|decision|desicion|yes|no|y|n|ok|deny|decline|accept|pass|fail|อนุมัติ|ปฏิเสธ)/i.test(flat);
+  const hasReturnKeyWord =
+    /(return[_\s-]*key|key[_\s-]*return|คืนกุญแจ|คืนคีย์การ์ด|กุญแจ|rented[_\s-]*key|rent[_\s-]*key)/i.test(flat);
+
+  return hasDecisionWord && hasReturnKeyWord;
 }
 
 async function notifyN8nReturnKeyDecision(env, payload) {
