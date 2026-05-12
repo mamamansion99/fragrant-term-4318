@@ -4502,6 +4502,7 @@ function resDetailByKey(key) {
   if (key === 'RES_CONTACT_BIKE') {
     const motoText = [
       '🛵 เบอร์พี่วินมอเตอร์ไซค์ (หน้าปากซอย) สะดวก รวดเร็ว โทรเรียกเข้ามารับที่ตึกได้เลยครับ',
+      '💸 ไป KMITL โดยทั่วไปประมาณ 60 บาท',
       '',
       '📞 รายชื่อพี่วินประจำจุด',
       'เบอร์ 18 : 086-113-2734',
@@ -5128,23 +5129,6 @@ async function quickKeywordReply(text, env, userId) {
             { type: 'uri', label: '📞 แม่บ้าน ตึก A (ก้อย)', uri: 'tel:0806490441' },
             { type: 'uri', label: '📞 แม่บ้าน ตึก B (พี่ยุ)', uri: 'tel:0837420760' },
             { type: 'postback', label: '📞 วินมอเตอร์ไซค์', data: 'act=RES_CONTACT_BIKE', displayText: 'เบอร์วินมอเตอร์ไซค์' }
-          ]
-        }
-      },
-      {
-        type: 'text',
-        text: 'อยากดูเบอร์วินมอเตอร์ไซค์ทั้งหมด กดปุ่มลัดด้านล่างได้เลยค่ะ',
-        quickReply: {
-          items: [
-            {
-              type: 'action',
-              action: {
-                type: 'postback',
-                label: 'เบอร์วินมอเตอร์ไซค์',
-                data: 'act=RES_CONTACT_BIKE',
-                displayText: 'เบอร์วินมอเตอร์ไซค์'
-              }
-            }
           ]
         }
       }
