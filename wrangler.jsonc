@@ -12,6 +12,7 @@
     "MAPS_URL": "https://maps.app.goo.gl/Qktm2mDGPappQ8EZA",
     "FB_PAGE_URL": "https://www.facebook.com/MamaMansion37/",
     "MM_WEBHOOK_URL": "https://script.google.com/macros/s/AKfycbxuG8ToArwsO-Si8822ENXp14_9Qs3J1XAYsvo4hIP1aK0w2fLqQo8-v_NzFnUhAfG4/exec",
+    "CONFIRMBOOKING_URL": "https://script.google.com/macros/s/AKfycbzUjhpAlXzG3blIQoBAZD3p02FZ5MjcbKbkr0J20Ej92jif0zq9IfLe8zzHMwP3gVmyEA/exec",
     "MM_V2_URL": "https://script.google.com/macros/s/AKfycbzUjhpAlXzG3blIQoBAZD3p02FZ5MjcbKbkr0J20Ej92jif0zq9IfLe8zzHMwP3gVmyEA/exec",
     "N8N_FRIDGE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-fridge",
     "N8N_FRIDGE_RECEIVED_WEBHOOK": "https://n8n.srv1112305.hstgr.cloud/webhook/N8N_FRIDGE_RECEIVED_WEBHOOK",

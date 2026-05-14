@@ -1241,8 +1241,8 @@ function getWebhookGas(env) {
 }
 
 function getReservationGas(env) {
-  // Booking flow → only MM_V2_URL (no fallback)
-  return env.MM_V2_URL || '';
+  // Booking flow endpoint
+  return env.CONFIRMBOOKING_URL || env.MM_V2_URL || '';
 }
 
 function getReservationAdminKey(env) {
