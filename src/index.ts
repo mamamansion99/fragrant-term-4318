@@ -1242,7 +1242,7 @@ function getWebhookGas(env) {
 
 function getReservationGas(env) {
   // Booking flow endpoint
-  return env.CONFIRMBOOKING_URL || env.MM_V2_URL || '';
+  return env.CONFIRMBOOKING_URL || '';
 }
 
 function getReservationAdminKey(env) {
