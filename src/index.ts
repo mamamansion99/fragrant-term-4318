@@ -2287,13 +2287,7 @@ export default {
             const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
             if (secret) headers['x-worker-secret'] = secret;
 
-            const forwardPayload = {
-              source: 'line_postback',
-              channel: 'mark_paid',
-              event: ev,
-              data,
-              receivedAt: new Date().toISOString()
-            };
+            const forwardPayload = buildMarkPaidForwardPayload(data, ev);
             ctx.waitUntil(
               fetch(markPaidUrl, {
                 method: 'POST',
@@ -4936,6 +4930,49 @@ function normalizeManagerDecision(value) {
   return normalized;
 }
 
+function buildMarkPaidForwardPayload(data, ev, receivedAt = new Date().toISOString()) {
+  const originalData = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  const reservationId = String(
+    originalData.resId ||
+    originalData.reservationId ||
+    originalData.ReservationID ||
+    originalData.reservation_id ||
+    originalData.code ||
+    ''
+  ).trim();
+  const row = String(originalData.row || originalData.Row || originalData.rowNumber || '').trim();
+  const compatibleData = { ...originalData };
+
+  if (reservationId) {
+    compatibleData.resId = compatibleData.resId || reservationId;
+    compatibleData.reservationId = compatibleData.reservationId || reservationId;
+    compatibleData.ReservationID = compatibleData.ReservationID || reservationId;
+    compatibleData.code = compatibleData.code || reservationId;
+  }
+  if (row) {
+    compatibleData.row = compatibleData.row || row;
+  }
+
+  const payload = {
+    source: 'line_postback',
+    channel: 'mark_paid',
+    event: ev,
+    data: compatibleData,
+    receivedAt
+  };
+
+  if (reservationId) {
+    payload.reservationId = reservationId;
+    payload.ReservationID = reservationId;
+    payload.code = reservationId;
+  }
+  if (row) {
+    payload.row = row;
+  }
+
+  return payload;
+}
+
 function buildRenewalPostbackMeta(data, ev, act = '') {
   const pickFirst = (value) => Array.isArray(value) ? value[0] : value;
   const normalize = (value) => {
@@ -6603,6 +6640,7 @@ export const __testables = {
   buildRenewalPostbackMeta,
   isContinueTermReplyAction,
   getRenewalPostbackWebhookUrl,
+  buildMarkPaidForwardPayload,
   getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply

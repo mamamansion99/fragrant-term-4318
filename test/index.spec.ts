@@ -24,6 +24,29 @@ describe('Worker routes', () => {
 		expect(body.parsed).toBeTruthy();
 	});
 
+	it('keeps mark-paid n8n payload compatible with reservationId mappings', () => {
+		const payload = __testables.buildMarkPaidForwardPayload(
+			{ action: 'mark_paid', row: '75', resId: '#MM500' },
+			{ type: 'postback' },
+			'2026-05-14T04:11:36.320Z'
+		) as Record<string, any>;
+
+		expect(payload.source).toBe('line_postback');
+		expect(payload.channel).toBe('mark_paid');
+		expect(payload.data).toMatchObject({
+			action: 'mark_paid',
+			row: '75',
+			resId: '#MM500',
+			reservationId: '#MM500',
+			ReservationID: '#MM500',
+			code: '#MM500'
+		});
+		expect(payload.reservationId).toBe('#MM500');
+		expect(payload.ReservationID).toBe('#MM500');
+		expect(payload.code).toBe('#MM500');
+		expect(payload.row).toBe('75');
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
