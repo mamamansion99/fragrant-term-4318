@@ -1989,6 +1989,15 @@ export default {
           }
         }
 
+        // Check-in picker postback must go to reservation GAS (not MM_WEBHOOK fallback)
+        if (act === 'checkin_pick') {
+          const resvUrl = getReservationGas(env);
+          if (resvUrl) {
+            ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+            continue;
+          }
+        }
+
         // ===== Admin switch postbacks (OWNER GROUP only) =====
         if (act === 'CFG_SCREEN_ON' || act === 'CFG_SCREEN_OFF' || act === 'CFG_SCREEN_STATUS') {
           const chatId = getChatId(ev);
