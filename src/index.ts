@@ -1989,17 +1989,8 @@ export default {
           }
         }
 
-        // Check-in picker postback must go to reservation GAS (not MM_WEBHOOK fallback)
+        // Check-in picker postback routes to legacy MM_WEBHOOK GAS only
         if (act === 'checkin_pick') {
-          const resvUrl = getReservationGas(env);
-          if (resvUrl) {
-            const ok = await forwardToSpecificGas(env, resvUrl, { events: [ev] });
-            if (!ok) {
-              // Fallback to legacy MM_LineWebhook GAS when reservation GAS fails
-              await forwardToGas(env, { events: [ev] });
-            }
-            continue;
-          }
           await forwardToGas(env, { events: [ev] });
           continue;
         }
