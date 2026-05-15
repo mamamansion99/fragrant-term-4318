@@ -255,6 +255,7 @@ const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
 const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
 const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
 const CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX = 'checkin:keycard:waiting-photo:';
+const checkinKeycardWaitingPhotoMemory = new Map();
 
 function getKeyRentWaitingPhotoKey(groupId) {
   return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
@@ -266,6 +267,85 @@ function getCheckinKeycardWaitingPhotoKey(groupId, userId) {
 
 function getCheckinKeycardWaitingPhotoGroupKey(groupId) {
   return `${CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}:_latest`;
+}
+
+function getCheckinKeycardWaitingPhotoUserKey(userId) {
+  return `${CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX}user:${String(userId || '').trim()}`;
+}
+
+function getCheckinKeycardWaitingPhotoMemoryKey(groupId, userId) {
+  return `${String(groupId || '').trim()}:${String(userId || '').trim()}`;
+}
+
+function rememberCheckinKeycardWaitingPhotoState(groupId, userId, state) {
+  const now = Date.now();
+  const entries = [
+    getCheckinKeycardWaitingPhotoMemoryKey(groupId, userId),
+    getCheckinKeycardWaitingPhotoMemoryKey(groupId, '_latest')
+  ];
+  for (const key of entries) {
+    if (key.replace(':', '')) {
+      checkinKeycardWaitingPhotoMemory.set(key, { ...state, memoryTs: now });
+    }
+  }
+}
+
+function forgetCheckinKeycardWaitingPhotoState(groupId, userId) {
+  checkinKeycardWaitingPhotoMemory.delete(getCheckinKeycardWaitingPhotoMemoryKey(groupId, userId));
+  checkinKeycardWaitingPhotoMemory.delete(getCheckinKeycardWaitingPhotoMemoryKey(groupId, '_latest'));
+}
+
+function getRememberedCheckinKeycardWaitingPhotoState(groupId, userId) {
+  const now = Date.now();
+  const keys = [
+    getCheckinKeycardWaitingPhotoMemoryKey(groupId, userId),
+    getCheckinKeycardWaitingPhotoMemoryKey(groupId, '_latest')
+  ];
+  for (const key of keys) {
+    const state = checkinKeycardWaitingPhotoMemory.get(key);
+    if (!state) continue;
+    if (state.memoryTs && now - state.memoryTs < CHECKIN_KEYCARD_PHOTO_TTL_MS) {
+      return state;
+    }
+    checkinKeycardWaitingPhotoMemory.delete(key);
+  }
+  return null;
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getCheckinKeycardWaitingPhotoState(env, userKey, groupKey, userOnlyKey, groupId, userId) {
+  const readState = async () => {
+    const stateFromUser = userKey ? await kvGet(env, userKey) : null;
+    const stateFromGroup = groupKey ? await kvGet(env, groupKey) : null;
+    const stateFromUserOnly = userOnlyKey ? await kvGet(env, userOnlyKey) : null;
+    const stateFromMemory = getRememberedCheckinKeycardWaitingPhotoState(groupId, userId);
+    return {
+      stateFromUser,
+      stateFromGroup,
+      stateFromUserOnly,
+      stateFromMemory,
+      state: stateFromUser || stateFromGroup || stateFromUserOnly || stateFromMemory || null
+    };
+  };
+
+  let result = await readState();
+  if (result.state) return result;
+
+  // Workers KV is eventually consistent. A manager often sends the photo
+  // immediately after pressing the postback button, so retry briefly before
+  // falling through to the generic image handlers.
+  for (const delayMs of [400, 900, 1600]) {
+    await sleep(delayMs);
+    result = await readState();
+    if (result.state) {
+      return { ...result, retryDelayMs: delayMs };
+    }
+  }
+
+  return result;
 }
 
 function getKeyRentPaymentFlowByStartAction(action) {
@@ -343,6 +423,12 @@ function parseRoomToken(token) {
   const room = String(token || '').trim().toUpperCase();
   if (!/^[AB]\d{3,4}$/.test(room)) return null;
   return room;
+}
+
+function extractRoomId(value) {
+  const raw = String(value || '').trim().toUpperCase();
+  const match = raw.match(/\b([AB]\d{3,4})\b/);
+  return match ? match[1] : '';
 }
 
 function parseCoAdminShortcut(text) {
@@ -1203,6 +1289,20 @@ async function linePushText(channelToken, to, text) {
   }
 }
 
+async function safeLinePushText(channelToken, to, text, logLabel = 'line_push_failed') {
+  if (!channelToken || !to || !text) return false;
+  try {
+    await linePushText(channelToken, to, text);
+    return true;
+  } catch (err) {
+    console.error(logLabel, {
+      to,
+      error: String(err?.message || err)
+    });
+    return false;
+  }
+}
+
 async function linePush(channelToken, to, messages) {
   const res = await fetch('https://api.line.me/v2/bot/message/push', {
     method: 'POST',
@@ -1659,6 +1759,99 @@ export default {
       return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (request.method === 'GET' && url.pathname === '/debug/checkin-keycard-state') {
+      const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+      const providedSecret = String(request.headers.get('x-worker-secret') || url.searchParams.get('key') || '').trim();
+      if (!secret || providedSecret !== secret) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      const groupId = String(url.searchParams.get('groupId') || '').trim();
+      const userId = String(url.searchParams.get('userId') || '').trim();
+      const userKey = (groupId && userId) ? getCheckinKeycardWaitingPhotoKey(groupId, userId) : '';
+      const groupKey = groupId ? getCheckinKeycardWaitingPhotoGroupKey(groupId) : '';
+      const userOnlyKey = userId ? getCheckinKeycardWaitingPhotoUserKey(userId) : '';
+      const stateResult = await getCheckinKeycardWaitingPhotoState(env, userKey, groupKey, userOnlyKey, groupId, userId);
+      const state = stateResult.state || null;
+      const ageMs = state?.ts ? Date.now() - state.ts : null;
+      const active = !!(
+        state &&
+        state.mode === 'WAITING_CHECKIN_KEYCARD_PHOTO' &&
+        state.ts &&
+        ageMs < CHECKIN_KEYCARD_PHOTO_TTL_MS
+      );
+      const inactiveReason = !state
+        ? 'state_not_found'
+        : (state.mode !== 'WAITING_CHECKIN_KEYCARD_PHOTO'
+          ? `wrong_state_mode:${state.mode || 'missing'}`
+          : (ageMs >= CHECKIN_KEYCARD_PHOTO_TTL_MS ? 'waiting_state_expired' : 'waiting_state_invalid'));
+
+      const body = JSON.stringify({
+        groupId,
+        userId,
+        expectedImageEvent: {
+          eventType: 'message',
+          messageType: 'image',
+          sourceType: 'group',
+          note: 'Image events do not contain act. The button postback creates mode=WAITING_CHECKIN_KEYCARD_PHOTO.'
+        },
+        keys: { userKey, groupKey, userOnlyKey },
+        found: {
+          user: !!stateResult.stateFromUser,
+          group: !!stateResult.stateFromGroup,
+          userOnly: !!stateResult.stateFromUserOnly,
+          memory: !!stateResult.stateFromMemory
+        },
+        active,
+        inactiveReason: active ? '' : inactiveReason,
+        ageMs,
+        ttlMs: CHECKIN_KEYCARD_PHOTO_TTL_MS,
+        state
+      }, null, 2);
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/debug/line-push') {
+      const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+      const providedSecret = String(request.headers.get('x-worker-secret') || '').trim();
+      if (!secret || providedSecret !== secret) {
+        return new Response('Unauthorized', { status: 401 });
+      }
+
+      let body = {};
+      try {
+        body = await request.json();
+      } catch (_) {
+        body = {};
+      }
+
+      const to = String(body?.to || '').trim();
+      const text = String(body?.text || '').trim();
+      if (!to || !text) {
+        return new Response(JSON.stringify({ ok: false, error: 'missing_to_or_text' }), {
+          status: 400,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      try {
+        await linePushText(env.LINE_ACCESS_TOKEN, to, text);
+        return new Response(JSON.stringify({ ok: true, to, text }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        return new Response(JSON.stringify({
+          ok: false,
+          to,
+          error: String(err?.message || err)
+        }), {
+          status: 502,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     if (request.method === 'GET' && url.pathname === '/git/latest-commit') {
       const secret = String(env.WORKER_SECRET || '').trim();
       if (secret && request.headers.get('x-worker-secret') !== secret) {
@@ -2029,6 +2222,7 @@ export default {
 
           const key = managerUserId ? getCheckinKeycardWaitingPhotoKey(groupId, managerUserId) : '';
           const groupKey = getCheckinKeycardWaitingPhotoGroupKey(groupId);
+          const userOnlyKey = managerUserId ? getCheckinKeycardWaitingPhotoUserKey(managerUserId) : '';
           const now = Date.now();
           const state = {
             mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
@@ -2044,6 +2238,10 @@ export default {
             await kvPut(env, key, state, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
           }
           await kvPut(env, groupKey, state, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+          if (userOnlyKey) {
+            await kvPut(env, userOnlyKey, state, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+          }
+          rememberCheckinKeycardWaitingPhotoState(groupId, managerUserId, state);
 
           const roomLabel = roomId ? ('ห้อง ' + roomId) : 'ห้องที่ระบุ';
           const ack = '✅ เริ่มขั้นตอนถ่ายรูปคีย์การ์ดแล้ว (' + roomLabel + ')\nกรุณาส่งรูปคีย์การ์ดในแชทนี้ภายใน 20 นาที';
@@ -4157,19 +4355,42 @@ export default {
           const checkinKeycardStateGroupKey = (sourceType === 'group' && groupId)
             ? getCheckinKeycardWaitingPhotoGroupKey(groupId)
             : '';
-          const checkinKeycardStateFromUser = checkinKeycardStateUserKey
-            ? await kvGet(env, checkinKeycardStateUserKey)
-            : null;
-          const checkinKeycardStateFromGroup = checkinKeycardStateGroupKey
-            ? await kvGet(env, checkinKeycardStateGroupKey)
-            : null;
-          const checkinKeycardState = checkinKeycardStateFromUser || checkinKeycardStateFromGroup || null;
+          const checkinKeycardStateUserOnlyKey = managerUserId
+            ? getCheckinKeycardWaitingPhotoUserKey(managerUserId)
+            : '';
+          const checkinKeycardStateResult = await getCheckinKeycardWaitingPhotoState(
+            env,
+            checkinKeycardStateUserKey,
+            checkinKeycardStateGroupKey,
+            checkinKeycardStateUserOnlyKey,
+            groupId,
+            managerUserId
+          );
+          const checkinKeycardStateFromUser = checkinKeycardStateResult.stateFromUser;
+          const checkinKeycardStateFromGroup = checkinKeycardStateResult.stateFromGroup;
+          const checkinKeycardState = checkinKeycardStateResult.state || null;
           const checkinKeycardActive = !!(
             checkinKeycardState &&
             checkinKeycardState.mode === 'WAITING_CHECKIN_KEYCARD_PHOTO' &&
             checkinKeycardState.ts &&
             (Date.now() - checkinKeycardState.ts < CHECKIN_KEYCARD_PHOTO_TTL_MS)
           );
+          console.log('checkin_keycard_image_state', {
+            sourceType,
+            groupId,
+            managerUserId,
+            userKey: checkinKeycardStateUserKey,
+            groupKey: checkinKeycardStateGroupKey,
+            userOnlyKey: checkinKeycardStateUserOnlyKey,
+            hasUserState: !!checkinKeycardStateFromUser,
+            hasGroupState: !!checkinKeycardStateFromGroup,
+            hasUserOnlyState: !!checkinKeycardStateResult.stateFromUserOnly,
+            hasMemoryState: !!checkinKeycardStateResult.stateFromMemory,
+            active: checkinKeycardActive,
+            retryDelayMs: checkinKeycardStateResult.retryDelayMs || 0,
+            stateRoomId: checkinKeycardState?.roomId || '',
+            stateFlowId: checkinKeycardState?.flowId || ''
+          });
           const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
           const checkinFlowState = await kvGet(env, checkinFlowKey);
           console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
@@ -4201,22 +4422,42 @@ export default {
             };
 
             ctx.waitUntil(
-              notifyN8nCheckinKeycardPhoto(env, keycardPayload).catch((err) => console.error('checkin keycard photo notify failed', err))
+              handleCheckinKeycardPhotoForward(env, {
+                state: checkinKeycardState,
+                payload: keycardPayload,
+                chatId,
+                groupId,
+                managerUserId,
+                userKey: checkinKeycardStateUserKey,
+                groupKey: checkinKeycardStateGroupKey,
+                userOnlyKey: checkinKeycardStateUserOnlyKey
+              }).catch((err) => {
+                console.error('checkin keycard photo forward failed', err);
+                return notifyCheckinKeycardPhotoStatus(env, chatId, {
+                  ok: false,
+                  roomId: finalRoomId,
+                  reason: 'worker_exception',
+                  detail: String(err?.message || err)
+                });
+              })
             );
 
-            if (checkinKeycardStateUserKey) {
-              ctx.waitUntil(kvDel(env, checkinKeycardStateUserKey));
-            }
-            if (checkinKeycardStateGroupKey) {
-              ctx.waitUntil(kvDel(env, checkinKeycardStateGroupKey));
-            }
+            continue;
+          }
 
-            const roomLabel = finalRoomId ? ('ห้อง ' + finalRoomId) : '';
-            const keycardAck = ['บันทึกรูปคีย์การ์ดแล้ว ✅', roomLabel, 'กำลังส่งต่อให้ระบบเช็คอิน'].filter(Boolean).join(' ');
-            if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, keycardAck).catch(console.error));
-            }
-
+          if (checkinKeycardState && !checkinKeycardActive) {
+            const ageMs = checkinKeycardState.ts ? Date.now() - checkinKeycardState.ts : 0;
+            const reason = checkinKeycardState.mode !== 'WAITING_CHECKIN_KEYCARD_PHOTO'
+              ? `wrong_state_mode:${checkinKeycardState.mode || 'missing'}`
+              : (ageMs >= CHECKIN_KEYCARD_PHOTO_TTL_MS ? 'waiting_state_expired' : 'waiting_state_invalid');
+            ctx.waitUntil(
+              notifyCheckinKeycardPhotoStatus(env, chatId, {
+                ok: false,
+                roomId: checkinKeycardState.roomId || extractRoomId(checkinKeycardState.flowId || ''),
+                reason,
+                detail: `ageMs=${ageMs}; userKey=${checkinKeycardStateUserKey || '-'}; groupKey=${checkinKeycardStateGroupKey || '-'}; userOnlyKey=${checkinKeycardStateUserOnlyKey || '-'}`
+              }).catch(console.error)
+            );
             continue;
           }
 
@@ -6228,6 +6469,124 @@ function getN8nCheckinKeycardPhotoWebhook(env) {
   return env.N8N_CHECKIN_KEYCARD_PHOTO_URL || DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL;
 }
 
+async function enrichCheckinKeycardPhotoPayload(env, payload) {
+  const messageId = String(payload?.imageMessageId || payload?.event?.message?.id || '').trim();
+  if (!messageId) {
+    return payload;
+  }
+
+  try {
+    const imageDataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, messageId);
+    const match = /^data:([^;,]+);base64,/.exec(imageDataUrl);
+    const imageContentType = match?.[1] || '';
+    return {
+      ...payload,
+      imageMessageId: messageId,
+      imageDataUrl,
+      imageContentType,
+      image: {
+        messageId,
+        contentType: imageContentType,
+        dataUrlField: 'imageDataUrl'
+      }
+    };
+  } catch (err) {
+    const error = String(err?.message || err);
+    console.error('checkin keycard image content fetch failed', { messageId, error });
+    return {
+      ...payload,
+      imageMessageId: messageId,
+      imageFetchError: error,
+      image: {
+        messageId,
+        fetchError: error
+      }
+    };
+  }
+}
+
+async function notifyCheckinKeycardPhotoStatus(env, chatId, status) {
+  if (!chatId) return false;
+  const room = status?.roomId ? `ห้อง ${status.roomId}` : 'ห้องที่ระบุ';
+  const reason = String(status?.reason || '').trim();
+  const detail = String(status?.detail || '').trim();
+  const suffix = detail ? `\nรายละเอียด: ${detail.slice(0, 300)}` : '';
+
+  if (status?.ok) {
+    return safeLinePushText(
+      env.LINE_ACCESS_TOKEN,
+      chatId,
+      `บันทึกรูปคีย์การ์ดแล้ว ✅ ${room}\nส่งรูปเข้า webhook แล้ว (${status.webhookStatus || 'accepted'})`,
+      'checkin_keycard_status_push_failed'
+    );
+  }
+
+  return safeLinePushText(
+    env.LINE_ACCESS_TOKEN,
+    chatId,
+    `ส่งรูปคีย์การ์ดไม่สำเร็จ ⚠️ ${room}\nสาเหตุ: ${reason || 'unknown'}${suffix}\nกรุณาส่งรูปอีกครั้ง หรือเปิด n8n execution ล่าสุดเพื่อตรวจสอบ`,
+    'checkin_keycard_failure_push_failed'
+  );
+}
+
+async function handleCheckinKeycardPhotoForward(env, opts) {
+  const state = opts?.state || {};
+  const payload = opts?.payload || {};
+  const chatId = opts?.chatId || '';
+  const groupId = opts?.groupId || '';
+  const managerUserId = opts?.managerUserId || '';
+  const userKey = opts?.userKey || '';
+  const groupKey = opts?.groupKey || '';
+  const userOnlyKey = opts?.userOnlyKey || '';
+  const roomId = payload?.roomId || state?.roomId || '';
+
+  const result = await notifyN8nCheckinKeycardPhoto(env, payload);
+  console.log('checkin_keycard_photo_forward_result', {
+    roomId,
+    flowId: payload?.flowId || '',
+    ok: !!result?.ok,
+    status: result?.status || 0,
+    reason: result?.reason || '',
+    hasImageData: !!result?.hasImageData,
+    imageFetchError: result?.imageFetchError || ''
+  });
+
+  if (result?.ok) {
+    if (userKey) await kvDel(env, userKey);
+    if (groupKey) await kvDel(env, groupKey);
+    if (userOnlyKey) await kvDel(env, userOnlyKey);
+    forgetCheckinKeycardWaitingPhotoState(groupId, managerUserId);
+    await notifyCheckinKeycardPhotoStatus(env, chatId, {
+      ok: true,
+      roomId,
+      webhookStatus: result.status ? `HTTP ${result.status}` : 'accepted'
+    });
+    return true;
+  }
+
+  await kvPut(env, groupKey, { ...state, ts: Date.now(), lastError: result }, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+  if (userKey) {
+    await kvPut(env, userKey, { ...state, ts: Date.now(), lastError: result }, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+  }
+  if (userOnlyKey) {
+    await kvPut(env, userOnlyKey, { ...state, ts: Date.now(), lastError: result }, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+  }
+  rememberCheckinKeycardWaitingPhotoState(groupId, managerUserId, { ...state, ts: Date.now(), lastError: result });
+
+  const reasonParts = [
+    result?.reason || 'webhook_failed',
+    result?.imageFetchError ? `imageFetchError=${result.imageFetchError}` : '',
+    result?.status ? `HTTP ${result.status}` : ''
+  ].filter(Boolean);
+  await notifyCheckinKeycardPhotoStatus(env, chatId, {
+    ok: false,
+    roomId,
+    reason: reasonParts.join(', '),
+    detail: result?.bodyPreview || result?.error || ''
+  });
+  return false;
+}
+
 async function notifyN8nCheckinFlow(env, payload) {
   const url = getN8nCheckinFlowWebhook(env);
   if (!url) {
@@ -6274,7 +6633,7 @@ async function notifyN8nCheckinKeycardPhoto(env, payload) {
   const url = getN8nCheckinKeycardPhotoWebhook(env);
   if (!url) {
     console.warn('notifyN8nCheckinKeycardPhoto: missing webhook URL');
-    return false;
+    return { ok: false, reason: 'missing_webhook_url', status: 0 };
   }
 
   const headers = { 'Content-Type': 'application/json' };
@@ -6286,13 +6645,17 @@ async function notifyN8nCheckinKeycardPhoto(env, payload) {
   }
 
   try {
-    const body = JSON.stringify(payload);
+    const enrichedPayload = await enrichCheckinKeycardPhotoPayload(env, payload);
+    const body = JSON.stringify(enrichedPayload);
     console.log('notifyN8nCheckinKeycardPhoto send', {
       url,
-      intent: payload?.intent || '',
-      flowId: payload?.flowId || '',
-      roomId: payload?.roomId || '',
-      hasImage: !!payload?.imageMessageId
+      intent: enrichedPayload?.intent || '',
+      flowId: enrichedPayload?.flowId || '',
+      roomId: enrichedPayload?.roomId || '',
+      hasImage: !!enrichedPayload?.imageMessageId,
+      hasImageData: !!enrichedPayload?.imageDataUrl,
+      imageContentType: enrichedPayload?.imageContentType || '',
+      imageFetchError: enrichedPayload?.imageFetchError || ''
     });
     const res = await fetch(url, {
       method: 'POST',
@@ -6305,10 +6668,22 @@ async function notifyN8nCheckinKeycardPhoto(env, payload) {
     } else {
       console.log('notifyN8nCheckinKeycardPhoto ok', { status: res.status, text: text.slice(0, 200) });
     }
-    return res.ok;
+    return {
+      ok: res.ok,
+      reason: res.ok ? '' : 'webhook_non_200',
+      status: res.status,
+      bodyPreview: text.slice(0, 300),
+      hasImageData: !!enrichedPayload?.imageDataUrl,
+      imageFetchError: enrichedPayload?.imageFetchError || ''
+    };
   } catch (err) {
     console.error('notifyN8nCheckinKeycardPhoto error', err);
-    return false;
+    return {
+      ok: false,
+      reason: 'webhook_fetch_error',
+      status: 0,
+      error: String(err?.message || err)
+    };
   }
 }
 
