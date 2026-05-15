@@ -239,6 +239,8 @@ const CHECKIN_CHANGE_KEYWORDS = [
 const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
+const CHECKIN_KEYCARD_PHOTO_TTL_SECONDS = 20 * 60;
+const CHECKIN_KEYCARD_PHOTO_TTL_MS = CHECKIN_KEYCARD_PHOTO_TTL_SECONDS * 1000;
 
 const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
 const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
@@ -252,9 +254,18 @@ const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
 const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
 const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
 const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
+const CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX = 'checkin:keycard:waiting-photo:';
 
 function getKeyRentWaitingPhotoKey(groupId) {
   return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
+}
+
+function getCheckinKeycardWaitingPhotoKey(groupId, userId) {
+  return `${CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}:${String(userId || '').trim()}`;
+}
+
+function getCheckinKeycardWaitingPhotoGroupKey(groupId) {
+  return `${CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}:_latest`;
 }
 
 function getKeyRentPaymentFlowByStartAction(action) {
@@ -1854,6 +1865,7 @@ export default {
 
         const act = String(data.act || '').trim();
         const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
+        const postbackActionLower = postbackAction.toLowerCase();
         if (isReturnKeyDecisionAction(postbackAction) || hasReturnKeyDecisionHints(data, postbackDataString)) {
           const chatId = getChatId(ev);
           const roomRaw = String(data.roomId || data.room || data.roomNo || data.room_code || '').trim();
@@ -1992,6 +2004,49 @@ export default {
         // Check-in picker postback routes to legacy MM_WEBHOOK GAS only
         if (act === 'checkin_pick') {
           await forwardToGas(env, { events: [ev] });
+          continue;
+        }
+
+        if (act === 'checkin_keycard_start' || postbackActionLower === 'checkin_keycard_start') {
+          const chatId = getChatId(ev);
+          const sourceType = String(ev?.source?.type || '');
+          const groupId = String(ev?.source?.groupId || '');
+          const managerUserId = String(ev?.source?.userId || '');
+          const flowId = String(data.flowId || data.flowID || data.flowid || '').trim();
+          const roomRaw = String(data.roomId || data.room || data.roomNo || '').trim();
+          const roomId = parseRoomToken(roomRaw) || roomRaw.toUpperCase();
+
+          if (!flowId) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ไม่พบ FlowId สำหรับการถ่ายรูปคีย์การ์ด กรุณากดปุ่มใหม่อีกครั้งค่ะ');
+            continue;
+          }
+
+          if (sourceType !== 'group' || !groupId) {
+            await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ต้องกดจากกลุ่มผู้จัดการเท่านั้นค่ะ');
+            continue;
+          }
+
+          const key = managerUserId ? getCheckinKeycardWaitingPhotoKey(groupId, managerUserId) : '';
+          const groupKey = getCheckinKeycardWaitingPhotoGroupKey(groupId);
+          const now = Date.now();
+          const state = {
+            mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
+            flowId,
+            roomId: roomId || '',
+            managerUserId,
+            groupId,
+            startedAt: new Date(now).toISOString(),
+            expiresAt: new Date(now + (CHECKIN_KEYCARD_PHOTO_TTL_SECONDS * 1000)).toISOString(),
+            ts: now
+          };
+          if (key) {
+            await kvPut(env, key, state, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+          }
+          await kvPut(env, groupKey, state, CHECKIN_KEYCARD_PHOTO_TTL_SECONDS);
+
+          const roomLabel = roomId ? ('ห้อง ' + roomId) : 'ห้องที่ระบุ';
+          const ack = '✅ เริ่มขั้นตอนถ่ายรูปคีย์การ์ดแล้ว (' + roomLabel + ')\nกรุณาส่งรูปคีย์การ์ดในแชทนี้ภายใน 20 นาที';
+          await errorReplyOrPush(env, replyToken, chatId, ack);
           continue;
         }
 
@@ -4092,6 +4147,28 @@ export default {
             (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
           );
           const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
+          const sourceType = String(ev?.source?.type || '');
+          const groupId = String(ev?.source?.groupId || '');
+          const managerUserId = String(ev?.source?.userId || '');
+          const checkinKeycardStateUserKey = (sourceType === 'group' && groupId && managerUserId)
+            ? getCheckinKeycardWaitingPhotoKey(groupId, managerUserId)
+            : '';
+          const checkinKeycardStateGroupKey = (sourceType === 'group' && groupId)
+            ? getCheckinKeycardWaitingPhotoGroupKey(groupId)
+            : '';
+          const checkinKeycardStateFromUser = checkinKeycardStateUserKey
+            ? await kvGet(env, checkinKeycardStateUserKey)
+            : null;
+          const checkinKeycardStateFromGroup = checkinKeycardStateGroupKey
+            ? await kvGet(env, checkinKeycardStateGroupKey)
+            : null;
+          const checkinKeycardState = checkinKeycardStateFromUser || checkinKeycardStateFromGroup || null;
+          const checkinKeycardActive = !!(
+            checkinKeycardState &&
+            checkinKeycardState.mode === 'WAITING_CHECKIN_KEYCARD_PHOTO' &&
+            checkinKeycardState.ts &&
+            (Date.now() - checkinKeycardState.ts < CHECKIN_KEYCARD_PHOTO_TTL_MS)
+          );
           const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
           const checkinFlowState = await kvGet(env, checkinFlowKey);
           console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
@@ -4100,6 +4177,47 @@ export default {
             checkinFlowState.ts &&
             (Date.now() - checkinFlowState.ts < CHECKIN_FLOW_TTL_MS)
           );
+
+          if (checkinKeycardActive) {
+            const flowId = String(checkinKeycardState.flowId || '').trim();
+            const roomIdFromState = String(checkinKeycardState.roomId || '').trim();
+            const roomIdFromFlow = extractRoomId(flowId);
+            const finalRoomId = roomIdFromState || roomIdFromFlow || '';
+            const keycardPayload = {
+              source: 'line_message',
+              intent: 'checkin_keycard_photo',
+              channel: 'checkin',
+              event: ev,
+              flowId,
+              roomId: finalRoomId,
+              room: finalRoomId,
+              roomCode: finalRoomId,
+              managerUserId,
+              groupId,
+              chatId,
+              imageMessageId: ev?.message?.id || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              notifyN8nCheckinFlow(env, keycardPayload).catch((err) => console.error('checkin keycard photo notify failed', err))
+            );
+
+            if (checkinKeycardStateUserKey) {
+              ctx.waitUntil(kvDel(env, checkinKeycardStateUserKey));
+            }
+            if (checkinKeycardStateGroupKey) {
+              ctx.waitUntil(kvDel(env, checkinKeycardStateGroupKey));
+            }
+
+            const roomLabel = finalRoomId ? ('ห้อง ' + finalRoomId) : '';
+            const keycardAck = ['บันทึกรูปคีย์การ์ดแล้ว ✅', roomLabel, 'กำลังส่งต่อให้ระบบเช็คอิน'].filter(Boolean).join(' ');
+            if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, keycardAck).catch(console.error));
+            }
+
+            continue;
+          }
 
           if (checkinActive) {
             const slipPayload = {
