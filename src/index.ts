@@ -336,6 +336,7 @@ const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/w
 const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key';
 const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key_Desicion';
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
+const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
 function parseRoomToken(token) {
@@ -4200,7 +4201,7 @@ export default {
             };
 
             ctx.waitUntil(
-              notifyN8nCheckinFlow(env, keycardPayload).catch((err) => console.error('checkin keycard photo notify failed', err))
+              notifyN8nCheckinKeycardPhoto(env, keycardPayload).catch((err) => console.error('checkin keycard photo notify failed', err))
             );
 
             if (checkinKeycardStateUserKey) {
@@ -6223,6 +6224,10 @@ function getN8nCheckinFlowWebhook(env) {
   return env.N8N_CHECKIN_FLOW_URL || env.N8N_CHECKINFLOW_URL || '';
 }
 
+function getN8nCheckinKeycardPhotoWebhook(env) {
+  return env.N8N_CHECKIN_KEYCARD_PHOTO_URL || DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL;
+}
+
 async function notifyN8nCheckinFlow(env, payload) {
   const url = getN8nCheckinFlowWebhook(env);
   if (!url) {
@@ -6261,6 +6266,48 @@ async function notifyN8nCheckinFlow(env, payload) {
     return res.ok;
   } catch (err) {
     console.error('notifyN8nCheckinFlow error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCheckinKeycardPhoto(env, payload) {
+  const url = getN8nCheckinKeycardPhotoWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nCheckinKeycardPhoto: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  } else {
+    console.warn('notifyN8nCheckinKeycardPhoto: missing WORKER_SECRET');
+  }
+
+  try {
+    const body = JSON.stringify(payload);
+    console.log('notifyN8nCheckinKeycardPhoto send', {
+      url,
+      intent: payload?.intent || '',
+      flowId: payload?.flowId || '',
+      roomId: payload?.roomId || '',
+      hasImage: !!payload?.imageMessageId
+    });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCheckinKeycardPhoto: non-200 response', res.status, text.slice(0, 200));
+    } else {
+      console.log('notifyN8nCheckinKeycardPhoto ok', { status: res.status, text: text.slice(0, 200) });
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCheckinKeycardPhoto error', err);
     return false;
   }
 }
