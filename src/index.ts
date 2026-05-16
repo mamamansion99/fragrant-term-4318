@@ -424,6 +424,7 @@ const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstg
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
 const DEFAULT_N8N_CLEANING_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm';
+const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
 function parseRoomToken(token) {
@@ -453,6 +454,86 @@ function parseCleaningCommand(text) {
 
 function isCleaningManagementAllowedLineUserId(userId) {
   return CLEANING_MANAGEMENT_ALLOWED_LINE_USER_IDS.has(String(userId || '').trim());
+}
+
+function buildCleaningTenantConfirmFlex() {
+  return {
+    type: 'flex',
+    altText: 'บริการทำความสะอาด 300-500 บาท',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#155E75',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'text',
+            text: 'บริการทำความสะอาด',
+            color: '#FFFFFF',
+            weight: 'bold',
+            size: 'lg'
+          },
+          {
+            type: 'text',
+            text: 'สำหรับผู้เช่ามามาแมนชั่น',
+            color: '#CFFAFE',
+            size: 'sm',
+            margin: 'sm'
+          }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          {
+            type: 'text',
+            text: 'ค่าบริการประมาณ 300-500 บาท',
+            weight: 'bold',
+            size: 'md',
+            color: '#0F172A',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: 'ราคาขึ้นอยู่กับขนาดห้องและสภาพหน้างาน ทีมงานจะติดต่อกลับเพื่อแจ้งรายละเอียดและนัดหมาย',
+            size: 'sm',
+            color: '#475569',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: 'หากต้องการให้แอดมินรับเรื่อง กรุณากดยืนยันด้านล่าง',
+            size: 'sm',
+            color: '#64748B',
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#155E75',
+            action: {
+              type: 'postback',
+              label: 'ยืนยันขอใช้บริการ',
+              data: `act=${CLEANING_TENANT_CONFIRM_ACT}`,
+              displayText: 'ยืนยันขอใช้บริการทำความสะอาด'
+            }
+          }
+        ]
+      }
+    }
+  };
 }
 
 function extractRoomId(value) {
@@ -2090,6 +2171,37 @@ export default {
         const act = String(data.act || '').trim();
         const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
         const postbackActionLower = postbackAction.toLowerCase();
+        if (act === CLEANING_TENANT_CONFIRM_ACT) {
+          const chatId = getChatId(ev);
+          const userId = ev?.source?.userId || '';
+          const cleaningPayload = {
+            source: 'line_postback',
+            intent: 'cleaning_request',
+            act: 'tenant',
+            roomId: '',
+            text: 'ยืนยันขอใช้บริการทำความสะอาด',
+            lineUserId: userId || '',
+            chatId: chatId || '',
+            sourceType: ev?.source?.type || '',
+            replyToken: replyToken || '',
+            postbackData: postbackDataString,
+            webhookEventId: ev?.webhookEventId || '',
+            receivedAt: new Date().toISOString()
+          };
+
+          const webhookOk = await notifyN8nCleaning(env, cleaningPayload);
+          const ackText = webhookOk
+            ? 'รับคำขอใช้บริการทำความสะอาดแล้วค่ะ แอดมินจะติดต่อกลับเพื่อแจ้งรายละเอียดและนัดหมาย'
+            : 'รับคำยืนยันแล้วค่ะ แต่ระบบส่งข้อมูลให้แอดมินไม่สำเร็จ กรุณาลองอีกครั้งหรือติดต่อแอดมิน';
+
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+          continue;
+        }
+
         if (isReturnKeyDecisionAction(postbackAction) || hasReturnKeyDecisionHints(data, postbackDataString)) {
           const chatId = getChatId(ev);
           const roomRaw = String(data.roomId || data.room || data.roomNo || data.room_code || '').trim();
@@ -3310,6 +3422,16 @@ export default {
           if (cleaningCommand) {
             if (cleaningCommand.act === 'management' && !isCleaningManagementAllowedLineUserId(userId)) {
               console.log('cleaning_management_unauthorized', { userId, text: textIn.slice(0, 80) });
+              continue;
+            }
+
+            if (cleaningCommand.act === 'tenant') {
+              const confirmFlex = buildCleaningTenantConfirmFlex();
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmFlex]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmFlex]).catch(console.error));
+              }
               continue;
             }
 
@@ -7268,6 +7390,7 @@ export const __testables = {
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
+  buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
   isCheckoutStartShortcut,
   isCoAdminAllowedLineUserId,

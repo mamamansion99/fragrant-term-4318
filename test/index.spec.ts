@@ -71,6 +71,17 @@ describe('Worker routes', () => {
 		expect(__testables.isCleaningManagementAllowedLineUserId('Ua3e2f84505daa64ee21b8608e8857c33')).toBe(false);
 	});
 
+	it('builds cleaning tenant confirmation flex with postback button', () => {
+		const flex = __testables.buildCleaningTenantConfirmFlex() as Record<string, any>;
+		expect(flex.type).toBe('flex');
+		expect(flex.altText).toContain('300-500');
+		const bodyText = flex.contents.body.contents.map((item: Record<string, unknown>) => item.text).join('\n');
+		expect(bodyText).toContain('300-500');
+		const buttonAction = flex.contents.footer.contents[0].action;
+		expect(buttonAction.type).toBe('postback');
+		expect(buttonAction.data).toBe('act=CLEANING_TENANT_CONFIRM');
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
