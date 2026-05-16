@@ -411,18 +411,48 @@ const RETURN_KEY_ALLOWED_LINE_USER_IDS = new Set([
   'U9293d43980e98649e20c8759a2c2d7f0', // P'Yu
   'Ua3e2f84505daa64ee21b8608e8857c33'  // POCO
 ]);
+const CLEANING_MANAGEMENT_ALLOWED_LINE_USER_IDS = new Set([
+  'Ue90558b73d62863e2287ac32e69541a3', // Ma
+  'U193cae8dd9197f7d4bd6ada8046fd98b', // KP
+  'U2855d93e108ccebbef7d1b55ec8827e5', // P'Koy
+  'U9293d43980e98649e20c8759a2c2d7f0'  // P'Yu
+]);
 const CO_ADMIN_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin';
 const DEFAULT_N8N_CHECKOUT_START_WEBHOOK = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkout';
 const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key';
 const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key_Desicion';
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
+const DEFAULT_N8N_CLEANING_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
 function parseRoomToken(token) {
   const room = String(token || '').trim().toUpperCase();
   if (!/^[AB]\d{3,4}$/.test(room)) return null;
   return room;
+}
+
+function parseCleaningCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+
+  if (raw === 'บริการทำความสะอาด') {
+    return { act: 'tenant', roomId: '' };
+  }
+
+  const match =
+    raw.match(/^ทำความสะอาด\s+([AB]\d{3,4})$/i) ||
+    compact.match(/^ทำความสะอาด([AB]\d{3,4})$/i);
+
+  if (match) {
+    return { act: 'management', roomId: match[1].toUpperCase() };
+  }
+
+  return null;
+}
+
+function isCleaningManagementAllowedLineUserId(userId) {
+  return CLEANING_MANAGEMENT_ALLOWED_LINE_USER_IDS.has(String(userId || '').trim());
 }
 
 function extractRoomId(value) {
@@ -3275,6 +3305,34 @@ export default {
           ctx.waitUntil(
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
+
+          const cleaningCommand = parseCleaningCommand(textIn);
+          if (cleaningCommand) {
+            if (cleaningCommand.act === 'management' && !isCleaningManagementAllowedLineUserId(userId)) {
+              console.log('cleaning_management_unauthorized', { userId, text: textIn.slice(0, 80) });
+              continue;
+            }
+
+            const cleaningPayload = {
+              source: 'line_message',
+              intent: 'cleaning_request',
+              act: cleaningCommand.act,
+              roomId: cleaningCommand.roomId,
+              text: textIn,
+              lineUserId: userId || '',
+              chatId: chatId || '',
+              sourceType: ev?.source?.type || '',
+              replyToken: replyToken || '',
+              messageId: m?.id || '',
+              webhookEventId: ev?.webhookEventId || '',
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              notifyN8nCleaning(env, cleaningPayload).catch((err) => console.error('cleaning webhook failed', err))
+            );
+            continue;
+          }
 
           if (isOwnerGroupChat(env, chatId) && /โหมดคัดกรอง/i.test(textIn)) {
             const msg = {
@@ -7115,6 +7173,36 @@ async function notifyN8nCoAdminWebhook(env, payload) {
   }
 }
 
+async function notifyN8nCleaning(env, payload) {
+  const url = env.N8N_CLEANING_WEBHOOK_URL || DEFAULT_N8N_CLEANING_WEBHOOK_URL;
+  if (!url) {
+    console.warn('notifyN8nCleaning: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCleaning: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCleaning error', err);
+    return false;
+  }
+}
+
 async function notifyN8nGroupImage(env, payload) {
   const url = 'https://n8n.srv1112305.hstgr.cloud/webhook/Receipt_Ledger';
   if (!url) {
@@ -7178,6 +7266,8 @@ async function notifyN8nChatLog(env, payload) {
 export const __testables = {
   parsePostbackData,
   parseKeyRent,
+  parseCleaningCommand,
+  isCleaningManagementAllowedLineUserId,
   parseCoAdminShortcut,
   isCheckoutStartShortcut,
   isCoAdminAllowedLineUserId,

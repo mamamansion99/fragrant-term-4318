@@ -47,6 +47,30 @@ describe('Worker routes', () => {
 		expect(payload.row).toBe('75');
 	});
 
+	it('parses cleaning tenant and management commands', () => {
+		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
+			act: 'tenant',
+			roomId: ''
+		});
+		expect(__testables.parseCleaningCommand('ทำความสะอาด a101')).toEqual({
+			act: 'management',
+			roomId: 'A101'
+		});
+		expect(__testables.parseCleaningCommand('ทำความสะอาดA101')).toEqual({
+			act: 'management',
+			roomId: 'A101'
+		});
+		expect(__testables.parseCleaningCommand('บริการอื่น')).toBeNull();
+	});
+
+	it('restricts cleaning management commands to approved line users', () => {
+		expect(__testables.isCleaningManagementAllowedLineUserId('Ue90558b73d62863e2287ac32e69541a3')).toBe(true);
+		expect(__testables.isCleaningManagementAllowedLineUserId('U193cae8dd9197f7d4bd6ada8046fd98b')).toBe(true);
+		expect(__testables.isCleaningManagementAllowedLineUserId('U2855d93e108ccebbef7d1b55ec8827e5')).toBe(true);
+		expect(__testables.isCleaningManagementAllowedLineUserId('U9293d43980e98649e20c8759a2c2d7f0')).toBe(true);
+		expect(__testables.isCleaningManagementAllowedLineUserId('Ua3e2f84505daa64ee21b8608e8857c33')).toBe(false);
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
