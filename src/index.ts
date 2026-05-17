@@ -2101,6 +2101,18 @@ export default {
         const cleaningPricePostback = parseQueryString(postbackDataString);
         if (cleaningPricePostback.act === 'CLEANING_MANAGER_PRICE') {
           const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPricePostback, postbackDataString);
+          const ackText = buildCleaningBillingAckText(cleaningPricePostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_billing_postback_reply_failed', err))
+            );
+          } else if (billingPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, billingPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_billing_postback_push_failed', err))
+            );
+          }
           ctx.waitUntil(
             forwardToN8n(billingPayload, env)
               .catch((err) => console.error('cleaning_billing_postback_forward_failed', err))
@@ -5555,6 +5567,18 @@ function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receiv
   };
 }
 
+function buildCleaningBillingAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cleaning price selected (${details}). Sending the tenant bill now.`
+    : 'Cleaning price selected. Sending the tenant bill now.';
+}
+
 function normalizeManagerDecision(value) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return '';
@@ -7481,6 +7505,7 @@ export const __testables = {
   parseQueryString,
   parsePostbackData,
   buildCleaningBillingPostbackPayload,
+  buildCleaningBillingAckText,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

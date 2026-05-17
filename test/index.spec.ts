@@ -121,6 +121,12 @@ describe('Worker routes', () => {
 			webhookEventId: 'event-id',
 			receivedAt: '2026-05-17T00:00:00.000Z'
 		});
+		expect(__testables.buildCleaningBillingAckText(parsed)).toBe(
+			'Cleaning price selected (room A101, 300 THB). Sending the tenant bill now.'
+		);
+		expect(__testables.buildCleaningBillingAckText({})).toBe(
+			'Cleaning price selected. Sending the tenant bill now.'
+		);
 	});
 
 	it('does not let checkin keycard fallback capture private reservation images', () => {
