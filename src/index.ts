@@ -312,6 +312,21 @@ function getRememberedCheckinKeycardWaitingPhotoState(groupId, userId) {
   return null;
 }
 
+function isCheckinKeycardWaitingPhotoStateForEvent(state, groupId, userId) {
+  if (!state) return false;
+  const stateGroupId = String(state.groupId || '').trim();
+  const stateManagerUserId = String(state.managerUserId || '').trim();
+  const eventGroupId = String(groupId || '').trim();
+  const eventUserId = String(userId || '').trim();
+
+  // Keycard photos are started from the manager group. Do not let the
+  // user-only fallback capture private-chat images such as reservation slips.
+  if (stateGroupId && !eventGroupId) return false;
+  if (stateGroupId && eventGroupId && stateGroupId !== eventGroupId) return false;
+  if (stateManagerUserId && eventUserId && stateManagerUserId !== eventUserId) return false;
+  return true;
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -327,7 +342,8 @@ async function getCheckinKeycardWaitingPhotoState(env, userKey, groupKey, userOn
       stateFromGroup,
       stateFromUserOnly,
       stateFromMemory,
-      state: stateFromUser || stateFromGroup || stateFromUserOnly || stateFromMemory || null
+      state: [stateFromUser, stateFromGroup, stateFromUserOnly, stateFromMemory]
+        .find((state) => isCheckinKeycardWaitingPhotoStateForEvent(state, groupId, userId)) || null
     };
   };
 
@@ -4204,21 +4220,29 @@ export default {
 
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const resvUrl = getReservationGas(env);
-            if (resvUrl) {
-              const bookingCode = extractBookingCode(textIn);
-              const ackMsg = bookingCode
-                ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
-                : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: ackMsg }
-                ]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
-              }
-              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+            const bookingCode = extractBookingCode(textIn);
+            if (!resvUrl) {
+              await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
               continue;
             }
+            const ackMsg = bookingCode
+              ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
+              : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: ackMsg }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+            }
+            console.log('reservation_text_forward_to_gas', {
+              bookingCode,
+              chatId,
+              userId,
+              resvUrl
+            });
+            ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+            continue;
           }
 
           // (E) Label → act mapping
@@ -4228,8 +4252,11 @@ export default {
                 null;
 
 
-          const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
-          const bookingFlow = await kvGet(env, bookingFlowKey);
+          // Reservation slip/ID confirmations are owned by reservation GAS.
+          // Keep the legacy worker block below disabled so stale KV cannot
+          // revive worker-side reservation state.
+          const bookingFlowKey = '';
+          const bookingFlow: any = null;
 
           // (E1) Booking flow confirmations (yes/no)
           const yesNoQuickReply = {
@@ -4770,10 +4797,24 @@ export default {
           {
             const resvUrl = getReservationGas(env);
             if (resvUrl) {
+              console.log('reservation_image_forward_to_gas', {
+                chatId,
+                userId: ev?.source?.userId || '',
+                messageId: ev?.message?.id || null,
+                resvUrl
+              });
               ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
               continue;
             }
           }
+
+          console.warn('reservation_image_forward_missing_gas', {
+            chatId,
+            userId: ev?.source?.userId || '',
+            messageId: ev?.message?.id || null
+          });
+          await errorReplyOrPush(env, replyToken, chatId, 'Reservation image receiver is not configured. Please contact admin.');
+          continue;
 
           // Booking flow gates (slip -> ID)
           const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
@@ -7402,5 +7443,6 @@ export const __testables = {
   buildMarkPaidForwardPayload,
   getPrebookWebhookUrl,
   isRoomRentInquiry,
-  quickKeywordReply
+  quickKeywordReply,
+  isCheckinKeycardWaitingPhotoStateForEvent
 };

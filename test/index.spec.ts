@@ -82,6 +82,20 @@ describe('Worker routes', () => {
 		expect(buttonAction.data).toBe('act=CLEANING_TENANT_CONFIRM');
 	});
 
+	it('does not let checkin keycard fallback capture private reservation images', () => {
+		const state = {
+			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
+			groupId: 'C-manager-group',
+			managerUserId: 'U-manager',
+			roomId: 'A101',
+			ts: Date.now()
+		};
+
+		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, '', 'U-manager')).toBe(false);
+		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, 'C-manager-group', 'U-other')).toBe(false);
+		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, 'C-manager-group', 'U-manager')).toBe(true);
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
