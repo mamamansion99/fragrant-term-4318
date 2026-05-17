@@ -2120,6 +2120,16 @@ export default {
           continue;
         }
 
+        const cleaningPaymentPostback = parseQueryString(postbackDataString);
+        if (cleaningPaymentPostback.act === 'CLEANING_TENANT_PAY_METHOD') {
+          const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPaymentPostback, postbackDataString);
+          ctx.waitUntil(
+            forwardToN8n(paymentPayload, env)
+              .catch((err) => console.error('cleaning_payment_method_postback_forward_failed', err))
+          );
+          continue;
+        }
+
         // BEGIN RENT KEY POSTBACK FORWARD
         const rentKeyAction = String(data.act || data.type || '').trim();
         if (
@@ -5579,6 +5589,29 @@ function buildCleaningBillingAckText(parsed) {
     : 'Cleaning price selected. Sending the tenant bill now.';
 }
 
+function buildCleaningPaymentMethodPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_payment_method',
+    act: 'CleaningPaymentMethod',
+    paymentAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    paymentMethod: String(parsed?.paymentMethod || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
 function normalizeManagerDecision(value) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return '';
@@ -7506,6 +7539,7 @@ export const __testables = {
   parsePostbackData,
   buildCleaningBillingPostbackPayload,
   buildCleaningBillingAckText,
+  buildCleaningPaymentMethodPostbackPayload,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

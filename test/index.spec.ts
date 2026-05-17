@@ -129,6 +129,46 @@ describe('Worker routes', () => {
 		);
 	});
 
+	it('normalizes cleaning tenant payment method postbacks', () => {
+		const postbackData = 'act=CLEANING_TENANT_PAY_METHOD&cleaningId=CLNROW-1&requestId=CLN-20260517-123456&billId=BILL-9&roomId=A101&price=300&paymentMethod=CASH';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningPaymentMethodPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'user',
+					userId: 'Utenant'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_payment_method',
+			act: 'CleaningPaymentMethod',
+			paymentAction: 'CLEANING_TENANT_PAY_METHOD',
+			cleaningId: 'CLNROW-1',
+			requestId: 'CLN-20260517-123456',
+			billId: 'BILL-9',
+			roomId: 'A101',
+			price: '300',
+			paymentMethod: 'CASH',
+			lineUserId: 'Utenant',
+			chatId: 'Utenant',
+			sourceType: 'user',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+	});
+
 	it('does not let checkin keycard fallback capture private reservation images', () => {
 		const state = {
 			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
