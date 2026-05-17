@@ -3707,9 +3707,12 @@ export default {
               'ชำระบิลทั่วไป',
               '- ชำระค่าเช่าห้อง',
               '- ชำระค่าลืมกุญแจ',
+              '- ชำระค่าทำความสะอาด',
               '',
               'เช่าทรัพย์สินเพิ่มเติม',
               '- ชำระค่าเช่ากุญแจ',
+              '',
+              'ยานพาหนะและที่จอดรถ',
               '- ชำระค่าเช่าที่จอดรถ',
               '',
               'ย้ายออกและเช็คเอาท์',
@@ -6275,47 +6278,79 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (title, description, text) => ({
+  const itemCard = ({ title, description, text, stripeColor, badgeText, badgeBackground, badgeColor, ctaColor }) => ({
     type: 'box',
-    layout: 'vertical',
-    spacing: 'xs',
-    paddingAll: '14px',
-    cornerRadius: '8px',
-    backgroundColor: '#F8FAFC',
+    layout: 'horizontal',
+    spacing: 'none',
+    cornerRadius: '10px',
+    backgroundColor: '#F1F5F9',
     borderWidth: '1px',
-    borderColor: '#E5E7EB',
+    borderColor: '#E2E8F0',
+    margin: 'sm',
     action: { type: 'message', label: title, text },
     contents: [
       {
-        type: 'text',
-        text: title,
-        weight: 'bold',
-        size: 'md',
-        color: '#111827'
+        type: 'box',
+        layout: 'vertical',
+        width: '5px',
+        backgroundColor: stripeColor,
+        cornerRadius: '10px',
+        contents: []
       },
       {
-        type: 'text',
-        text: description,
-        wrap: true,
-        size: 'sm',
-        color: '#64748B'
-      },
-      {
-        type: 'text',
-        text: 'แตะเพื่อเริ่ม',
-        size: 'xs',
-        color: '#2563EB',
-        weight: 'bold'
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        paddingAll: '10px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: title, weight: 'bold', size: 'lg', color: '#0F172A', flex: 5, wrap: true },
+              {
+                type: 'box',
+                layout: 'vertical',
+                backgroundColor: badgeBackground,
+                cornerRadius: '16px',
+                paddingStart: '10px',
+                paddingEnd: '10px',
+                paddingTop: '4px',
+                paddingBottom: '4px',
+                flex: 2,
+                contents: [
+                  { type: 'text', text: badgeText, align: 'center', size: 'sm', weight: 'bold', color: badgeColor }
+                ]
+              }
+            ]
+          },
+          {
+            type: 'text',
+            text: description,
+            wrap: true,
+            size: 'md',
+            color: '#64748B'
+          },
+          {
+            type: 'text',
+            text: 'แตะเพื่อเริ่ม',
+            size: 'sm',
+            weight: 'bold',
+            color: ctaColor
+          }
+        ]
       }
     ]
   });
-  const sectionHeader = (text) => ({
-    type: 'text',
-    text,
-    size: 'sm',
-    weight: 'bold',
-    color: '#334155',
-    margin: 'md'
+  const sectionBlock = (title, cards) => ({
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'xs',
+    margin: 'md',
+    contents: [
+      { type: 'text', text: title, size: 'xl', weight: 'bold', color: '#1E293B' },
+      ...cards.map((card) => itemCard(card))
+    ]
   });
 
   return {
@@ -6349,52 +6384,88 @@ function buildPaymentOptionsFlex() {
               }
             ]
           },
-          {
-            type: 'box',
-            layout: 'vertical',
-            spacing: 'sm',
-            margin: 'md',
-            contents: [
-              sectionHeader('ชำระบิลทั่วไป'),
-              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า'),
-              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ')
+          sectionBlock(
+            'ชำระบิลทั่วไป',
+            [
+              {
+                title: 'ชำระค่าเช่าห้อง',
+                description: 'ค่าเช่าห้องรายเดือน',
+                text: 'ชำระค่าเช่า',
+                stripeColor: '#0B63E5',
+                badgeText: 'รายเดือน',
+                badgeBackground: '#DBEAFE',
+                badgeColor: '#0B63E5',
+                ctaColor: '#0B63E5'
+              },
+              {
+                title: 'ชำระค่าลืมกุญแจ',
+                description: 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย',
+                text: 'ชำระค่าลืมกุญแจ',
+                stripeColor: '#EA7A00',
+                badgeText: 'ค่าปรับ',
+                badgeBackground: '#FCEFC9',
+                badgeColor: '#EA7A00',
+                ctaColor: '#EA7A00'
+              },
+              {
+                title: 'จ่ายค่าทำความสะอาด',
+                description: 'ค่าบริการทำความสะอาดห้อง 300-500 บาท',
+                text: 'ชำระค่าทำความสะอาด',
+                stripeColor: '#0CA54A',
+                badgeText: 'บริการ',
+                badgeBackground: '#D7F4E1',
+                badgeColor: '#0CA54A',
+                ctaColor: '#0CA54A'
+              }
             ]
-          },
-          {
-            type: 'box',
-            layout: 'vertical',
-            spacing: 'sm',
-            margin: 'md',
-            contents: [
-              sectionHeader('เช่าทรัพย์สินเพิ่มเติม'),
-              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ'),
-              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ')
+          ),
+          sectionBlock(
+            'เช่าทรัพย์สินเพิ่มเติม',
+            [
+              {
+                title: 'ชำระค่าเช่ากุญแจ',
+                description: 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม',
+                text: 'ชำระค่าเช่ากุญแจ',
+                stripeColor: '#EA7A00',
+                badgeText: 'ทรัพย์สิน',
+                badgeBackground: '#FCEFC9',
+                badgeColor: '#EA7A00',
+                ctaColor: '#EA7A00'
+              }
             ]
-          },
-          {
-            type: 'box',
-            layout: 'vertical',
-            spacing: 'sm',
-            margin: 'md',
-            contents: [
-              sectionHeader('ย้ายออกและเช็คเอาท์'),
-              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์')
+          ),
+          sectionBlock(
+            'ยานพาหนะและที่จอดรถ',
+            [
+              {
+                title: 'ชำระค่าเช่าที่จอดรถ',
+                description: 'ค่าเช่าที่จอดรถรายเดือน',
+                text: 'ชำระค่าเช่าที่จอดรถ',
+                stripeColor: '#0CA54A',
+                badgeText: 'ที่จอดรถ',
+                badgeBackground: '#D7F4E1',
+                badgeColor: '#0CA54A',
+                ctaColor: '#0CA54A'
+              }
             ]
-          }
+          ),
+          sectionBlock(
+            'ย้ายออกและเช็คเอาท์',
+            [
+              {
+                title: 'ชำระค่าเช็คเอาท์',
+                description: 'ค่าใช้จ่ายตอนย้ายออก',
+                text: 'ชำระค่าเช็คเอาท์',
+                stripeColor: '#DC2626',
+                badgeText: 'เช็คเอาท์',
+                badgeBackground: '#FEE2E2',
+                badgeColor: '#B91C1C',
+                ctaColor: '#B91C1C'
+              }
+            ]
+          )
         ]
       }
-    },
-    quickReply: {
-      items: [
-        {
-          type: 'action',
-          action: {
-            type: 'message',
-            label: 'เปิดเมนูชำระเงิน',
-            text: 'จ่ายเงินมามาแมนชั่น'
-          }
-        }
-      ]
     }
   };
 }
