@@ -4,7 +4,10 @@
  * 0) Small utilities
  * ========================= */
 function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(str); } // YYYY-MM-DD
-function getChatId(ev) { return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || ''; }
+function getChatId(input) {
+  const source = input?.source || input || {};
+  return source.groupId || source.roomId || source.userId || '';
+}
 function getStateKey(ev) {
   const chat = getChatId(ev) || 'unknown';
   const uid = ev?.source?.userId || 'anon';
@@ -453,7 +456,11 @@ function parseCleaningCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
 
-  if (raw === 'บริการทำความสะอาด') {
+  if (
+    raw === 'บริการทำความสะอาด' ||
+    raw === 'จ่ายค่าทำความสะอาด' ||
+    raw === 'ชำระค่าทำความสะอาด'
+  ) {
     return { act: 'tenant', roomId: '' };
   }
 
@@ -2095,6 +2102,70 @@ export default {
           }
         }
 
+        const cleaningPostback = parseQueryString(postbackDataString);
+        if (cleaningPostback.act === 'CLEANING_MANAGER_PRICE') {
+          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningBillingAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_billing_postback_reply_failed', err))
+            );
+          } else if (billingPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, billingPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_billing_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            forwardToN8n(billingPayload, env)
+              .catch((err) => console.error('cleaning_billing_postback_forward_failed', err))
+          );
+          continue;
+        }
+
+        if (cleaningPostback.act === 'CLEANING_TENANT_PAY_METHOD') {
+          const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningPaymentMethodAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_payment_method_postback_reply_failed', err))
+            );
+          } else if (paymentPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, paymentPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_payment_method_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            forwardToN8n(paymentPayload, env)
+              .catch((err) => console.error('cleaning_payment_method_postback_forward_failed', err))
+          );
+          continue;
+        }
+
+        if (cleaningPostback.act === 'CLEANING_CASH_CONFIRM') {
+          const cashPayload = buildCleaningCashConfirmPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningCashConfirmAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_cash_confirm_postback_reply_failed', err))
+            );
+          } else if (cashPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, cashPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_cash_confirm_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            forwardToN8n(cashPayload, env)
+              .catch((err) => console.error('cleaning_cash_confirm_postback_forward_failed', err))
+          );
+          continue;
+        }
+
         // BEGIN RENT KEY POSTBACK FORWARD
         const rentKeyAction = String(data.act || data.type || '').trim();
         if (
@@ -3712,6 +3783,7 @@ export default {
               'ชำระบิลทั่วไป',
               '- ชำระค่าเช่าห้อง',
               '- ชำระค่าลืมกุญแจ',
+              '- จ่ายค่าทำความสะอาด',
               '',
               'เช่าทรัพย์สินเพิ่มเติม',
               '- ชำระค่าเช่ากุญแจ',
@@ -5415,6 +5487,18 @@ function parseKv(data) {
   return out;
 }
 
+function parseQueryString(qs = '') {
+  const raw = String(qs || '').trim();
+  if (!raw) return {};
+  const parsed = parseKv(raw.startsWith('?') ? raw.slice(1) : raw);
+  const out = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!key) continue;
+    out[key] = Array.isArray(value) ? String(value[value.length - 1] || '') : String(value ?? '');
+  }
+  return out;
+}
+
 function parsePostbackData(raw) {
   const input = (raw || '').trim();
   if (!input) return {};
@@ -5506,6 +5590,112 @@ function parsePostbackData(raw) {
   }
 
   return {};
+}
+
+function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_billing',
+    act: 'Billing',
+    billingAction: String(parsed?.act || ''),
+    requestId: String(parsed?.requestId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    tenantLineUserId: String(parsed?.tenantLineUserId || ''),
+    cleaningSource: String(parsed?.source || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningBillingAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cleaning price selected (${details}). Sending the tenant bill now.`
+    : 'Cleaning price selected. Sending the tenant bill now.';
+}
+
+function buildCleaningPaymentMethodPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_payment_method',
+    act: 'CleaningPaymentMethod',
+    paymentAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    paymentMethod: String(parsed?.paymentMethod || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningPaymentMethodAckText(parsed) {
+  const method = String(parsed?.paymentMethod || '').trim();
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    method ? `method ${method}` : '',
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Payment selection completed (${details}). Thank you.`
+    : 'Payment selection completed. Thank you.';
+}
+
+function buildCleaningCashConfirmPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_cash_confirm',
+    act: 'CleaningCashConfirm',
+    cashAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    tenantLineUserId: String(parsed?.tenantLineUserId || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningCashConfirmAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cash payment confirmed (${details}). Sending confirmation now.`
+    : 'Cash payment confirmed. Sending confirmation now.';
 }
 
 function normalizeManagerDecision(value) {
@@ -6268,11 +6458,14 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (title, description, text) => ({
+  const optionCard = (title, description, text, opts = {}) => {
+    const accentColor = opts.accentColor || '#2563EB';
+    const chipText = opts.chipText || '';
+    const chipBackgroundColor = opts.chipBackgroundColor || '#EFF6FF';
+    const chipTextColor = opts.chipTextColor || accentColor;
+    return {
     type: 'box',
-    layout: 'vertical',
-    spacing: 'xs',
-    paddingAll: '14px',
+    layout: 'horizontal',
     cornerRadius: '8px',
     backgroundColor: '#F8FAFC',
     borderWidth: '1px',
@@ -6280,28 +6473,70 @@ function buildPaymentOptionsFlex() {
     action: { type: 'message', label: title, text },
     contents: [
       {
-        type: 'text',
-        text: title,
-        weight: 'bold',
-        size: 'md',
-        color: '#111827'
+        type: 'box',
+        layout: 'vertical',
+        width: '5px',
+        backgroundColor: accentColor,
+        contents: [{ type: 'filler' }]
       },
       {
-        type: 'text',
-        text: description,
-        wrap: true,
-        size: 'sm',
-        color: '#64748B'
-      },
-      {
-        type: 'text',
-        text: 'แตะเพื่อเริ่ม',
-        size: 'xs',
-        color: '#2563EB',
-        weight: 'bold'
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        paddingAll: '14px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'text',
+                text: title,
+                weight: 'bold',
+                size: 'md',
+                color: '#111827',
+                wrap: true,
+                flex: 1
+              },
+              ...(chipText ? [{
+                type: 'box',
+                layout: 'vertical',
+                backgroundColor: chipBackgroundColor,
+                cornerRadius: '12px',
+                paddingAll: '4px',
+                contents: [
+                  {
+                    type: 'text',
+                    text: chipText,
+                    size: 'xxs',
+                    color: chipTextColor,
+                    weight: 'bold',
+                    align: 'center'
+                  }
+                ]
+              }] : [])
+            ]
+          },
+          {
+            type: 'text',
+            text: description,
+            wrap: true,
+            size: 'sm',
+            color: '#64748B'
+          },
+          {
+            type: 'text',
+            text: 'แตะเพื่อเริ่ม',
+            size: 'xs',
+            color: accentColor,
+            weight: 'bold'
+          }
+        ]
       }
     ]
-  });
+    };
+  };
   const sectionHeader = (text) => ({
     type: 'text',
     text,
@@ -6349,8 +6584,21 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ชำระบิลทั่วไป'),
-              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า'),
-              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ')
+              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า', {
+                accentColor: '#2563EB',
+                chipText: 'รายเดือน',
+                chipBackgroundColor: '#EFF6FF'
+              }),
+              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', {
+                accentColor: '#D97706',
+                chipText: 'ค่าปรับ',
+                chipBackgroundColor: '#FEF3C7'
+              }),
+              optionCard('จ่ายค่าทำความสะอาด', 'ค่าทำความสะอาดห้อง 300-500 บาท', 'จ่ายค่าทำความสะอาด', {
+                accentColor: '#16A34A',
+                chipText: 'บริการ',
+                chipBackgroundColor: '#DCFCE7'
+              })
             ]
           },
           {
@@ -6360,8 +6608,16 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('เช่าทรัพย์สินเพิ่มเติม'),
-              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ'),
-              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ')
+              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', {
+                accentColor: '#D97706',
+                chipText: 'ทรัพย์สิน',
+                chipBackgroundColor: '#FEF3C7'
+              }),
+              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', {
+                accentColor: '#0F766E',
+                chipText: 'รายเดือน',
+                chipBackgroundColor: '#CCFBF1'
+              })
             ]
           },
           {
@@ -6371,7 +6627,11 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ย้ายออกและเช็คเอาท์'),
-              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์')
+              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', {
+                accentColor: '#475569',
+                chipText: 'ย้ายออก',
+                chipBackgroundColor: '#E2E8F0'
+              })
             ]
           }
         ]
@@ -7344,7 +7604,7 @@ async function notifyN8nCleaning(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
+  const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || 'test123').trim();
   if (secret) {
     headers['x-worker-secret'] = secret;
   }
@@ -7364,6 +7624,10 @@ async function notifyN8nCleaning(env, payload) {
     console.error('notifyN8nCleaning error', err);
     return false;
   }
+}
+
+async function forwardToN8n(payload, env) {
+  return notifyN8nCleaning(env, payload);
 }
 
 async function notifyN8nGroupImage(env, payload) {
@@ -7427,7 +7691,15 @@ async function notifyN8nChatLog(env, payload) {
 }
 
 export const __testables = {
+  parseQueryString,
   parsePostbackData,
+  buildCleaningBillingPostbackPayload,
+  buildCleaningBillingAckText,
+  buildCleaningPaymentMethodPostbackPayload,
+  buildCleaningPaymentMethodAckText,
+  buildCleaningCashConfirmPostbackPayload,
+  buildCleaningCashConfirmAckText,
+  buildPaymentOptionsFlex,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
