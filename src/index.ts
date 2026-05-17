@@ -2086,12 +2086,66 @@ export default {
           }
         }
 
-        const cleaningPricePostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
-        if (String(cleaningPricePostback.act || '').trim() === 'CLEANING_MANAGER_PRICE') {
-          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPricePostback, postbackDataString);
+        const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
+        if (String(cleaningPostback.act || '').trim() === 'CLEANING_MANAGER_PRICE') {
+          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningBillingAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_billing_postback_reply_failed', err))
+            );
+          } else if (billingPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, billingPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_billing_postback_push_failed', err))
+            );
+          }
           ctx.waitUntil(
             notifyN8nCleaning(env, billingPayload)
               .catch((err) => console.error('cleaning_billing_postback_forward_failed', err))
+          );
+          continue;
+        }
+
+        if (String(cleaningPostback.act || '').trim() === 'CLEANING_TENANT_PAY_METHOD') {
+          const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningPaymentMethodAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_payment_method_postback_reply_failed', err))
+            );
+          } else if (paymentPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, paymentPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_payment_method_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            notifyN8nCleaning(env, paymentPayload)
+              .catch((err) => console.error('cleaning_payment_method_postback_forward_failed', err))
+          );
+          continue;
+        }
+
+        if (String(cleaningPostback.act || '').trim() === 'CLEANING_CASH_CONFIRM') {
+          const cashPayload = buildCleaningCashConfirmPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningCashConfirmAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_cash_confirm_postback_reply_failed', err))
+            );
+          } else if (cashPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, cashPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_cash_confirm_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            notifyN8nCleaning(env, cashPayload)
+              .catch((err) => console.error('cleaning_cash_confirm_postback_forward_failed', err))
           );
           continue;
         }
@@ -5562,6 +5616,90 @@ function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receiv
   };
 }
 
+function buildCleaningBillingAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cleaning price selected (${details}). Sending the tenant bill now.`
+    : 'Cleaning price selected. Sending the tenant bill now.';
+}
+
+function buildCleaningPaymentMethodPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_payment_method',
+    act: 'CleaningPaymentMethod',
+    paymentAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    paymentMethod: String(parsed?.paymentMethod || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(event),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningPaymentMethodAckText(parsed) {
+  const method = String(parsed?.paymentMethod || '').trim();
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    method ? `method ${method}` : '',
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Payment selection completed (${details}). Thank you.`
+    : 'Payment selection completed. Thank you.';
+}
+
+function buildCleaningCashConfirmPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_cash_confirm',
+    act: 'CleaningCashConfirm',
+    cashAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    tenantLineUserId: String(parsed?.tenantLineUserId || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(event),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningCashConfirmAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cash payment confirmed (${details}). Sending confirmation now.`
+    : 'Cash payment confirmed. Sending confirmation now.';
+}
+
 function normalizeManagerDecision(value) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return '';
@@ -7549,7 +7687,14 @@ async function notifyN8nChatLog(env, payload) {
 }
 
 export const __testables = {
+  parseQueryString,
   parsePostbackData,
+  buildCleaningBillingPostbackPayload,
+  buildCleaningBillingAckText,
+  buildCleaningPaymentMethodPostbackPayload,
+  buildCleaningPaymentMethodAckText,
+  buildCleaningCashConfirmPostbackPayload,
+  buildCleaningCashConfirmAckText,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

@@ -70,6 +70,145 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
+	it('normalizes cleaning manager price postbacks', () => {
+		const postbackData = 'act=CLEANING_MANAGER_PRICE&requestId=CLN-20260517-123456&roomId=A101&price=300&tenantLineUserId=Utenant&source=TENANT_LINE';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningBillingPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'group',
+					groupId: 'CmanagerGroup',
+					userId: 'Umanager'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_billing',
+			act: 'Billing',
+			billingAction: 'CLEANING_MANAGER_PRICE',
+			requestId: 'CLN-20260517-123456',
+			roomId: 'A101',
+			price: '300',
+			tenantLineUserId: 'Utenant',
+			cleaningSource: 'TENANT_LINE',
+			lineUserId: 'Umanager',
+			chatId: 'CmanagerGroup',
+			sourceType: 'group',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+		expect(__testables.buildCleaningBillingAckText(parsed)).toBe(
+			'Cleaning price selected (room A101, 300 THB). Sending the tenant bill now.'
+		);
+		expect(__testables.buildCleaningBillingAckText({})).toBe(
+			'Cleaning price selected. Sending the tenant bill now.'
+		);
+	});
+
+	it('normalizes cleaning tenant payment method postbacks', () => {
+		const postbackData = 'act=CLEANING_TENANT_PAY_METHOD&cleaningId=CLNROW-1&requestId=CLN-20260517-123456&billId=BILL-9&roomId=A101&price=300&paymentMethod=CASH';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningPaymentMethodPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'user',
+					userId: 'Utenant'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_payment_method',
+			act: 'CleaningPaymentMethod',
+			paymentAction: 'CLEANING_TENANT_PAY_METHOD',
+			cleaningId: 'CLNROW-1',
+			requestId: 'CLN-20260517-123456',
+			billId: 'BILL-9',
+			roomId: 'A101',
+			price: '300',
+			paymentMethod: 'CASH',
+			lineUserId: 'Utenant',
+			chatId: 'Utenant',
+			sourceType: 'user',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+		expect(__testables.buildCleaningPaymentMethodAckText(parsed)).toBe(
+			'Payment selection completed (method CASH, room A101, 300 THB). Thank you.'
+		);
+		expect(__testables.buildCleaningPaymentMethodAckText({})).toBe(
+			'Payment selection completed. Thank you.'
+		);
+	});
+
+	it('normalizes cleaning cash confirmation postbacks', () => {
+		const postbackData = 'act=CLEANING_CASH_CONFIRM&cleaningId=CLNROW-1&requestId=CLN-20260517-123456&billId=BILL-9&roomId=A101&price=300&tenantLineUserId=Utenant';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningCashConfirmPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'group',
+					groupId: 'CmanagerGroup',
+					userId: 'Umanager'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_cash_confirm',
+			act: 'CleaningCashConfirm',
+			cashAction: 'CLEANING_CASH_CONFIRM',
+			cleaningId: 'CLNROW-1',
+			requestId: 'CLN-20260517-123456',
+			billId: 'BILL-9',
+			roomId: 'A101',
+			price: '300',
+			tenantLineUserId: 'Utenant',
+			lineUserId: 'Umanager',
+			chatId: 'CmanagerGroup',
+			sourceType: 'group',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+		expect(__testables.buildCleaningCashConfirmAckText(parsed)).toBe(
+			'Cash payment confirmed (room A101, 300 THB). Sending confirmation now.'
+		);
+		expect(__testables.buildCleaningCashConfirmAckText({})).toBe(
+			'Cash payment confirmed. Sending confirmation now.'
+		);
+	});
+
 	it('builds cleaning tenant confirmation flex with postback button', () => {
 		const flex = __testables.buildCleaningTenantConfirmFlex() as Record<string, any>;
 		expect(flex.type).toBe('flex');
