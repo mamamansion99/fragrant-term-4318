@@ -4,7 +4,10 @@
  * 0) Small utilities
  * ========================= */
 function isIsoDate(str) { return /^\d{4}-\d{2}-\d{2}$/.test(str); } // YYYY-MM-DD
-function getChatId(ev) { return ev?.source?.groupId || ev?.source?.roomId || ev?.source?.userId || ''; }
+function getChatId(input) {
+  const source = input?.source || input || {};
+  return source.groupId || source.roomId || source.userId || '';
+}
 function getStateKey(ev) {
   const chat = getChatId(ev) || 'unknown';
   const uid = ev?.source?.userId || 'anon';
@@ -2093,6 +2096,16 @@ export default {
             console.warn('rent_key_postback_fallback_parse_failed', err);
             data = {};
           }
+        }
+
+        const cleaningPricePostback = parseQueryString(postbackDataString);
+        if (cleaningPricePostback.act === 'CLEANING_MANAGER_PRICE') {
+          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPricePostback, postbackDataString);
+          ctx.waitUntil(
+            forwardToN8n(billingPayload, env)
+              .catch((err) => console.error('cleaning_billing_postback_forward_failed', err))
+          );
+          continue;
         }
 
         // BEGIN RENT KEY POSTBACK FORWARD
@@ -5415,6 +5428,18 @@ function parseKv(data) {
   return out;
 }
 
+function parseQueryString(qs = '') {
+  const raw = String(qs || '').trim();
+  if (!raw) return {};
+  const parsed = parseKv(raw.startsWith('?') ? raw.slice(1) : raw);
+  const out = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!key) continue;
+    out[key] = Array.isArray(value) ? String(value[value.length - 1] || '') : String(value ?? '');
+  }
+  return out;
+}
+
 function parsePostbackData(raw) {
   const input = (raw || '').trim();
   if (!input) return {};
@@ -5506,6 +5531,28 @@ function parsePostbackData(raw) {
   }
 
   return {};
+}
+
+function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_billing',
+    act: 'Billing',
+    billingAction: String(parsed?.act || ''),
+    requestId: String(parsed?.requestId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    tenantLineUserId: String(parsed?.tenantLineUserId || ''),
+    cleaningSource: String(parsed?.source || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
 }
 
 function normalizeManagerDecision(value) {
@@ -7344,7 +7391,7 @@ async function notifyN8nCleaning(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
+  const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || 'test123').trim();
   if (secret) {
     headers['x-worker-secret'] = secret;
   }
@@ -7364,6 +7411,10 @@ async function notifyN8nCleaning(env, payload) {
     console.error('notifyN8nCleaning error', err);
     return false;
   }
+}
+
+async function forwardToN8n(payload, env) {
+  return notifyN8nCleaning(env, payload);
 }
 
 async function notifyN8nGroupImage(env, payload) {
@@ -7427,7 +7478,9 @@ async function notifyN8nChatLog(env, payload) {
 }
 
 export const __testables = {
+  parseQueryString,
   parsePostbackData,
+  buildCleaningBillingPostbackPayload,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

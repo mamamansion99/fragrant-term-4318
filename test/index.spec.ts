@@ -82,6 +82,47 @@ describe('Worker routes', () => {
 		expect(buttonAction.data).toBe('act=CLEANING_TENANT_CONFIRM');
 	});
 
+	it('normalizes cleaning manager price postbacks for billing', () => {
+		const postbackData = 'act=CLEANING_MANAGER_PRICE&requestId=CLN-20260517-123456&roomId=A101&price=300&tenantLineUserId=Utenant&source=TENANT_LINE';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningBillingPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'group',
+					groupId: 'CmanagerGroup',
+					userId: 'Umanager'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(parsed.act).toBe('CLEANING_MANAGER_PRICE');
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_billing',
+			act: 'Billing',
+			billingAction: 'CLEANING_MANAGER_PRICE',
+			requestId: 'CLN-20260517-123456',
+			roomId: 'A101',
+			price: '300',
+			tenantLineUserId: 'Utenant',
+			cleaningSource: 'TENANT_LINE',
+			lineUserId: 'Umanager',
+			chatId: 'CmanagerGroup',
+			sourceType: 'group',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+	});
+
 	it('does not let checkin keycard fallback capture private reservation images', () => {
 		const state = {
 			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
