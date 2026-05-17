@@ -6458,11 +6458,14 @@ function fridgeButtonMessage(postbackData) {
 }
 
 function buildPaymentOptionsFlex() {
-  const optionCard = (title, description, text) => ({
+  const optionCard = (title, description, text, opts = {}) => {
+    const accentColor = opts.accentColor || '#2563EB';
+    const chipText = opts.chipText || '';
+    const chipBackgroundColor = opts.chipBackgroundColor || '#EFF6FF';
+    const chipTextColor = opts.chipTextColor || accentColor;
+    return {
     type: 'box',
-    layout: 'vertical',
-    spacing: 'xs',
-    paddingAll: '14px',
+    layout: 'horizontal',
     cornerRadius: '8px',
     backgroundColor: '#F8FAFC',
     borderWidth: '1px',
@@ -6470,28 +6473,70 @@ function buildPaymentOptionsFlex() {
     action: { type: 'message', label: title, text },
     contents: [
       {
-        type: 'text',
-        text: title,
-        weight: 'bold',
-        size: 'md',
-        color: '#111827'
+        type: 'box',
+        layout: 'vertical',
+        width: '5px',
+        backgroundColor: accentColor,
+        contents: [{ type: 'filler' }]
       },
       {
-        type: 'text',
-        text: description,
-        wrap: true,
-        size: 'sm',
-        color: '#64748B'
-      },
-      {
-        type: 'text',
-        text: 'แตะเพื่อเริ่ม',
-        size: 'xs',
-        color: '#2563EB',
-        weight: 'bold'
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        paddingAll: '14px',
+        contents: [
+          {
+            type: 'box',
+            layout: 'horizontal',
+            spacing: 'sm',
+            contents: [
+              {
+                type: 'text',
+                text: title,
+                weight: 'bold',
+                size: 'md',
+                color: '#111827',
+                wrap: true,
+                flex: 1
+              },
+              ...(chipText ? [{
+                type: 'box',
+                layout: 'vertical',
+                backgroundColor: chipBackgroundColor,
+                cornerRadius: '12px',
+                paddingAll: '4px',
+                contents: [
+                  {
+                    type: 'text',
+                    text: chipText,
+                    size: 'xxs',
+                    color: chipTextColor,
+                    weight: 'bold',
+                    align: 'center'
+                  }
+                ]
+              }] : [])
+            ]
+          },
+          {
+            type: 'text',
+            text: description,
+            wrap: true,
+            size: 'sm',
+            color: '#64748B'
+          },
+          {
+            type: 'text',
+            text: 'แตะเพื่อเริ่ม',
+            size: 'xs',
+            color: accentColor,
+            weight: 'bold'
+          }
+        ]
       }
     ]
-  });
+    };
+  };
   const sectionHeader = (text) => ({
     type: 'text',
     text,
@@ -6539,9 +6584,21 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ชำระบิลทั่วไป'),
-              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า'),
-              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ'),
-              optionCard('จ่ายค่าทำความสะอาด', 'ค่าทำความสะอาดห้อง 300-500 บาท', 'จ่ายค่าทำความสะอาด')
+              optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า', {
+                accentColor: '#2563EB',
+                chipText: 'รายเดือน',
+                chipBackgroundColor: '#EFF6FF'
+              }),
+              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ', {
+                accentColor: '#D97706',
+                chipText: 'ค่าปรับ',
+                chipBackgroundColor: '#FEF3C7'
+              }),
+              optionCard('จ่ายค่าทำความสะอาด', 'ค่าทำความสะอาดห้อง 300-500 บาท', 'จ่ายค่าทำความสะอาด', {
+                accentColor: '#16A34A',
+                chipText: 'บริการ',
+                chipBackgroundColor: '#DCFCE7'
+              })
             ]
           },
           {
@@ -6551,8 +6608,16 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('เช่าทรัพย์สินเพิ่มเติม'),
-              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ'),
-              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ')
+              optionCard('ชำระค่าเช่ากุญแจ', 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม', 'ชำระค่าเช่ากุญแจ', {
+                accentColor: '#D97706',
+                chipText: 'ทรัพย์สิน',
+                chipBackgroundColor: '#FEF3C7'
+              }),
+              optionCard('ชำระค่าเช่าที่จอดรถ', 'ค่าเช่าที่จอดรถรายเดือน', 'ชำระค่าเช่าที่จอดรถ', {
+                accentColor: '#0F766E',
+                chipText: 'รายเดือน',
+                chipBackgroundColor: '#CCFBF1'
+              })
             ]
           },
           {
@@ -6562,7 +6627,11 @@ function buildPaymentOptionsFlex() {
             margin: 'md',
             contents: [
               sectionHeader('ย้ายออกและเช็คเอาท์'),
-              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์')
+              optionCard('ชำระค่าเช็คเอาท์', 'ค่าใช้จ่ายตอนย้ายออก', 'ชำระค่าเช็คเอาท์', {
+                accentColor: '#475569',
+                chipText: 'ย้ายออก',
+                chipBackgroundColor: '#E2E8F0'
+              })
             ]
           }
         ]

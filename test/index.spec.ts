@@ -77,6 +77,16 @@ describe('Worker routes', () => {
 
 		expect(serialized).toContain('จ่ายค่าทำความสะอาด');
 		expect(serialized).toContain('ค่าทำความสะอาดห้อง 300-500 บาท');
+		expect(serialized).toContain('รายเดือน');
+		expect(serialized).toContain('ค่าปรับ');
+		expect(serialized).toContain('บริการ');
+		expect(serialized).toContain('ทรัพย์สิน');
+		expect(serialized).toContain('ย้ายออก');
+		expect(serialized).toContain('#2563EB');
+		expect(serialized).toContain('#D97706');
+		expect(serialized).toContain('#16A34A');
+		expect(serialized).toContain('#0F766E');
+		expect(serialized).toContain('#475569');
 	});
 
 	it('restricts cleaning management commands to approved line users', () => {
