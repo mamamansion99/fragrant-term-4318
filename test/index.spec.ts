@@ -167,6 +167,12 @@ describe('Worker routes', () => {
 			webhookEventId: 'event-id',
 			receivedAt: '2026-05-17T00:00:00.000Z'
 		});
+		expect(__testables.buildCleaningPaymentMethodAckText(parsed)).toBe(
+			'Payment selection completed (method CASH, room A101, 300 THB). Thank you.'
+		);
+		expect(__testables.buildCleaningPaymentMethodAckText({})).toBe(
+			'Payment selection completed. Thank you.'
+		);
 	});
 
 	it('does not let checkin keycard fallback capture private reservation images', () => {

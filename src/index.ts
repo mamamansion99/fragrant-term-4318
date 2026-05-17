@@ -2123,6 +2123,18 @@ export default {
         const cleaningPaymentPostback = parseQueryString(postbackDataString);
         if (cleaningPaymentPostback.act === 'CLEANING_TENANT_PAY_METHOD') {
           const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPaymentPostback, postbackDataString);
+          const ackText = buildCleaningPaymentMethodAckText(cleaningPaymentPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_payment_method_postback_reply_failed', err))
+            );
+          } else if (paymentPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, paymentPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_payment_method_postback_push_failed', err))
+            );
+          }
           ctx.waitUntil(
             forwardToN8n(paymentPayload, env)
               .catch((err) => console.error('cleaning_payment_method_postback_forward_failed', err))
@@ -5612,6 +5624,20 @@ function buildCleaningPaymentMethodPostbackPayload(event, parsed, postbackData, 
   };
 }
 
+function buildCleaningPaymentMethodAckText(parsed) {
+  const method = String(parsed?.paymentMethod || '').trim();
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    method ? `method ${method}` : '',
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Payment selection completed (${details}). Thank you.`
+    : 'Payment selection completed. Thank you.';
+}
+
 function normalizeManagerDecision(value) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return '';
@@ -7540,6 +7566,7 @@ export const __testables = {
   buildCleaningBillingPostbackPayload,
   buildCleaningBillingAckText,
   buildCleaningPaymentMethodPostbackPayload,
+  buildCleaningPaymentMethodAckText,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
