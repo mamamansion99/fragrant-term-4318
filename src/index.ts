@@ -3576,18 +3576,22 @@ export default {
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass;
           const presetOtherPaymentReason =
-            /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
-              ? 'CAR'
+            /^\s*(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)\s*$/i.test(textIn)
+              ? 'CLEANING_PAYMENT'
               : (
-                /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ)\s*$/i.test(textIn)
-                  ? 'KEY_RENT'
+                /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
+                  ? 'CAR'
                   : (
-                    /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย)\s*$/i.test(textIn)
-                      ? 'KEY_FORGOT'
+                    /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ)\s*$/i.test(textIn)
+                      ? 'KEY_RENT'
                       : (
-                        /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
-                          ? 'CHECKOUT'
-                          : null
+                        /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย)\s*$/i.test(textIn)
+                          ? 'KEY_FORGOT'
+                          : (
+                            /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
+                              ? 'CHECKOUT'
+                              : null
+                          )
                       )
                   )
               );
@@ -3769,7 +3773,10 @@ export default {
           if (presetOtherPaymentReason) {
             ctx.waitUntil(kvDel(env, payRentKey));
             ctx.waitUntil(armOtherPaymentSlipFlow(presetOtherPaymentReason));
-            const askSlip = `บันทึกรายการ${presetOtherPaymentReason}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            const presetReasonLabel = presetOtherPaymentReason === 'CLEANING_PAYMENT'
+              ? 'ค่าทำความสะอาด'
+              : presetOtherPaymentReason;
+            const askSlip = `บันทึกรายการ${presetReasonLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
             } else if (chatId) {
@@ -5067,8 +5074,17 @@ function normalizePenaltyReason(reason) {
     'keyrent'
   ];
   const isRentKeyReason = rentKeyPatterns.some((pattern) => compact.includes(pattern));
+  const cleaningPaymentPatterns = [
+    'ค่าทำความสะอาด',
+    'จ่ายค่าทำความสะอาด',
+    'ชำระค่าทำความสะอาด',
+    'cleaningpayment',
+    'cleaningfee'
+  ];
+  const isCleaningPaymentReason = cleaningPaymentPatterns.some((pattern) => compact.includes(pattern));
 
   if (isRentKeyReason) return 'KEY_RENT';
+  if (isCleaningPaymentReason) return 'CLEANING_PAYMENT';
   return text;
 }
 /* =========================================
@@ -7435,5 +7451,6 @@ export const __testables = {
   getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply,
-  isCheckinKeycardWaitingPhotoStateForEvent
+  isCheckinKeycardWaitingPhotoStateForEvent,
+  normalizePenaltyReason
 };
