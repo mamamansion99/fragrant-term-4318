@@ -2098,10 +2098,10 @@ export default {
           }
         }
 
-        const cleaningPricePostback = parseQueryString(postbackDataString);
-        if (cleaningPricePostback.act === 'CLEANING_MANAGER_PRICE') {
-          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPricePostback, postbackDataString);
-          const ackText = buildCleaningBillingAckText(cleaningPricePostback);
+        const cleaningPostback = parseQueryString(postbackDataString);
+        if (cleaningPostback.act === 'CLEANING_MANAGER_PRICE') {
+          const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningBillingAckText(cleaningPostback);
           if (replyToken) {
             ctx.waitUntil(
               lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
@@ -2120,10 +2120,9 @@ export default {
           continue;
         }
 
-        const cleaningPaymentPostback = parseQueryString(postbackDataString);
-        if (cleaningPaymentPostback.act === 'CLEANING_TENANT_PAY_METHOD') {
-          const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPaymentPostback, postbackDataString);
-          const ackText = buildCleaningPaymentMethodAckText(cleaningPaymentPostback);
+        if (cleaningPostback.act === 'CLEANING_TENANT_PAY_METHOD') {
+          const paymentPayload = buildCleaningPaymentMethodPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningPaymentMethodAckText(cleaningPostback);
           if (replyToken) {
             ctx.waitUntil(
               lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
@@ -2138,6 +2137,27 @@ export default {
           ctx.waitUntil(
             forwardToN8n(paymentPayload, env)
               .catch((err) => console.error('cleaning_payment_method_postback_forward_failed', err))
+          );
+          continue;
+        }
+
+        if (cleaningPostback.act === 'CLEANING_CASH_CONFIRM') {
+          const cashPayload = buildCleaningCashConfirmPostbackPayload(ev, cleaningPostback, postbackDataString);
+          const ackText = buildCleaningCashConfirmAckText(cleaningPostback);
+          if (replyToken) {
+            ctx.waitUntil(
+              lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }])
+                .catch((err) => console.error('cleaning_cash_confirm_postback_reply_failed', err))
+            );
+          } else if (cashPayload.chatId) {
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, cashPayload.chatId, ackText)
+                .catch((err) => console.error('cleaning_cash_confirm_postback_push_failed', err))
+            );
+          }
+          ctx.waitUntil(
+            forwardToN8n(cashPayload, env)
+              .catch((err) => console.error('cleaning_cash_confirm_postback_forward_failed', err))
           );
           continue;
         }
@@ -5638,6 +5658,41 @@ function buildCleaningPaymentMethodAckText(parsed) {
     : 'Payment selection completed. Thank you.';
 }
 
+function buildCleaningCashConfirmPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_postback',
+    intent: 'cleaning_cash_confirm',
+    act: 'CleaningCashConfirm',
+    cashAction: String(parsed?.act || ''),
+    cleaningId: String(parsed?.cleaningId || ''),
+    requestId: String(parsed?.requestId || ''),
+    billId: String(parsed?.billId || ''),
+    roomId: String(parsed?.roomId || ''),
+    price: String(parsed?.price || ''),
+    tenantLineUserId: String(parsed?.tenantLineUserId || ''),
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(source),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    receivedAt
+  };
+}
+
+function buildCleaningCashConfirmAckText(parsed) {
+  const roomId = String(parsed?.roomId || '').trim();
+  const price = String(parsed?.price || '').trim();
+  const details = [
+    roomId ? `room ${roomId}` : '',
+    price ? `${price} THB` : ''
+  ].filter(Boolean).join(', ');
+  return details
+    ? `Cash payment confirmed (${details}). Sending confirmation now.`
+    : 'Cash payment confirmed. Sending confirmation now.';
+}
+
 function normalizeManagerDecision(value) {
   const normalized = String(value || '').trim().toUpperCase();
   if (!normalized) return '';
@@ -7567,6 +7622,8 @@ export const __testables = {
   buildCleaningBillingAckText,
   buildCleaningPaymentMethodPostbackPayload,
   buildCleaningPaymentMethodAckText,
+  buildCleaningCashConfirmPostbackPayload,
+  buildCleaningCashConfirmAckText,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

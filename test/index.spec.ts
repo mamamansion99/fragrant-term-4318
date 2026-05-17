@@ -175,6 +175,53 @@ describe('Worker routes', () => {
 		);
 	});
 
+	it('normalizes cleaning cash confirmation postbacks', () => {
+		const postbackData = 'act=CLEANING_CASH_CONFIRM&cleaningId=CLNROW-1&requestId=CLN-20260517-123456&billId=BILL-9&roomId=A101&price=300&tenantLineUserId=Utenant';
+		const parsed = __testables.parseQueryString(postbackData);
+		const payload = __testables.buildCleaningCashConfirmPostbackPayload(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				source: {
+					type: 'group',
+					groupId: 'CmanagerGroup',
+					userId: 'Umanager'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			'2026-05-17T00:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			intent: 'cleaning_cash_confirm',
+			act: 'CleaningCashConfirm',
+			cashAction: 'CLEANING_CASH_CONFIRM',
+			cleaningId: 'CLNROW-1',
+			requestId: 'CLN-20260517-123456',
+			billId: 'BILL-9',
+			roomId: 'A101',
+			price: '300',
+			tenantLineUserId: 'Utenant',
+			lineUserId: 'Umanager',
+			chatId: 'CmanagerGroup',
+			sourceType: 'group',
+			replyToken: 'reply-token',
+			postbackData,
+			webhookEventId: 'event-id',
+			receivedAt: '2026-05-17T00:00:00.000Z'
+		});
+		expect(__testables.buildCleaningCashConfirmAckText(parsed)).toBe(
+			'Cash payment confirmed (room A101, 300 THB). Sending confirmation now.'
+		);
+		expect(__testables.buildCleaningCashConfirmAckText({})).toBe(
+			'Cash payment confirmed. Sending confirmation now.'
+		);
+	});
+
 	it('does not let checkin keycard fallback capture private reservation images', () => {
 		const state = {
 			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
