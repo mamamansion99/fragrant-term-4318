@@ -456,7 +456,11 @@ function parseCleaningCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
 
-  if (raw === 'บริการทำความสะอาด') {
+  if (
+    raw === 'บริการทำความสะอาด' ||
+    raw === 'จ่ายค่าทำความสะอาด' ||
+    raw === 'ชำระค่าทำความสะอาด'
+  ) {
     return { act: 'tenant', roomId: '' };
   }
 
@@ -3779,6 +3783,7 @@ export default {
               'ชำระบิลทั่วไป',
               '- ชำระค่าเช่าห้อง',
               '- ชำระค่าลืมกุญแจ',
+              '- จ่ายค่าทำความสะอาด',
               '',
               'เช่าทรัพย์สินเพิ่มเติม',
               '- ชำระค่าเช่ากุญแจ',
@@ -6535,7 +6540,8 @@ function buildPaymentOptionsFlex() {
             contents: [
               sectionHeader('ชำระบิลทั่วไป'),
               optionCard('ชำระค่าเช่าห้อง', 'ค่าเช่าห้องรายเดือน', 'ชำระค่าเช่า'),
-              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ')
+              optionCard('ชำระค่าลืมกุญแจ', 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย', 'ชำระค่าลืมกุญแจ'),
+              optionCard('จ่ายค่าทำความสะอาด', 'ค่าทำความสะอาดห้อง 300-500 บาท', 'จ่ายค่าทำความสะอาด')
             ]
           },
           {
@@ -7624,6 +7630,7 @@ export const __testables = {
   buildCleaningPaymentMethodAckText,
   buildCleaningCashConfirmPostbackPayload,
   buildCleaningCashConfirmAckText,
+  buildPaymentOptionsFlex,
   parseKeyRent,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,

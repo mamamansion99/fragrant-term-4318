@@ -52,6 +52,14 @@ describe('Worker routes', () => {
 			act: 'tenant',
 			roomId: ''
 		});
+		expect(__testables.parseCleaningCommand('จ่ายค่าทำความสะอาด')).toEqual({
+			act: 'tenant',
+			roomId: ''
+		});
+		expect(__testables.parseCleaningCommand('ชำระค่าทำความสะอาด')).toEqual({
+			act: 'tenant',
+			roomId: ''
+		});
 		expect(__testables.parseCleaningCommand('ทำความสะอาด a101')).toEqual({
 			act: 'management',
 			roomId: 'A101'
@@ -61,6 +69,14 @@ describe('Worker routes', () => {
 			roomId: 'A101'
 		});
 		expect(__testables.parseCleaningCommand('บริการอื่น')).toBeNull();
+	});
+
+	it('includes cleaning payment in the payment options flex', () => {
+		const flex = __testables.buildPaymentOptionsFlex() as Record<string, any>;
+		const serialized = JSON.stringify(flex);
+
+		expect(serialized).toContain('จ่ายค่าทำความสะอาด');
+		expect(serialized).toContain('ค่าทำความสะอาดห้อง 300-500 บาท');
 	});
 
 	it('restricts cleaning management commands to approved line users', () => {
