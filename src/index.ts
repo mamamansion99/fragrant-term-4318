@@ -635,6 +635,78 @@ function buildBookingFlowKey(userId, chatId) {
   return 'booking_flow:unknown';
 }
 
+const ACTIVE_FLOW_KEY_PREFIX = 'active_flow:';
+const RESERVATION_ACTIVE_FLOW_PHASES = new Set(['await_slip', 'confirm_slip', 'await_id', 'confirm_id']);
+
+function buildActiveFlowKey(userId) {
+  return `${ACTIVE_FLOW_KEY_PREFIX}${String(userId || '').trim()}`;
+}
+
+function getReservationFlowTtlSecondsByPhase(phase) {
+  const p = String(phase || '').trim().toLowerCase();
+  if (p === 'await_id' || p === 'confirm_id') return BOOKING_ID_TTL_SECONDS;
+  return BOOKING_SLIP_TTL_SECONDS;
+}
+
+function isReservationActiveFlowPhase(phase) {
+  return RESERVATION_ACTIVE_FLOW_PHASES.has(String(phase || '').trim().toLowerCase());
+}
+
+function isReservationFlowScopeMatchEvent(flow, ev) {
+  if (!flow || !ev) return false;
+  const source = ev.source || {};
+  const sourceType = String(source.type || '').trim();
+  const userId = String(source.userId || '').trim();
+  const flowUserId = String(flow.userId || '').trim();
+  const flowScopeType = String(flow.scopeType || '').trim();
+  const flowScopeId = String(flow.scopeId || '').trim();
+  if (flowUserId && userId && flowUserId !== userId) return false;
+  if (!flowScopeType) return true;
+  if (flowScopeType === 'user') return sourceType === 'user';
+  if (flowScopeType === 'group') return sourceType === 'group' && String(source.groupId || '').trim() === flowScopeId;
+  if (flowScopeType === 'room') return sourceType === 'room' && String(source.roomId || '').trim() === flowScopeId;
+  return true;
+}
+
+async function setActiveFlow(env, userId, flow) {
+  const uid = String(userId || '').trim();
+  if (!uid || !flow || typeof flow !== 'object') return;
+  const now = Date.now();
+  const phase = String(flow.phase || '').trim().toLowerCase() || 'await_slip';
+  const ttl = Math.max(60, Number(flow.ttlSeconds) || getReservationFlowTtlSecondsByPhase(phase));
+  const state = {
+    flowType: String(flow.flowType || 'reservation').trim().toLowerCase(),
+    phase,
+    code: flow.code ? String(flow.code).trim().toUpperCase() : '',
+    scopeType: String(flow.scopeType || 'user').trim(),
+    scopeId: String(flow.scopeId || '').trim(),
+    userId: uid,
+    ts: now,
+    expiresAt: now + (ttl * 1000)
+  };
+  await kvPut(env, buildActiveFlowKey(uid), state, ttl);
+}
+
+async function getActiveFlow(env, userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  const key = buildActiveFlowKey(uid);
+  const flow = await kvGet(env, key);
+  if (!flow) return null;
+  const expiresAt = Number(flow.expiresAt || 0);
+  if (expiresAt && Date.now() > expiresAt) {
+    await kvDel(env, key);
+    return null;
+  }
+  return flow;
+}
+
+async function clearActiveFlow(env, userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return;
+  await kvDel(env, buildActiveFlowKey(uid));
+}
+
 function extractBookingCode(text) {
   const match = /MM\d{3,}/i.exec(text || '');
   if (!match) return null;
@@ -2393,6 +2465,31 @@ export default {
           if (resvUrl) {
             const chatId = getChatId(ev);
             const codeHint = String(data.code || data.bookingCode || '').trim();
+            const flowUserId = String(ev?.source?.userId || '').trim();
+            const currentFlow = flowUserId ? await getActiveFlow(env, flowUserId) : null;
+            const normalizedCode = codeHint
+              ? extractBookingCode(codeHint) || String(codeHint).trim().toUpperCase()
+              : String(currentFlow?.code || '').trim().toUpperCase();
+            const scopeType = String(ev?.source?.type || '').trim() || 'user';
+            const scopeId = scopeType === 'group'
+              ? String(ev?.source?.groupId || '').trim()
+              : (scopeType === 'room' ? String(ev?.source?.roomId || '').trim() : '');
+            if (flowUserId) {
+              if (act === 'id_yes') {
+                ctx.waitUntil(clearActiveFlow(env, flowUserId));
+              } else {
+                const nextPhase = (act === 'confirm' || act === 'booking_confirm')
+                  ? 'await_slip'
+                  : (act === 'slip_yes' ? 'await_id' : (act === 'slip_no' ? 'await_slip' : 'await_id'));
+                ctx.waitUntil(setActiveFlow(env, flowUserId, {
+                  flowType: 'reservation',
+                  phase: nextPhase,
+                  code: normalizedCode || '',
+                  scopeType: scopeType || 'user',
+                  scopeId
+                }));
+              }
+            }
             const ackMsg = (act === 'id_yes' || act === 'id_no')
               ? 'กำลังประมวลผลค่ะ โปรดรอสักครู่'
               : (codeHint
@@ -4288,9 +4385,23 @@ export default {
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const resvUrl = getReservationGas(env);
             const bookingCode = extractBookingCode(textIn);
+            const scopeType = String(ev?.source?.type || '').trim() || 'user';
+            const scopeId = scopeType === 'group'
+              ? String(ev?.source?.groupId || '').trim()
+              : (scopeType === 'room' ? String(ev?.source?.roomId || '').trim() : '');
             if (!resvUrl) {
               await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
               continue;
+            }
+            if (userId) {
+              ctx.waitUntil(setActiveFlow(env, userId, {
+                flowType: 'reservation',
+                phase: 'await_confirm',
+                code: bookingCode || '',
+                scopeType,
+                scopeId,
+                ttlSeconds: BOOKING_SLIP_TTL_SECONDS
+              }));
             }
             const ackMsg = bookingCode
               ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
@@ -4601,6 +4712,8 @@ export default {
         // === IMAGE ===
         if (m.type === 'image') {
           const chatId = getChatId(ev);
+          const imageUserId = String(ev?.source?.userId || '').trim();
+          const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
           // Optional quick ack
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
             { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
@@ -4609,6 +4722,28 @@ export default {
           const autoImgUrl = getAutoImgGas(env);
           if (autoImgUrl) {
             ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev] }));
+          }
+
+          if (
+            reservationActiveFlow &&
+            String(reservationActiveFlow.flowType || '') === 'reservation' &&
+            isReservationActiveFlowPhase(reservationActiveFlow.phase) &&
+            isReservationFlowScopeMatchEvent(reservationActiveFlow, ev)
+          ) {
+            const resvUrl = getReservationGas(env);
+            if (resvUrl) {
+              console.log('reservation_image_forward_by_active_flow', {
+                chatId,
+                userId: imageUserId,
+                phase: reservationActiveFlow.phase,
+                code: reservationActiveFlow.code || '',
+                scopeType: reservationActiveFlow.scopeType || '',
+                scopeId: reservationActiveFlow.scopeId || '',
+                resvUrl
+              });
+              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+              continue;
+            }
           }
 
           const stateKey = getStateKey(ev);
