@@ -319,10 +319,12 @@ function isCheckinKeycardWaitingPhotoStateForEvent(state, groupId, userId) {
   const eventGroupId = String(groupId || '').trim();
   const eventUserId = String(userId || '').trim();
 
-  // Keycard photos are started from the manager group. Do not let the
-  // user-only fallback capture private-chat images such as reservation slips.
-  if (stateGroupId && !eventGroupId) return false;
-  if (stateGroupId && eventGroupId && stateGroupId !== eventGroupId) return false;
+  // Keycard-photo mode must always be group-scoped. Reject legacy/malformed
+  // states (missing groupId) so they cannot hijack unrelated image flows.
+  if (!stateGroupId) return false;
+  // Never apply keycard state to 1:1/private events.
+  if (!eventGroupId) return false;
+  if (stateGroupId !== eventGroupId) return false;
   if (stateManagerUserId && eventUserId && stateManagerUserId !== eventUserId) return false;
   return true;
 }
