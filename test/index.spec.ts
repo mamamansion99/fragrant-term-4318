@@ -70,9 +70,11 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
-	it('uses OTHERS for generic penalty payment flow reasons', () => {
-		expect(__testables.normalizePenaltyFlowReason('penalty', 'จอดรถ')).toBe('OTHERS');
-		expect(__testables.normalizePenaltyFlowReason('Others_payment', 'ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
+	it('uses OTHERS as the generic penalty slip type while preserving typed categories', () => {
+		expect(__testables.normalizePenaltySlipType('penalty')).toBe('OTHERS');
+		expect(__testables.normalizePenaltySlipType('Others_payment')).toBe('Others_payment');
+		expect(__testables.normalizePenaltyFlowReason('จอดรถ')).toBe('จอดรถ');
+		expect(__testables.normalizePenaltyFlowReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
 	it('normalizes cleaning manager price postbacks', () => {
