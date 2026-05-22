@@ -3936,7 +3936,7 @@ export default {
 
             const updated = {
               ...penaltyFlow,
-              reason: normalizePenaltyReason(reason),
+              reason: normalizePenaltyFlowReason(penaltyFlow?.type, reason),
               ts: Date.now(),
               chatId,
               userId
@@ -4946,7 +4946,7 @@ export default {
               chatId,
               imageMessageId: ev?.message?.id || null,
               type: penaltyFlow?.type || 'penalty',
-              reason: penaltyFlow?.reason || '',
+              reason: normalizePenaltyFlowReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || ''),
               receivedAt: new Date().toISOString()
             };
 
@@ -5309,6 +5309,11 @@ function normalizePenaltyReason(reason) {
   if (isRentKeyReason) return 'KEY_RENT';
   if (isCleaningPaymentReason) return 'CLEANING_PAYMENT';
   return text;
+}
+
+function normalizePenaltyFlowReason(type, reason) {
+  if (String(type || '').trim() === 'penalty') return 'OTHERS';
+  return normalizePenaltyReason(reason);
 }
 /* =========================================
  * 6) Message builders
@@ -7972,5 +7977,6 @@ export const __testables = {
   buildParkingOutsiderPhoneState,
   normalizeParkingPhone,
   isValidParkingPhone,
-  buildParkingOutsiderPhonePayload
+  buildParkingOutsiderPhonePayload,
+  normalizePenaltyFlowReason
 };

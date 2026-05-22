@@ -70,6 +70,11 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
+	it('uses OTHERS for generic penalty payment flow reasons', () => {
+		expect(__testables.normalizePenaltyFlowReason('penalty', 'จอดรถ')).toBe('OTHERS');
+		expect(__testables.normalizePenaltyFlowReason('Others_payment', 'ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
+	});
+
 	it('normalizes cleaning manager price postbacks', () => {
 		const postbackData = 'act=CLEANING_MANAGER_PRICE&requestId=CLN-20260517-123456&roomId=A101&price=300&tenantLineUserId=Utenant&source=TENANT_LINE';
 		const parsed = __testables.parseQueryString(postbackData);
