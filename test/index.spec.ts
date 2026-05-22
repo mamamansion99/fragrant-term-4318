@@ -573,6 +573,80 @@ describe('Worker routes', () => {
 		})).toBe('https://example.com/prebook');
 	});
 
+	it('builds outsider parking phone state for a two minute wait window', () => {
+		const postbackPayload = __testables.buildParkingPostbackPayload({
+			lineUserId: 'Uparking',
+			chatId: 'Uparking',
+			customerType: 'outsider'
+		}) as Record<string, unknown>;
+		const tenantPayload = __testables.buildParkingPostbackPayload({
+			lineUserId: 'Utenant',
+			chatId: 'Utenant',
+			customerType: 'tenant'
+		}) as Record<string, unknown>;
+		const state = __testables.buildParkingOutsiderPhoneState({
+			lineUserId: 'Uparking',
+			chatId: 'Uparking',
+			requestData: postbackPayload
+		}) as Record<string, any>;
+
+		expect(__testables.PARKING_OUTSIDER_PHONE_TTL_SECONDS).toBe(120);
+		expect(__testables.parkingOutsiderPhoneFlowKey('Uparking')).toBe('parking:outsider-phone:Uparking');
+		expect(postbackPayload).toMatchObject({
+			customerType: 'outsider',
+			customerLabel: 'บุคคลภายนอก',
+			pricePerMonth: 1000
+		});
+		expect(tenantPayload.customerType).toBeUndefined();
+		expect(state).toMatchObject({
+			state: __testables.PARKING_OUTSIDER_PHONE_STATE,
+			type: 'parking',
+			plan: 'parking',
+			customerType: 'outsider',
+			lineUserId: 'Uparking',
+			chatId: 'Uparking',
+			requestData: postbackPayload
+		});
+		expect(typeof state.ts).toBe('number');
+	});
+
+	it('normalizes and validates parking outsider phone replies', () => {
+		expect(__testables.normalizeParkingPhone('081-234-5678')).toBe('0812345678');
+		expect(__testables.normalizeParkingPhone('+66 81 234 5678')).toBe('+66812345678');
+		expect(__testables.isValidParkingPhone('081-234-5678')).toBe(true);
+		expect(__testables.isValidParkingPhone('+66 81 234 5678')).toBe(true);
+		expect(__testables.isValidParkingPhone('12345')).toBe(false);
+	});
+
+	it('builds parking outsider phone payload for n8n', () => {
+		const payload = __testables.buildParkingOutsiderPhonePayload(
+			{
+				source: {
+					type: 'user',
+					userId: 'Uparking'
+				}
+			} as any,
+			'0812345678',
+			{ chatId: 'Uparking' },
+			'081-234-5678'
+		) as Record<string, any>;
+
+		expect(payload.source).toBe('line_message');
+		expect(payload.channel).toBe('parking');
+		expect(payload.data).toMatchObject({
+			act: 'parking_outsider_phone_received',
+			type: 'parking',
+			plan: 'parking',
+			customerType: 'outsider',
+			customerLabel: 'บุคคลภายนอก',
+			pricePerMonth: 1000,
+			lineUserId: 'Uparking',
+			chatId: 'Uparking',
+			phone: '0812345678',
+			rawPhoneText: '081-234-5678'
+		});
+	});
+
 	it('parses direct key-rent command with mobile banking payment suffix', () => {
 		const parsed = __testables.parseKeyRent('เช่าชุดกุญแจ A101 โอน') as Record<string, unknown>;
 		expect(parsed).toBeTruthy();

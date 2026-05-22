@@ -3316,9 +3316,24 @@ export default {
             data: sanitizedParking,
             receivedAt: new Date().toISOString()
           };
+          const shouldWaitForOutsiderPhone = selectedParkingSegment?.key === 'outsider' && !!sanitizedParking.lineUserId;
+          if (shouldWaitForOutsiderPhone) {
+            await kvPut(
+              env,
+              parkingOutsiderPhoneFlowKey(sanitizedParking.lineUserId),
+              buildParkingOutsiderPhoneState({
+                lineUserId: sanitizedParking.lineUserId,
+                chatId: sanitizedParking.chatId,
+                requestData: sanitizedParking
+              }),
+              PARKING_OUTSIDER_PHONE_TTL_SECONDS
+            );
+          }
 
           if (replyToken) {
-            const ackText = selectedParkingSegment
+            const ackText = shouldWaitForOutsiderPhone
+              ? `รับคำขอเช่าที่จอดรถ (${selectedParkingSegment.label} ${selectedParkingSegment.pricePerMonth.toLocaleString('th-TH')} บาท/เดือน) แล้วครับ กรุณาส่งเบอร์โทรศัพท์ภายใน 2 นาที เพื่อให้เจ้าหน้าที่ติดต่อกลับครับ`
+              : selectedParkingSegment
               ? `รับคำขอเช่าที่จอดรถ (${selectedParkingSegment.label} ${selectedParkingSegment.pricePerMonth.toLocaleString('th-TH')} บาท/เดือน) แล้วครับ กำลังตรวจสอบความว่างให้ทันที`
               : 'รับคำขอที่จอดรถแล้วครับ กำลังตรวจสอบความว่างให้ทันที';
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -3587,6 +3602,10 @@ export default {
           ctx.waitUntil(
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
+
+          if (await handleParkingOutsiderPhoneText(env, ctx, ev, replyToken, textIn)) {
+            continue;
+          }
 
           const cleaningCommand = parseCleaningCommand(textIn);
           if (cleaningCommand) {
@@ -6792,6 +6811,13 @@ function buildPaymentOptionsFlex() {
 const PARKING_CUSTOMER_SEGMENTS = {
   outsider: { key: 'outsider', label: 'บุคคลภายนอก', pricePerMonth: 1000 }
 };
+const PARKING_OUTSIDER_PHONE_TTL_SECONDS = 2 * 60;
+const PARKING_OUTSIDER_PHONE_STATE = 'WAITING_PARKING_OUTSIDER_PHONE';
+
+function parkingOutsiderPhoneFlowKey(userId) {
+  const id = String(userId || '').trim();
+  return id ? `parking:outsider-phone:${id}` : '';
+}
 
 function getParkingSegmentByKey(segmentKey) {
   const key = String(segmentKey || '').toLowerCase();
@@ -6819,6 +6845,95 @@ function buildParkingPostbackPayload(options = {}) {
     customerLabel: segment.label,
     pricePerMonth: segment.pricePerMonth
   };
+}
+
+function buildParkingOutsiderPhoneState(options = {}) {
+  return {
+    state: PARKING_OUTSIDER_PHONE_STATE,
+    type: 'parking',
+    plan: 'parking',
+    customerType: 'outsider',
+    customerLabel: PARKING_CUSTOMER_SEGMENTS.outsider.label,
+    pricePerMonth: PARKING_CUSTOMER_SEGMENTS.outsider.pricePerMonth,
+    lineUserId: options.lineUserId || null,
+    chatId: options.chatId || null,
+    requestData: options.requestData || null,
+    ts: Date.now()
+  };
+}
+
+function normalizeParkingPhone(text) {
+  const cleaned = String(text || '').trim().replace(/[^\d+]/g, '');
+  if (!cleaned) return '';
+  if (cleaned.startsWith('+')) {
+    return `+${cleaned.slice(1).replace(/\+/g, '')}`;
+  }
+  return cleaned.replace(/\+/g, '');
+}
+
+function isValidParkingPhone(phone) {
+  const normalized = normalizeParkingPhone(phone);
+  return /^0\d{8,9}$/.test(normalized) || /^\+66\d{8,9}$/.test(normalized);
+}
+
+function buildParkingOutsiderPhonePayload(event, phone, flowState = {}, rawText = '') {
+  const lineUserId = event?.source?.userId || flowState.lineUserId || null;
+  const chatId = getChatId(event) || flowState.chatId || null;
+  return {
+    source: 'line_message',
+    channel: 'parking',
+    event,
+    data: {
+      act: 'parking_outsider_phone_received',
+      type: 'parking',
+      plan: 'parking',
+      customerType: 'outsider',
+      customerLabel: PARKING_CUSTOMER_SEGMENTS.outsider.label,
+      pricePerMonth: PARKING_CUSTOMER_SEGMENTS.outsider.pricePerMonth,
+      lineUserId,
+      chatId,
+      phone,
+      rawPhoneText: rawText
+    },
+    receivedAt: new Date().toISOString()
+  };
+}
+
+async function handleParkingOutsiderPhoneText(env, ctx, event, replyToken, textIn) {
+  const userId = event?.source?.userId || '';
+  const key = parkingOutsiderPhoneFlowKey(userId);
+  if (!key) return false;
+
+  const flowState = await kvGet(env, key);
+  if (!flowState || flowState.state !== PARKING_OUTSIDER_PHONE_STATE) return false;
+
+  const phone = normalizeParkingPhone(textIn);
+  if (!isValidParkingPhone(phone)) {
+    if (replyToken) {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+        { type: 'text', text: 'กรุณาส่งเบอร์โทรศัพท์ให้ถูกต้อง เช่น 0812345678 ภายใน 2 นาทีครับ' }
+      ]).catch(console.error);
+    }
+    return true;
+  }
+
+  const parkingPayload = buildParkingOutsiderPhonePayload(event, phone, flowState, textIn);
+  await kvDel(env, key);
+
+  if (replyToken) {
+    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+      { type: 'text', text: 'ได้รับเบอร์โทรศัพท์แล้วครับ เจ้าหน้าที่จะติดต่อกลับเพื่อตรวจสอบที่จอดรถให้ครับ' }
+    ]).catch(console.error);
+  }
+
+  ctx.waitUntil(
+    notifyN8nParking(env, parkingPayload).catch((err) => console.error('parking phone notify failed', err))
+  );
+  ctx.waitUntil(
+    forwardToGas(env, { events: [event], parking: parkingPayload }).catch((err) => console.error('parking phone gas forward failed', err))
+  );
+
+  return true;
 }
 
 function parkingPlanTextMessage() {
@@ -7849,5 +7964,13 @@ export const __testables = {
   isRoomRentInquiry,
   quickKeywordReply,
   isCheckinKeycardWaitingPhotoStateForEvent,
-  normalizePenaltyReason
+  normalizePenaltyReason,
+  buildParkingPostbackPayload,
+  PARKING_OUTSIDER_PHONE_TTL_SECONDS,
+  PARKING_OUTSIDER_PHONE_STATE,
+  parkingOutsiderPhoneFlowKey,
+  buildParkingOutsiderPhoneState,
+  normalizeParkingPhone,
+  isValidParkingPhone,
+  buildParkingOutsiderPhonePayload
 };
