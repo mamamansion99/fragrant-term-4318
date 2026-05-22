@@ -73,6 +73,8 @@ describe('Worker routes', () => {
 	it('uses OTHERS as the generic penalty slip type while preserving typed categories', () => {
 		expect(__testables.normalizePenaltySlipType('penalty')).toBe('OTHERS');
 		expect(__testables.normalizePenaltySlipType('Others_payment')).toBe('Others_payment');
+		expect(__testables.normalizePenaltySlipReason('penalty', 'จอดรถ')).toBe('OTHERS');
+		expect(__testables.normalizePenaltySlipReason('Others_payment', 'ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 		expect(__testables.normalizePenaltyFlowReason('จอดรถ')).toBe('จอดรถ');
 		expect(__testables.normalizePenaltyFlowReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
