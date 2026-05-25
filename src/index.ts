@@ -4162,7 +4162,8 @@ export default {
                   userId,
                   type: penaltyType || 'penalty',
                   reason: genericPenalty ? 'OTHERS' : null,
-                  categories: genericPenalty ? 'OTHERS' : ''
+                  categories: genericPenalty ? 'OTHERS' : '',
+                  webhookTarget: genericPenalty ? 'warn_payment' : ''
                 },
                 PENALTY_FLOW_TTL_SECONDS
               )
@@ -4956,7 +4957,9 @@ export default {
 
             let ok = false;
             try {
-              ok = await Penalty_webhook(env, slipPayload);
+              ok = await Penalty_webhook(env, slipPayload, {
+                target: penaltyFlow?.webhookTarget || ''
+              });
             } catch (err) {
               console.error('Penalty_webhook failed', err);
             }
@@ -7774,8 +7777,17 @@ function getPenaltyWebhook(env) {
   return env.PENALTY_WEBHOOK_URL || '';
 }
 
-async function Penalty_webhook(env, payload) {
-  const url = getPenaltyWebhook(env);
+const DEFAULT_WARN_PAYMENT_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/warn-payment';
+
+function getWarnPaymentWebhook(env) {
+  return env.N8N_WARN_PAYMENT_WEBHOOK_URL || DEFAULT_WARN_PAYMENT_WEBHOOK_URL;
+}
+
+async function Penalty_webhook(env, payload, options = {}) {
+  const target = String(options?.target || '').trim();
+  const url = target === 'warn_payment'
+    ? getWarnPaymentWebhook(env)
+    : getPenaltyWebhook(env);
   if (!url) {
     console.warn('Penalty_webhook: missing webhook URL');
     return false;
