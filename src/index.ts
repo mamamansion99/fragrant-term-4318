@@ -3770,9 +3770,13 @@ export default {
                         /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย)\s*$/i.test(textIn)
                           ? 'KEY_FORGOT'
                           : (
-                            /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
-                              ? 'CHECKOUT'
-                              : null
+                            /^\s*(ชำระค่าเช็คเอ้าท์สอง|จ่ายค่าเช็คเอ้าท์สอง|ชำระค่าเช็คเอาท์สอง|จ่ายค่าเช็คเอาท์สอง|ชำระค่าcheckout2|จ่ายค่าcheckout2|checkout2 payment)\s*$/i.test(textIn)
+                              ? 'CHECKOUT2'
+                              : (
+                                /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
+                                  ? 'CHECKOUT'
+                                  : null
+                              )
                           )
                       )
                   )
