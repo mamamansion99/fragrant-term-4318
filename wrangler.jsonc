@@ -25,7 +25,7 @@
     "N8N_RENT_KEY_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-key",
     "N8N_RETURN_KEY_DECISION_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key_Desicion",
     "N8N_PAYRENT_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/pay-rent",
-    "PENALTY_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/9bc40121-6fbe-4aa9-918c-a8b04cc88740",
+    "PENALTY_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/warn-payment",
     "N8N_CHECKOUT_START_WEBHOOK": "https://n8n.srv1112305.hstgr.cloud/webhook/checkout",
     "N8N_CO_ADMIN_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/co-admin",
     "N8N_CLEANING_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm",

@@ -3777,7 +3777,7 @@ export default {
                       )
                   )
               );
-          const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
+          const penaltyMatch = /^\s*(ค่าปรับ|ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
           const isPenaltyPayment = !!penaltyMatch;
           const penaltyType = penaltyMatch
             ? (penaltyMatch[1].includes('อื่น') ? 'Others_payment' : 'penalty')
@@ -4139,15 +4139,16 @@ export default {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
 
-            const askReason = penaltyType === 'Others_payment'
-              ? 'เป็นค่าอะไรคะ เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม, ค่าผ้า ฯลฯ'
-              : 'ค่าปรับเรื่องอะไรคะ เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
+            const genericPenalty = (penaltyType || 'penalty') === 'penalty';
+            const replyText = genericPenalty
+              ? 'โปรดส่งสลิปได้เลยค่ะ'
+              : 'เป็นค่าอะไรคะ เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม, ค่าผ้า ฯลฯ';
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: askReason }
+                { type: 'text', text: replyText }
               ]).catch(console.error);
             } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askReason).catch(console.error));
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, replyText).catch(console.error));
             }
 
             ctx.waitUntil(kvDel(env, payRentKey)); // switch to penalty flow, clear rent flag
@@ -4160,7 +4161,8 @@ export default {
                   chatId,
                   userId,
                   type: penaltyType || 'penalty',
-                  reason: null
+                  reason: genericPenalty ? 'OTHERS' : null,
+                  categories: genericPenalty ? 'OTHERS' : ''
                 },
                 PENALTY_FLOW_TTL_SECONDS
               )
