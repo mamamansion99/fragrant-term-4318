@@ -3777,7 +3777,7 @@ export default {
                       )
                   )
               );
-          const penaltyMatch = /^\s*(ค่าปรับ|ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
+          const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
           const isPenaltyPayment = !!penaltyMatch;
           const penaltyType = penaltyMatch
             ? (penaltyMatch[1].includes('อื่น') ? 'Others_payment' : 'penalty')
