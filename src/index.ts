@@ -372,6 +372,34 @@ function getKeyRentPaymentFlowByStartAction(action) {
   return 'CASH';
 }
 
+function isCheckout2PaymentPostback(data) {
+  const action = String(
+    data?.act ||
+    data?.action ||
+    data?.type ||
+    data?.eventType ||
+    data?.postbackType ||
+    data?.Category ||
+    data?.category ||
+    ''
+  ).trim().toUpperCase();
+  return action === 'CHECKOUT2';
+}
+
+function buildCheckout2PaymentFlowState(data, event, postbackDataString, ts = Date.now()) {
+  const roomId = String(data?.roomId || data?.RoomID || data?.room || '').trim().toUpperCase();
+  return {
+    ts,
+    chatId: getChatId(event),
+    userId: event?.source?.userId || String(data?.lineUserId || data?.LINEUserId || data?.LineUserId || ''),
+    type: 'Others_payment',
+    reason: 'CHECKOUT2',
+    categories: 'CHECKOUT2',
+    roomId,
+    postbackData: String(postbackDataString || '')
+  };
+}
+
 function buildCheckinFlowKey(userId, chatId) {
   if (userId) {
     return `checkin_flow:${userId}`;
@@ -2316,6 +2344,32 @@ export default {
         const act = String(data.act || '').trim();
         const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
         const postbackActionLower = postbackAction.toLowerCase();
+        if (isCheckout2PaymentPostback(data)) {
+          const chatId = getChatId(ev);
+          const stateKey = getStateKey(ev);
+          const penaltyKey = stateKey + ':penalty_flow';
+          const payRentKey = stateKey + ':payrent_flow';
+          const flow = buildCheckout2PaymentFlowState(data, ev, postbackDataString);
+
+          await kvDel(env, payRentKey);
+          await kvPut(
+            env,
+            penaltyKey,
+            flow,
+            PENALTY_FLOW_TTL_SECONDS
+          );
+
+          const askSlip = flow.roomId
+            ? `บันทึกรายการ CHECKOUT2 ห้อง ${flow.roomId} แล้ว โปรดส่งสลิปได้เลยค่ะ`
+            : 'บันทึกรายการ CHECKOUT2 แล้ว โปรดส่งสลิปได้เลยค่ะ';
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
+          }
+          continue;
+        }
+
         if (act === CLEANING_TENANT_CONFIRM_ACT) {
           const chatId = getChatId(ev);
           const userId = ev?.source?.userId || '';
@@ -4956,6 +5010,8 @@ export default {
               type: normalizePenaltySlipType(penaltyFlow?.type || 'penalty'),
               reason: normalizePenaltySlipReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || ''),
               categories: penaltyFlow?.categories || penaltyFlow?.reason || '',
+              roomId: penaltyFlow?.roomId || penaltyFlow?.room || '',
+              room: penaltyFlow?.roomId || penaltyFlow?.room || '',
               receivedAt: new Date().toISOString()
             };
 
@@ -7980,6 +8036,9 @@ export const __testables = {
   buildCleaningCashConfirmPostbackPayload,
   buildCleaningCashConfirmAckText,
   parseKeyRent,
+  parseCheckinCommand,
+  isCheckout2PaymentPostback,
+  buildCheckout2PaymentFlowState,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
   buildCleaningTenantConfirmFlex,

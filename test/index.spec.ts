@@ -551,6 +551,38 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(true);
 	});
 
+	it('parses the check-in room command', () => {
+		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101')).toBe('A101');
+		expect(__testables.parseCheckinCommand(' เช็คอินห้อง b514 ')).toBe('B514');
+		expect(__testables.parseCheckinCommand('เช็คอิน A101')).toBeNull();
+	});
+
+	it('arms CHECKOUT2 slip flow from postback button data', () => {
+		const data = __testables.parseQueryString(
+			'act=CHECKOUT2&Category=CHECKOUT2&category=CHECKOUT2&room=A101&roomId=A101&RoomID=A101&lineUserId=Utenant'
+		);
+		const event = {
+			source: { type: 'user', userId: 'Utenant' }
+		};
+		const state = __testables.buildCheckout2PaymentFlowState(
+			data,
+			event,
+			'act=CHECKOUT2&roomId=A101&lineUserId=Utenant',
+			123456
+		) as Record<string, unknown>;
+
+		expect(__testables.isCheckout2PaymentPostback(data)).toBe(true);
+		expect(state).toMatchObject({
+			ts: 123456,
+			chatId: 'Utenant',
+			type: 'Others_payment',
+			reason: 'CHECKOUT2',
+			categories: 'CHECKOUT2',
+			roomId: 'A101',
+			userId: 'Utenant'
+		});
+	});
+
 	it('allows co admin shortcuts for configured LINE user IDs only', () => {
 		expect(__testables.isCoAdminAllowedLineUserId('Ue90558b73d62863e2287ac32e69541a3')).toBe(true);
 		expect(__testables.isCoAdminAllowedLineUserId('U2855d93e108ccebbef7d1b55ec8827e5')).toBe(true);
