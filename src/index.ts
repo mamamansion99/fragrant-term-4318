@@ -481,9 +481,18 @@ function parseRoomToken(token) {
 
 function parseCleaningCommand(text) {
   const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
 
   if (raw === 'บริการทำความสะอาด') {
     return { act: 'tenant', roomId: '' };
+  }
+
+  const match =
+    raw.match(/^ทำความสะอาด\s+([AB]\d{3,4})$/i) ||
+    compact.match(/^ทำความสะอาด([AB]\d{3,4})$/i);
+
+  if (match) {
+    return { act: 'management', roomId: match[1].toUpperCase() };
   }
 
   return null;

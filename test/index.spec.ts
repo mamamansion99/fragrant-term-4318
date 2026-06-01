@@ -47,13 +47,19 @@ describe('Worker routes', () => {
 		expect(payload.row).toBe('75');
 	});
 
-	it('parses only the exact cleaning tenant command', () => {
+	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',
 			roomId: ''
 		});
-		expect(__testables.parseCleaningCommand('ทำความสะอาด a101')).toBeNull();
-		expect(__testables.parseCleaningCommand('ทำความสะอาดA101')).toBeNull();
+		expect(__testables.parseCleaningCommand('ทำความสะอาด a101')).toEqual({
+			act: 'management',
+			roomId: 'A101'
+		});
+		expect(__testables.parseCleaningCommand('ทำความสะอาดA101')).toEqual({
+			act: 'management',
+			roomId: 'A101'
+		});
 		expect(__testables.parseCleaningCommand('บริการอื่น')).toBeNull();
 	});
 
