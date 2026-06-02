@@ -502,6 +502,11 @@ function isCleaningManagementAllowedLineUserId(userId) {
   return CLEANING_MANAGEMENT_ALLOWED_LINE_USER_IDS.has(String(userId || '').trim());
 }
 
+function buildCleaningManagementAckText(roomId) {
+  const room = String(roomId || '').trim().toUpperCase() || '-';
+  return `รับคำสั่งทำความสะอาดห้อง ${room} แล้วค่ะ กำลังส่งงานให้ทีมทำความสะอาด`;
+}
+
 function buildCleaningTenantConfirmFlex() {
   return {
     type: 'flex',
@@ -3705,6 +3710,13 @@ export default {
             ctx.waitUntil(
               notifyN8nCleaning(env, cleaningPayload).catch((err) => console.error('cleaning webhook failed', err))
             );
+
+            const ackText = buildCleaningManagementAckText(cleaningCommand.roomId);
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
             continue;
           }
 
@@ -8050,6 +8062,7 @@ export const __testables = {
   buildCheckout2PaymentFlowState,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
+  buildCleaningManagementAckText,
   buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
   isCheckoutStartShortcut,

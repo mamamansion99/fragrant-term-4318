@@ -71,6 +71,12 @@ describe('Worker routes', () => {
 		expect(__testables.isCleaningManagementAllowedLineUserId('Ua3e2f84505daa64ee21b8608e8857c33')).toBe(false);
 	});
 
+	it('builds a room-specific cleaning management acknowledgement', () => {
+		expect(__testables.buildCleaningManagementAckText('a101')).toBe(
+			'รับคำสั่งทำความสะอาดห้อง A101 แล้วค่ะ กำลังส่งงานให้ทีมทำความสะอาด'
+		);
+	});
+
 	it('normalizes cleaning payment reasons to dedicated action key', () => {
 		expect(__testables.normalizePenaltyReason('จ่ายค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
