@@ -470,6 +470,10 @@ const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstg
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
 const DEFAULT_N8N_CLEANING_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm';
+const DEFAULT_N8N_BILL_MANUAL_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received';
+const BILL_MANUAL_PAY_CLICK_ACTION = 'BILL_PAY_CLICK';
+const BILL_MANUAL_PAYMENT_TTL_SECONDS = 10 * 60;
+const BILL_MANUAL_PAYMENT_KEY_PREFIX = 'bill-manual:payment:';
 const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 
@@ -2203,6 +2207,35 @@ export default {
         }
 
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
+        if (isBillManualPayClick(cleaningPostback)) {
+          const chatId = getChatId(ev);
+          const lineUserId = String(ev?.source?.userId || '').trim();
+          const stateKey = getBillManualPaymentStateKey(lineUserId);
+
+          if (!lineUserId || !stateKey || !hasKV(env)) {
+            const failText = 'ไม่สามารถเริ่มขั้นตอนรับสลิปได้ กรุณาลองกดปุ่มจ่ายรายการนี้อีกครั้งค่ะ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: failText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, failText).catch(console.error));
+            }
+            continue;
+          }
+
+          const paymentState = buildBillManualPaymentState(ev, cleaningPostback, postbackDataString);
+          await kvPut(env, stateKey, paymentState, BILL_MANUAL_PAYMENT_TTL_SECONDS);
+
+          const roomText = paymentState.room ? `ห้อง ${paymentState.room} ` : '';
+          const billText = paymentState.billId ? `เลขอ้างอิง ${paymentState.billId}` : 'รายการนี้';
+          const ackText = `เลือกชำระ${roomText}${billText}แล้วค่ะ กรุณาส่งสลิปในแชทนี้ภายใน 10 นาที`;
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+          continue;
+        }
+
         if (String(cleaningPostback.act || '').trim() === 'CLEANING_MANAGER_PRICE') {
           const billingPayload = buildCleaningBillingPostbackPayload(ev, cleaningPostback, postbackDataString);
           const ackText = buildCleaningBillingAckText(cleaningPostback);
@@ -4815,6 +4848,29 @@ export default {
         if (m.type === 'image') {
           const chatId = getChatId(ev);
           const imageUserId = String(ev?.source?.userId || '').trim();
+          const billManualState = imageUserId ? await getActiveBillManualPaymentState(env, imageUserId) : null;
+          if (billManualState) {
+            const slipPayload = buildBillManualSlipPayload(ev, billManualState);
+            ctx.waitUntil(
+              (async () => {
+                const ok = await notifyN8nBillManual(env, slipPayload);
+                if (ok) {
+                  await kvDel(env, getBillManualPaymentStateKey(imageUserId));
+                }
+              })().catch((err) => console.error('bill_manual_slip_forward_failed', err))
+            );
+
+            const ackText = billManualState.billId
+              ? `รับสลิปสำหรับเลขอ้างอิง ${billManualState.billId} แล้วค่ะ กำลังส่งต่อให้ระบบตรวจสอบ`
+              : 'รับสลิปแล้วค่ะ กำลังส่งต่อให้ระบบตรวจสอบ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
+            continue;
+          }
+
           const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
           // Optional quick ack
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -5848,6 +5904,77 @@ function parsePostbackData(raw) {
   }
 
   return {};
+}
+
+function getBillManualPaymentStateKey(lineUserId) {
+  const userId = String(lineUserId || '').trim();
+  return userId ? `${BILL_MANUAL_PAYMENT_KEY_PREFIX}${userId}` : '';
+}
+
+function isBillManualPayClick(parsed) {
+  return String(parsed?.action || '').trim() === BILL_MANUAL_PAY_CLICK_ACTION;
+}
+
+function buildBillManualPaymentState(event, parsed, postbackData, nowMs = Date.now()) {
+  const source = event?.source || {};
+  const lineUserId = String(source?.userId || '').trim();
+  const clickedAt = new Date(nowMs).toISOString();
+  return {
+    source: 'LINE_WORKER',
+    stateType: 'bill_manual_payment',
+    action: BILL_MANUAL_PAY_CLICK_ACTION,
+    lineUserId,
+    chatId: getChatId(event),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    postbackData: String(postbackData || ''),
+    billId: String(parsed?.billId || ''),
+    room: String(parsed?.room || parsed?.roomId || ''),
+    timestamp: event?.timestamp || nowMs,
+    clickedAt,
+    expiresAt: new Date(nowMs + BILL_MANUAL_PAYMENT_TTL_SECONDS * 1000).toISOString(),
+    webhookEventId: String(event?.webhookEventId || '')
+  };
+}
+
+function buildBillManualSlipPayload(event, state, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  const message = event?.message || {};
+  return {
+    source: 'LINE_WORKER',
+    eventType: 'image',
+    action: 'BILL_SLIP_RECEIVED',
+    lineUserId: String(source?.userId || ''),
+    chatId: getChatId(event),
+    sourceType: String(source?.type || ''),
+    replyToken: String(event?.replyToken || ''),
+    imageMessageId: String(message?.id || ''),
+    timestamp: event?.timestamp || Date.now(),
+    receivedAt,
+    billId: String(state?.billId || ''),
+    room: String(state?.room || ''),
+    clickedAt: String(state?.clickedAt || ''),
+    expiresAt: String(state?.expiresAt || ''),
+    postbackData: String(state?.postbackData || ''),
+    event,
+    state
+  };
+}
+
+async function getActiveBillManualPaymentState(env, lineUserId) {
+  const key = getBillManualPaymentStateKey(lineUserId);
+  if (!key) return null;
+
+  const state = await kvGet(env, key);
+  if (!state) return null;
+
+  const expiresAtMs = Date.parse(String(state?.expiresAt || ''));
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+    await kvDel(env, key);
+    return null;
+  }
+
+  return state;
 }
 
 function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
@@ -7987,6 +8114,40 @@ async function notifyN8nCleaning(env, payload) {
   }
 }
 
+function getN8nBillManualWebhookUrl(env) {
+  return env.N8N_BILL_MANUAL_WEBHOOK_URL || env.N8N_BILL_LINE_RECEIVER_URL || DEFAULT_N8N_BILL_MANUAL_WEBHOOK_URL;
+}
+
+async function notifyN8nBillManual(env, payload) {
+  const url = getN8nBillManualWebhookUrl(env);
+  if (!url) {
+    console.warn('notifyN8nBillManual: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = String(env.N8N_RECEIVER_SECRET || env.WORKER_SECRET || env.MM_WORKER_SECRET || '').trim();
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nBillManual: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nBillManual error', err);
+    return false;
+  }
+}
+
 async function notifyN8nGroupImage(env, payload) {
   const url = 'https://n8n.srv1112305.hstgr.cloud/webhook/Receipt_Ledger';
   if (!url) {
@@ -8056,6 +8217,12 @@ export const __testables = {
   buildCleaningPaymentMethodAckText,
   buildCleaningCashConfirmPostbackPayload,
   buildCleaningCashConfirmAckText,
+  BILL_MANUAL_PAYMENT_TTL_SECONDS,
+  getBillManualPaymentStateKey,
+  isBillManualPayClick,
+  buildBillManualPaymentState,
+  buildBillManualSlipPayload,
+  getN8nBillManualWebhookUrl,
   parseKeyRent,
   parseCheckinCommand,
   isCheckout2PaymentPostback,

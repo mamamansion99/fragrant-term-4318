@@ -230,6 +230,104 @@ describe('Worker routes', () => {
 		);
 	});
 
+	it('builds 10-minute bill manual payment state from BILL_PAY_CLICK postback', () => {
+		const postbackData = 'action=BILL_PAY_CLICK&billId=BILL-20260602-4821&room=A101';
+		const parsed = __testables.parseQueryString(postbackData);
+		const state = __testables.buildBillManualPaymentState(
+			{
+				type: 'postback',
+				replyToken: 'reply-token',
+				webhookEventId: 'event-id',
+				timestamp: 1780403946983,
+				source: {
+					type: 'user',
+					userId: 'Utenant'
+				},
+				postback: { data: postbackData }
+			} as any,
+			parsed,
+			postbackData,
+			Date.parse('2026-06-02T15:30:00.000Z')
+		) as Record<string, any>;
+
+		expect(__testables.isBillManualPayClick(parsed)).toBe(true);
+		expect(__testables.getBillManualPaymentStateKey('Utenant')).toBe('bill-manual:payment:Utenant');
+		expect(__testables.BILL_MANUAL_PAYMENT_TTL_SECONDS).toBe(600);
+		expect(state).toMatchObject({
+			source: 'LINE_WORKER',
+			stateType: 'bill_manual_payment',
+			action: 'BILL_PAY_CLICK',
+			lineUserId: 'Utenant',
+			chatId: 'Utenant',
+			sourceType: 'user',
+			replyToken: 'reply-token',
+			postbackData,
+			billId: 'BILL-20260602-4821',
+			room: 'A101',
+			timestamp: 1780403946983,
+			clickedAt: '2026-06-02T15:30:00.000Z',
+			expiresAt: '2026-06-02T15:40:00.000Z',
+			webhookEventId: 'event-id'
+		});
+	});
+
+	it('builds bill manual slip webhook payload from active KV state', () => {
+		const state = {
+			action: 'BILL_PAY_CLICK',
+			lineUserId: 'Utenant',
+			billId: 'BILL-20260602-4821',
+			room: 'A101',
+			postbackData: 'action=BILL_PAY_CLICK&billId=BILL-20260602-4821&room=A101',
+			clickedAt: '2026-06-02T15:30:00.000Z',
+			expiresAt: '2026-06-02T15:40:00.000Z'
+		};
+		const payload = __testables.buildBillManualSlipPayload(
+			{
+				type: 'message',
+				replyToken: 'reply-token',
+				timestamp: 1780404246983,
+				source: {
+					type: 'user',
+					userId: 'Utenant'
+				},
+				message: {
+					type: 'image',
+					id: 'image-message-id'
+				}
+			} as any,
+			state,
+			'2026-06-02T15:35:00.000Z'
+		) as Record<string, any>;
+
+		expect(payload).toMatchObject({
+			source: 'LINE_WORKER',
+			eventType: 'image',
+			action: 'BILL_SLIP_RECEIVED',
+			lineUserId: 'Utenant',
+			chatId: 'Utenant',
+			sourceType: 'user',
+			replyToken: 'reply-token',
+			imageMessageId: 'image-message-id',
+			timestamp: 1780404246983,
+			receivedAt: '2026-06-02T15:35:00.000Z',
+			billId: 'BILL-20260602-4821',
+			room: 'A101',
+			clickedAt: '2026-06-02T15:30:00.000Z',
+			expiresAt: '2026-06-02T15:40:00.000Z',
+			postbackData: 'action=BILL_PAY_CLICK&billId=BILL-20260602-4821&room=A101'
+		});
+		expect(payload.event.message.id).toBe('image-message-id');
+	});
+
+	it('uses bill-manual n8n webhook URL by default and env override when provided', () => {
+		expect(__testables.getN8nBillManualWebhookUrl({} as any)).toBe(
+			'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received'
+		);
+		expect(__testables.getN8nBillManualWebhookUrl({
+			N8N_BILL_MANUAL_WEBHOOK_URL: 'https://example.com/custom-bill-manual'
+		} as any)).toBe('https://example.com/custom-bill-manual');
+	});
+
 	it('builds cleaning tenant confirmation flex with postback button', () => {
 		const flex = __testables.buildCleaningTenantConfirmFlex() as Record<string, any>;
 		expect(flex.type).toBe('flex');
