@@ -409,6 +409,15 @@ function buildCheckinFlowKey(userId, chatId) {
   }
   return 'checkin_flow:unknown';
 }
+
+function isCheckinFlowStateActive(state, now = Date.now()) {
+  return !!(
+    state &&
+    state.ts &&
+    (now - state.ts < CHECKIN_FLOW_TTL_MS)
+  );
+}
+
 function parseCheckinCommand(text) {
   if (!text) return null;
   const match = CHECKIN_COMMAND_RE.exec(text);
@@ -4871,6 +4880,56 @@ export default {
             continue;
           }
 
+          const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
+          const checkinFlowState = await kvGet(env, checkinFlowKey);
+          const checkinActive = isCheckinFlowStateActive(checkinFlowState);
+          console.log('checkinFlowState', {
+            key: checkinFlowKey,
+            active: checkinActive,
+            state: checkinFlowState
+          });
+
+          // An explicit "check in room" command owns the sender's next image.
+          // Handle it before reservation and keycard fallbacks can consume it.
+          if (checkinActive) {
+            const slipPayload = {
+              source: 'line_message',
+              intent: 'checkin_slip',
+              channel: 'checkin',
+              event: ev,
+              roomId: checkinFlowState.roomId,
+              lineUserId: ev?.source?.userId || null,
+              chatId,
+              imageMessageId: ev?.message?.id || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            ctx.waitUntil(
+              (async () => {
+                const ok = await notifyN8nCheckinFlow(env, slipPayload);
+                if (ok) {
+                  await kvDel(env, checkinFlowKey);
+                  return;
+                }
+                console.error('checkin slip webhook failed; retaining waiting state', {
+                  key: checkinFlowKey,
+                  roomId: checkinFlowState.roomId
+                });
+              })().catch((err) => console.error('checkin slip notify failed', err))
+            );
+
+            const slipAck = `ได้รับสลิปเช็คอินห้อง ${checkinFlowState.roomId} แล้ว กำลังส่งทีมงานตรวจสอบสรุปผลให้เร็วที่สุด`;
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+                { type: 'text', text: slipAck }
+              ]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
+            }
+
+            continue;
+          }
+
           const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
           // Optional quick ack
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
@@ -4958,15 +5017,6 @@ export default {
             stateRoomId: checkinKeycardState?.roomId || '',
             stateFlowId: checkinKeycardState?.flowId || ''
           });
-          const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);
-          const checkinFlowState = await kvGet(env, checkinFlowKey);
-          console.log('checkinFlowState', { key: checkinFlowKey, state: checkinFlowState });
-          const checkinActive = !!(
-            checkinFlowState &&
-            checkinFlowState.ts &&
-            (Date.now() - checkinFlowState.ts < CHECKIN_FLOW_TTL_MS)
-          );
-
           if (checkinKeycardActive) {
             const flowId = String(checkinKeycardState.flowId || '').trim();
             const roomIdFromState = String(checkinKeycardState.roomId || '').trim();
@@ -5025,37 +5075,6 @@ export default {
                 detail: `ageMs=${ageMs}; userKey=${checkinKeycardStateUserKey || '-'}; groupKey=${checkinKeycardStateGroupKey || '-'}; userOnlyKey=${checkinKeycardStateUserOnlyKey || '-'}`
               }).catch(console.error)
             );
-            continue;
-          }
-
-          if (checkinActive) {
-            const slipPayload = {
-              source: 'line_message',
-              intent: 'checkin_slip',
-              channel: 'checkin',
-              event: ev,
-              roomId: checkinFlowState.roomId,
-              lineUserId: ev?.source?.userId || null,
-              chatId,
-              imageMessageId: ev?.message?.id || null,
-              receivedAt: new Date().toISOString()
-            };
-
-            ctx.waitUntil(
-              notifyN8nCheckinFlow(env, slipPayload).catch((err) => console.error('checkin slip notify failed', err))
-            );
-
-            ctx.waitUntil(kvDel(env, checkinFlowKey));
-
-            const slipAck = `ได้รับสลิปเช็คอินห้อง ${checkinFlowState.roomId} แล้ว กำลังส่งทีมงานตรวจสอบสรุปผลให้เร็วที่สุด`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: slipAck }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
-            }
-
             continue;
           }
 
@@ -8225,6 +8244,7 @@ export const __testables = {
   getN8nBillManualWebhookUrl,
   parseKeyRent,
   parseCheckinCommand,
+  isCheckinFlowStateActive,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
   parseCleaningCommand,

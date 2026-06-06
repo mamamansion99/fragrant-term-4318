@@ -353,6 +353,13 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, 'C-manager-group', 'U-manager')).toBe(true);
 	});
 
+	it('keeps checkin slip state active for 30 minutes', () => {
+		const now = Date.now();
+		expect(__testables.isCheckinFlowStateActive({ ts: now - (2 * 60 * 1000) }, now)).toBe(true);
+		expect(__testables.isCheckinFlowStateActive({ ts: now - (30 * 60 * 1000) }, now)).toBe(false);
+		expect(__testables.isCheckinFlowStateActive(null, now)).toBe(false);
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
