@@ -261,6 +261,13 @@ function getKeyRentWaitingPhotoKey(groupId) {
   return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
 }
 
+function isKeyRentWaitingPhotoStateForUser(state, userId) {
+  if (!state || state.mode !== 'WAITING_KEY_PHOTO') return false;
+  const startedByUserId = String(state.startedByUserId || '').trim();
+  const senderUserId = String(userId || '').trim();
+  return !(startedByUserId && senderUserId && startedByUserId !== senderUserId);
+}
+
 function getCheckinKeycardWaitingPhotoKey(groupId, userId) {
   return `${CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}:${String(userId || '').trim()}`;
 }
@@ -416,6 +423,113 @@ function isCheckinFlowStateActive(state, now = Date.now()) {
     state.ts &&
     (now - state.ts < CHECKIN_FLOW_TTL_MS)
   );
+}
+
+async function clearUserWorkflowStatesForCheckin(env, event) {
+  const userId = String(event?.source?.userId || '').trim();
+  const chatId = getChatId(event);
+  if (!userId) return [];
+
+  const stateKey = getStateKey(event);
+  const groupId = String(event?.source?.groupId || '').trim();
+  const keys = new Set([
+    buildActiveFlowKey(userId),
+    buildBookingFlowKey(userId, chatId),
+    buildCheckinFlowKey(userId, chatId),
+    getBillManualPaymentStateKey(userId),
+    `reg_id:${userId}`,
+    `${TENANT_CHANGE_KEY_PREFIX}${userId}`,
+    parkingOutsiderPhoneFlowKey(userId),
+    `${stateKey}:moveout_flow`,
+    `${stateKey}:penalty_flow`,
+    `${stateKey}:payrent_flow`,
+    `${stateKey}:keyrent_flow`,
+    getCheckinKeycardWaitingPhotoUserKey(userId)
+  ].filter(Boolean));
+
+  if (groupId) {
+    keys.add(getCheckinKeycardWaitingPhotoKey(groupId, userId));
+
+    const keycardGroupKey = getCheckinKeycardWaitingPhotoGroupKey(groupId);
+    const keycardGroupState = await kvGet(env, keycardGroupKey);
+    if (String(keycardGroupState?.managerUserId || '').trim() === userId) {
+      keys.add(keycardGroupKey);
+    }
+
+    const keyRentWaitingPhotoKey = getKeyRentWaitingPhotoKey(groupId);
+    const keyRentWaitingPhotoState = await kvGet(env, keyRentWaitingPhotoKey);
+    if (String(keyRentWaitingPhotoState?.startedByUserId || '').trim() === userId) {
+      keys.add(keyRentWaitingPhotoKey);
+    }
+
+    checkinKeycardWaitingPhotoMemory.delete(
+      getCheckinKeycardWaitingPhotoMemoryKey(groupId, userId)
+    );
+    const latestMemoryKey = getCheckinKeycardWaitingPhotoMemoryKey(groupId, '_latest');
+    const latestMemoryState = checkinKeycardWaitingPhotoMemory.get(latestMemoryKey);
+    if (String(latestMemoryState?.managerUserId || '').trim() === userId) {
+      checkinKeycardWaitingPhotoMemory.delete(latestMemoryKey);
+    }
+  }
+
+  const clearedKeys = [...keys];
+  await Promise.all(clearedKeys.map((key) => kvDel(env, key)));
+  console.log('checkin_user_workflow_states_cleared', {
+    userId,
+    chatId,
+    clearedKeys
+  });
+  return clearedKeys;
+}
+
+async function startCheckinFlow(env, ctx, event, replyToken, text, roomId) {
+  const userId = String(event?.source?.userId || '').trim();
+  const chatId = getChatId(event);
+  await clearUserWorkflowStatesForCheckin(env, event);
+
+  const payload = {
+    source: 'line_message',
+    intent: 'checkin_start',
+    channel: 'checkin',
+    event,
+    text,
+    roomId,
+    lineUserId: userId || null,
+    chatId,
+    receivedAt: new Date().toISOString()
+  };
+
+  ctx.waitUntil(
+    notifyN8nCheckinFlow(env, payload).catch((err) => console.error('checkin notify failed', err))
+  );
+
+  if (hasKV(env)) {
+    const checkinFlowKey = buildCheckinFlowKey(userId, chatId);
+    const checkinFlowState = {
+      roomId,
+      chatId,
+      lineUserId: userId || null,
+      ts: Date.now()
+    };
+    try {
+      await env.KV.put(
+        checkinFlowKey,
+        JSON.stringify(checkinFlowState),
+        { expirationTtl: CHECKIN_FLOW_TTL_SECONDS }
+      );
+    } catch (err) {
+      console.error('checkin flow kv put failed', err);
+    }
+  }
+
+  const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
+  if (replyToken) {
+    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+      { type: 'text', text: ackMsg }
+    ]).catch(console.error);
+  } else if (chatId) {
+    ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+  }
 }
 
 function parseCheckinCommand(text) {
@@ -3564,18 +3678,8 @@ export default {
         ) {
           const waitingPhotoKey = getKeyRentWaitingPhotoKey(chatId);
           const waitingPhotoState = await kvGet(env, waitingPhotoKey);
-          if (waitingPhotoState && waitingPhotoState.mode === 'WAITING_KEY_PHOTO') {
+          if (isKeyRentWaitingPhotoStateForUser(waitingPhotoState, ev?.source?.userId)) {
             const startedByUserId = String(waitingPhotoState.startedByUserId || '');
-            const senderUserId = String(ev?.source?.userId || '');
-            if (startedByUserId && senderUserId && senderUserId !== startedByUserId) {
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: 'กรุณาให้ผู้ที่กดปุ่ม "รับเงินแล้ว / เริ่มถ่ายรูป" ส่งรูปเท่านั้น' }
-                ]).catch(console.error);
-              }
-              continue;
-            }
-
             const billId = String(waitingPhotoState.billId || '');
             const room = String(waitingPhotoState.room || '');
             const startAction = String(waitingPhotoState.startAction || '');
@@ -3712,6 +3816,12 @@ export default {
           ctx.waitUntil(
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
+
+          const checkinRoomCode = parseCheckinCommand(textIn);
+          if (checkinRoomCode) {
+            await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRoomCode);
+            continue;
+          }
 
           if (await handleParkingOutsiderPhoneText(env, ctx, ev, replyToken, textIn)) {
             continue;
@@ -3871,7 +3981,6 @@ export default {
           const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
           const fridgeIntent = detectFridgeIntent(textIn);
           const parkingServiceKeyword = isParkingIntent(textIn);
-          const checkinRoomCode = parseCheckinCommand(textIn);
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass;
           const presetOtherPaymentReason =
@@ -4357,50 +4466,6 @@ export default {
               parkingButtonsMessage(commonOptions)
             ];
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
-            continue;
-          }
-
-          if (checkinRoomCode) {
-            const payload = {
-              source: 'line_message',
-              intent: 'checkin_start',
-              channel: 'checkin',
-              event: ev,
-              text: textIn,
-              roomId: checkinRoomCode,
-              lineUserId: userId || null,
-              chatId,
-              receivedAt: new Date().toISOString()
-            };
-
-            ctx.waitUntil(
-              notifyN8nCheckinFlow(env, payload).catch((err) => console.error('checkin notify failed', err))
-            );
-
-            if (hasKV(env)) {
-              const checkinFlowKey = buildCheckinFlowKey(userId, chatId);
-              const checkinFlowState = {
-                roomId: checkinRoomCode,
-                chatId,
-                lineUserId: userId || null,
-                ts: Date.now()
-              };
-              const ttl = CHECKIN_FLOW_TTL_SECONDS;
-              try {
-                await env.KV.put(checkinFlowKey, JSON.stringify(checkinFlowState), { expirationTtl: ttl });
-              } catch (err) {
-                console.error('checkin flow kv put failed', err);
-              }
-            }
-
-            const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${checkinRoomCode} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: ackMsg }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
-            }
             continue;
           }
 
@@ -8245,6 +8310,7 @@ export const __testables = {
   parseKeyRent,
   parseCheckinCommand,
   isCheckinFlowStateActive,
+  clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
   parseCleaningCommand,
@@ -8263,6 +8329,7 @@ export const __testables = {
   getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply,
+  isKeyRentWaitingPhotoStateForUser,
   isCheckinKeycardWaitingPhotoStateForEvent,
   normalizePenaltyReason,
   buildParkingPostbackPayload,

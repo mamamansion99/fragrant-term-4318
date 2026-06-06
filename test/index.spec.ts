@@ -353,11 +353,69 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, 'C-manager-group', 'U-manager')).toBe(true);
 	});
 
+	it('does not let another user key-rent photo state capture a checkin slip', () => {
+		const state = {
+			mode: 'WAITING_KEY_PHOTO',
+			startedByUserId: 'U-key-rent-manager'
+		};
+
+		expect(__testables.isKeyRentWaitingPhotoStateForUser(state, 'U-checkin-manager')).toBe(false);
+		expect(__testables.isKeyRentWaitingPhotoStateForUser(state, 'U-key-rent-manager')).toBe(true);
+	});
+
 	it('keeps checkin slip state active for 30 minutes', () => {
 		const now = Date.now();
 		expect(__testables.isCheckinFlowStateActive({ ts: now - (2 * 60 * 1000) }, now)).toBe(true);
 		expect(__testables.isCheckinFlowStateActive({ ts: now - (30 * 60 * 1000) }, now)).toBe(false);
 		expect(__testables.isCheckinFlowStateActive(null, now)).toBe(false);
+	});
+
+	it('clears only the current user workflow states before starting checkin', async () => {
+		const currentUserId = 'U-current';
+		const otherUserId = 'U-other';
+		const groupId = 'C-manager-group';
+		const currentStateKey = `${groupId}:${currentUserId}`;
+		const values = new Map<string, any>([
+			[`active_flow:${currentUserId}`, { phase: 'await_slip' }],
+			[`booking_flow:${currentUserId}`, { phase: 'await_id' }],
+			[`checkin_flow:${currentUserId}`, { roomId: 'A101' }],
+			[`bill-manual:payment:${currentUserId}`, { billId: 'BILL-1' }],
+			[`reg_id:${currentUserId}`, { action: 'ask_roomid' }],
+			[`changeLine:${currentUserId}`, { state: 'WAIT_ROOM' }],
+			[`parking:outsider-phone:${currentUserId}`, { state: 'WAITING_PARKING_OUTSIDER_PHONE' }],
+			[`${currentStateKey}:moveout_flow`, { step: 'confirm' }],
+			[`${currentStateKey}:penalty_flow`, { reason: 'OTHERS' }],
+			[`${currentStateKey}:payrent_flow`, { ts: Date.now() }],
+			[`${currentStateKey}:keyrent_flow`, { ts: Date.now() }],
+			[`checkin:keycard:waiting-photo:user:${currentUserId}`, { managerUserId: currentUserId }],
+			[`checkin:keycard:waiting-photo:${groupId}:${currentUserId}`, { managerUserId: currentUserId }],
+			[`checkin:keycard:waiting-photo:${groupId}:_latest`, { managerUserId: currentUserId }],
+			[`keyrent:waiting-photo:${groupId}`, { startedByUserId: currentUserId }],
+			[`active_flow:${otherUserId}`, { phase: 'await_slip' }]
+		]);
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => values.get(key) ?? null,
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+		const event = {
+			source: {
+				type: 'group',
+				groupId,
+				userId: currentUserId
+			}
+		};
+
+		const clearedKeys = await __testables.clearUserWorkflowStatesForCheckin(mockEnv, event);
+
+		expect(clearedKeys).toContain(`active_flow:${currentUserId}`);
+		expect(clearedKeys).toContain(`checkin:keycard:waiting-photo:${groupId}:_latest`);
+		expect(clearedKeys).toContain(`keyrent:waiting-photo:${groupId}`);
+		expect(values.has(`active_flow:${currentUserId}`)).toBe(false);
+		expect(values.has(`active_flow:${otherUserId}`)).toBe(true);
 	});
 
 	it('parses contract renewal pipe postback format', async () => {
