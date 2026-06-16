@@ -786,6 +786,10 @@ function isCheckoutStartShortcut(shortcut) {
   return !shortcut.outcome;
 }
 
+function requiresCoAdminShortcutPermission(shortcut) {
+  return !!shortcut && !isCheckoutStartShortcut(shortcut);
+}
+
 function isCoAdminAllowedLineUserId(userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
@@ -3892,21 +3896,18 @@ export default {
 
           const coAdminShortcut = parseCoAdminShortcut(textIn);
           if (coAdminShortcut) {
-            if (!isCoAdminAllowedLineUserId(userId)) {
-              console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
-              continue;
-            }
-
             if (isCheckoutStartShortcut(coAdminShortcut)) {
               await handleCheckoutStart(env, {
                 roomId: coAdminShortcut.roomId,
                 text: textIn,
                 event: ev,
-                replyToken,
-                shortcutType: coAdminShortcut.type,
-                outcome: coAdminShortcut.outcome,
-                command: coAdminShortcut.normalizedCommand
+                replyToken
               });
+              continue;
+            }
+
+            if (requiresCoAdminShortcutPermission(coAdminShortcut) && !isCoAdminAllowedLineUserId(userId)) {
+              console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
               continue;
             }
 
@@ -8319,6 +8320,7 @@ export const __testables = {
   buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
   isCheckoutStartShortcut,
+  requiresCoAdminShortcutPermission,
   isCoAdminAllowedLineUserId,
   getCheckoutWebhook,
   normalizeManagerDecision,

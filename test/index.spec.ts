@@ -724,6 +724,8 @@ describe('Worker routes', () => {
 		expect(shortcut.outcome).toBe(null);
 		expect(shortcut.normalizedCommand).toBe('co a101');
 		expect(__testables.isCheckoutStartShortcut(shortcut)).toBe(true);
+		expect(__testables.requiresCoAdminShortcutPermission(shortcut)).toBe(false);
+		expect(__testables.isCoAdminAllowedLineUserId('U-not-on-admin-list')).toBe(false);
 	});
 
 	it('parses the check-in room command', () => {
@@ -780,6 +782,10 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckoutStartShortcut(doneShortcut)).toBe(false);
 		expect(__testables.isCheckoutStartShortcut(statusShortcut)).toBe(false);
 		expect(__testables.isCheckoutStartShortcut(readyShortcut)).toBe(false);
+		expect(__testables.requiresCoAdminShortcutPermission(coOutcomeShortcut)).toBe(true);
+		expect(__testables.requiresCoAdminShortcutPermission(doneShortcut)).toBe(true);
+		expect(__testables.requiresCoAdminShortcutPermission(statusShortcut)).toBe(true);
+		expect(__testables.requiresCoAdminShortcutPermission(readyShortcut)).toBe(true);
 	});
 
 	it('uses configured prebook webhook URL with production default fallback', () => {
