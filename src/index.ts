@@ -252,6 +252,8 @@ const CHECKOUT_FLOW_TTL_SECONDS = 10 * 60;
 const CHECKOUT_CASH_FLOW_TTL_SECONDS = 15 * 60;
 const CHECKOUT_CASH_FLOW_TTL_MS = CHECKOUT_CASH_FLOW_TTL_SECONDS * 1000;
 const CHECKOUT_CASH_ACTION = 'CHECKOUT_CASH';
+const CHECKOUT_CASH2_ACTION = 'CHECKOUT_CASH2';
+const CHECKOUT_CASH_ACTIONS = new Set([CHECKOUT_CASH_ACTION, CHECKOUT_CASH2_ACTION]);
 const CHECKOUT_CASH_WAIT_AMOUNT = 'WAIT_CHECKOUT_CASH_AMOUNT';
 const CHECKOUT_CASH_WAIT_IMAGE = 'WAIT_CHECKOUT_CASH_IMAGE';
 const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
@@ -416,7 +418,7 @@ function getCheckoutCashFlowKey(event) {
   return `${getStateKey(event)}:checkout_cash_flow`;
 }
 
-function isCheckoutCashPaymentPostback(data) {
+function normalizeCheckoutCashAction(data) {
   const action = String(
     data?.act ||
     data?.action ||
@@ -425,12 +427,22 @@ function isCheckoutCashPaymentPostback(data) {
     data?.postbackType ||
     ''
   ).trim().toUpperCase();
-  return action === CHECKOUT_CASH_ACTION;
+  return CHECKOUT_CASH_ACTIONS.has(action) ? action : '';
+}
+
+function isCheckoutCashPaymentPostback(data) {
+  return !!normalizeCheckoutCashAction(data);
+}
+
+function getCheckoutCashType(action) {
+  return String(action || '').trim().toUpperCase() === CHECKOUT_CASH2_ACTION ? 'CHECKOUT2' : 'CHECKOUT';
 }
 
 function buildCheckoutCashFlowState(data, event, postbackDataString, ts = Date.now()) {
   const roomId = String(data?.roomId || data?.RoomID || data?.room || '').trim().toUpperCase();
   const tenantLineUserId = String(data?.lineUserId || data?.tenantLineUserId || data?.LINEUserId || data?.LineUserId || '').trim();
+  const action = normalizeCheckoutCashAction(data) || CHECKOUT_CASH_ACTION;
+  const checkoutType = getCheckoutCashType(action);
   return {
     mode: CHECKOUT_CASH_WAIT_AMOUNT,
     ts,
@@ -438,6 +450,9 @@ function buildCheckoutCashFlowState(data, event, postbackDataString, ts = Date.n
     userId: String(event?.source?.userId || '').trim(),
     tenantLineUserId,
     roomId,
+    action,
+    checkoutType,
+    categories: checkoutType,
     paymentMethod: 'CASH',
     postbackData: String(postbackDataString || '')
   };
@@ -493,11 +508,15 @@ function buildCheckoutCashImagePrompt(flow) {
 
 function buildCheckoutCashImagePayload(event, flow, receivedAt = new Date().toISOString()) {
   const source = event?.source || {};
+  const action = String(flow?.action || CHECKOUT_CASH_ACTION).trim().toUpperCase();
+  const checkoutType = String(flow?.checkoutType || getCheckoutCashType(action)).trim().toUpperCase();
   return {
     source: 'line_message',
     intent: 'checkout_cash_payment_image',
-    action: CHECKOUT_CASH_ACTION,
+    action,
     channel: 'checkout_cash',
+    checkoutType,
+    categories: String(flow?.categories || checkoutType),
     paymentMethod: 'CASH',
     roomId: String(flow?.roomId || '').trim(),
     room: String(flow?.roomId || '').trim(),
@@ -8261,7 +8280,13 @@ function getPenaltyWebhook(env) {
   return env.PENALTY_WEBHOOK_URL || '';
 }
 
-function getCheckoutCashWebhook(env) {
+const DEFAULT_N8N_CHECKOUT_CASH2_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin-cash-receiver';
+
+function getCheckoutCashWebhook(env, payload = {}) {
+  const action = String(payload?.action || payload?.act || '').trim().toUpperCase();
+  if (action === CHECKOUT_CASH2_ACTION) {
+    return env.N8N_CHECKOUT_CASH2_WEBHOOK_URL || DEFAULT_N8N_CHECKOUT_CASH2_WEBHOOK_URL;
+  }
   return env.N8N_CHECKOUT_CASH_WEBHOOK_URL || env.N8N_CHECKOUT_CASH_PAYMENT_WEBHOOK_URL || env.PENALTY_WEBHOOK_URL || '';
 }
 
@@ -8305,7 +8330,7 @@ async function Penalty_webhook(env, payload, options = {}) {
 }
 
 async function notifyN8nCheckoutCash(env, payload) {
-  const url = getCheckoutCashWebhook(env);
+  const url = getCheckoutCashWebhook(env, payload);
   if (!url) {
     console.warn('notifyN8nCheckoutCash: missing webhook URL');
     return false;

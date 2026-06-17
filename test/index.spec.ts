@@ -805,6 +805,9 @@ describe('Worker routes', () => {
 			userId: 'Uoperator',
 			tenantLineUserId: 'Utenant',
 			roomId: 'A101',
+			action: 'CHECKOUT_CASH',
+			checkoutType: 'CHECKOUT',
+			categories: 'CHECKOUT',
 			paymentMethod: 'CASH',
 			postbackData
 		});
@@ -822,6 +825,8 @@ describe('Worker routes', () => {
 			intent: 'checkout_cash_payment_image',
 			action: 'CHECKOUT_CASH',
 			channel: 'checkout_cash',
+			checkoutType: 'CHECKOUT',
+			categories: 'CHECKOUT',
 			paymentMethod: 'CASH',
 			roomId: 'A101',
 			room: 'A101',
@@ -839,14 +844,95 @@ describe('Worker routes', () => {
 		});
 	});
 
+	it('routes CHECKOUT_CASH2 through checkout cash flow with CHECKOUT2 labels', () => {
+		const postbackData = 'act=CHECKOUT_CASH2&roomId=A202&lineUserId=Utenant2';
+		const data = __testables.parseQueryString(postbackData);
+		const event = {
+			type: 'postback',
+			replyToken: 'reply-token',
+			webhookEventId: 'event-postback-2',
+			source: {
+				type: 'group',
+				groupId: 'CcheckoutGroup',
+				userId: 'Uoperator'
+			},
+			postback: { data: postbackData }
+		};
+		const imageEvent = {
+			type: 'message',
+			replyToken: 'reply-token-3',
+			webhookEventId: 'event-image-2',
+			source: {
+				type: 'group',
+				groupId: 'CcheckoutGroup',
+				userId: 'Uoperator'
+			},
+			message: {
+				type: 'image',
+				id: 'image-message-id-2'
+			}
+		};
+
+		const flow = __testables.buildCheckoutCashFlowState(data, event, postbackData, 223456) as Record<string, any>;
+		const nextFlow = __testables.buildCheckoutCashAmountState(flow, 2500, 223999) as Record<string, any>;
+		const payload = __testables.buildCheckoutCashImagePayload(
+			imageEvent,
+			nextFlow,
+			'2026-06-17T10:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(__testables.isCheckoutCashPaymentPostback(data)).toBe(true);
+		expect(flow).toMatchObject({
+			mode: 'WAIT_CHECKOUT_CASH_AMOUNT',
+			chatId: 'CcheckoutGroup',
+			userId: 'Uoperator',
+			tenantLineUserId: 'Utenant2',
+			roomId: 'A202',
+			action: 'CHECKOUT_CASH2',
+			checkoutType: 'CHECKOUT2',
+			categories: 'CHECKOUT2',
+			paymentMethod: 'CASH',
+			postbackData
+		});
+		expect(payload).toMatchObject({
+			source: 'line_message',
+			intent: 'checkout_cash_payment_image',
+			action: 'CHECKOUT_CASH2',
+			channel: 'checkout_cash',
+			checkoutType: 'CHECKOUT2',
+			categories: 'CHECKOUT2',
+			paymentMethod: 'CASH',
+			roomId: 'A202',
+			room: 'A202',
+			amount: 2500,
+			amountText: '2,500',
+			tenantLineUserId: 'Utenant2',
+			lineUserId: 'Uoperator',
+			operatorLineUserId: 'Uoperator',
+			chatId: 'CcheckoutGroup',
+			sourceType: 'group',
+			imageMessageId: 'image-message-id-2',
+			postbackData,
+			webhookEventId: 'event-image-2',
+			receivedAt: '2026-06-17T10:00:00.000Z'
+		});
+	});
+
 	it('uses dedicated checkout cash webhook before penalty fallback', () => {
 		expect(__testables.getCheckoutCashWebhook({
 			N8N_CHECKOUT_CASH_WEBHOOK_URL: 'https://example.com/checkout-cash',
 			PENALTY_WEBHOOK_URL: 'https://example.com/penalty'
 		})).toBe('https://example.com/checkout-cash');
 		expect(__testables.getCheckoutCashWebhook({
+			N8N_CHECKOUT_CASH_WEBHOOK_URL: 'https://example.com/checkout-cash',
+			N8N_CHECKOUT_CASH2_WEBHOOK_URL: 'https://example.com/co-admin-cash-receiver',
+			PENALTY_WEBHOOK_URL: 'https://example.com/penalty'
+		}, { action: 'CHECKOUT_CASH2' })).toBe('https://example.com/co-admin-cash-receiver');
+		expect(__testables.getCheckoutCashWebhook({
 			PENALTY_WEBHOOK_URL: 'https://example.com/penalty'
 		})).toBe('https://example.com/penalty');
+		expect(__testables.getCheckoutCashWebhook({}, { action: 'CHECKOUT_CASH2' }))
+			.toBe('https://n8n.srv1112305.hstgr.cloud/webhook/co-admin-cash-receiver');
 	});
 
 	it('allows co admin shortcuts for configured LINE user IDs only', () => {
