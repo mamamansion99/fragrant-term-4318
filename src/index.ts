@@ -249,6 +249,11 @@ const BOOKING_ID_TTL_MS = BOOKING_ID_TTL_SECONDS * 1000;
 const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
 const PENALTY_FLOW_TTL_MS = PENALTY_FLOW_TTL_SECONDS * 1000;
 const CHECKOUT_FLOW_TTL_SECONDS = 10 * 60;
+const CHECKOUT_CASH_FLOW_TTL_SECONDS = 15 * 60;
+const CHECKOUT_CASH_FLOW_TTL_MS = CHECKOUT_CASH_FLOW_TTL_SECONDS * 1000;
+const CHECKOUT_CASH_ACTION = 'CHECKOUT_CASH';
+const CHECKOUT_CASH_WAIT_AMOUNT = 'WAIT_CHECKOUT_CASH_AMOUNT';
+const CHECKOUT_CASH_WAIT_IMAGE = 'WAIT_CHECKOUT_CASH_IMAGE';
 const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
 const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
 const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
@@ -404,6 +409,110 @@ function buildCheckout2PaymentFlowState(data, event, postbackDataString, ts = Da
     categories: 'CHECKOUT2',
     roomId,
     postbackData: String(postbackDataString || '')
+  };
+}
+
+function getCheckoutCashFlowKey(event) {
+  return `${getStateKey(event)}:checkout_cash_flow`;
+}
+
+function isCheckoutCashPaymentPostback(data) {
+  const action = String(
+    data?.act ||
+    data?.action ||
+    data?.type ||
+    data?.eventType ||
+    data?.postbackType ||
+    ''
+  ).trim().toUpperCase();
+  return action === CHECKOUT_CASH_ACTION;
+}
+
+function buildCheckoutCashFlowState(data, event, postbackDataString, ts = Date.now()) {
+  const roomId = String(data?.roomId || data?.RoomID || data?.room || '').trim().toUpperCase();
+  const tenantLineUserId = String(data?.lineUserId || data?.tenantLineUserId || data?.LINEUserId || data?.LineUserId || '').trim();
+  return {
+    mode: CHECKOUT_CASH_WAIT_AMOUNT,
+    ts,
+    chatId: getChatId(event),
+    userId: String(event?.source?.userId || '').trim(),
+    tenantLineUserId,
+    roomId,
+    paymentMethod: 'CASH',
+    postbackData: String(postbackDataString || '')
+  };
+}
+
+function parseCheckoutCashAmount(text) {
+  const normalized = String(text || '')
+    .trim()
+    .replace(/บาท/gi, '')
+    .replace(/thb/gi, '')
+    .replace(/[, ]+/g, '');
+  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
+  const amount = Number(normalized);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return amount;
+}
+
+function formatCheckoutCashAmount(amount) {
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return '';
+  return value.toLocaleString('en-US', {
+    minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
+    maximumFractionDigits: 2
+  });
+}
+
+function buildCheckoutCashAmountState(flow, amount, ts = Date.now()) {
+  return {
+    ...flow,
+    mode: CHECKOUT_CASH_WAIT_IMAGE,
+    amount,
+    amountText: formatCheckoutCashAmount(amount),
+    ts
+  };
+}
+
+function isCheckoutCashFlowActive(flow, mode = '') {
+  if (!flow || !flow.ts) return false;
+  if (mode && flow.mode !== mode) return false;
+  return Date.now() - flow.ts < CHECKOUT_CASH_FLOW_TTL_MS;
+}
+
+function buildCheckoutCashAmountPrompt(flow) {
+  const roomText = flow?.roomId ? `ห้อง ${flow.roomId} ` : '';
+  return `กรุณาพิมพ์ยอดเงินสดค่าเช็คเอาท์${roomText}เช่น 1500`;
+}
+
+function buildCheckoutCashImagePrompt(flow) {
+  const roomText = flow?.roomId ? `ห้อง ${flow.roomId} ` : '';
+  const amountText = flow?.amountText || formatCheckoutCashAmount(flow?.amount);
+  return `บันทึกยอดเงินสด${roomText}${amountText ? `${amountText} บาท` : ''}แล้ว กรุณาส่งรูปหลักฐานเงินสดในแชทนี้`;
+}
+
+function buildCheckoutCashImagePayload(event, flow, receivedAt = new Date().toISOString()) {
+  const source = event?.source || {};
+  return {
+    source: 'line_message',
+    intent: 'checkout_cash_payment_image',
+    action: CHECKOUT_CASH_ACTION,
+    channel: 'checkout_cash',
+    paymentMethod: 'CASH',
+    roomId: String(flow?.roomId || '').trim(),
+    room: String(flow?.roomId || '').trim(),
+    amount: Number(flow?.amount || 0),
+    amountText: String(flow?.amountText || formatCheckoutCashAmount(flow?.amount)),
+    tenantLineUserId: String(flow?.tenantLineUserId || ''),
+    lineUserId: String(source?.userId || ''),
+    operatorLineUserId: String(flow?.userId || source?.userId || ''),
+    chatId: getChatId(event),
+    sourceType: String(source?.type || ''),
+    imageMessageId: String(event?.message?.id || ''),
+    postbackData: String(flow?.postbackData || ''),
+    webhookEventId: String(event?.webhookEventId || ''),
+    event,
+    receivedAt
   };
 }
 
@@ -2518,6 +2627,22 @@ export default {
         const act = String(data.act || '').trim();
         const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
         const postbackActionLower = postbackAction.toLowerCase();
+        if (isCheckoutCashPaymentPostback(data)) {
+          const chatId = getChatId(ev);
+          const cashFlowKey = getCheckoutCashFlowKey(ev);
+          const flow = buildCheckoutCashFlowState(data, ev, postbackDataString);
+
+          await kvPut(env, cashFlowKey, flow, CHECKOUT_CASH_FLOW_TTL_SECONDS);
+
+          const prompt = buildCheckoutCashAmountPrompt(flow);
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: prompt }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, prompt).catch(console.error));
+          }
+          continue;
+        }
+
         if (isCheckout2PaymentPostback(data)) {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
@@ -3821,6 +3946,44 @@ export default {
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
 
+          const checkoutCashFlowKey = getCheckoutCashFlowKey(ev);
+          const checkoutCashFlow = await kvGet(env, checkoutCashFlowKey);
+          if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_AMOUNT)) {
+            const amount = parseCheckoutCashAmount(textIn);
+            if (!amount) {
+              const askAgain = 'ยอดเงินสดไม่ถูกต้อง กรุณาพิมพ์เฉพาะตัวเลข เช่น 1500 หรือ 1,500';
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askAgain }]).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
+              }
+              ctx.waitUntil(kvPut(env, checkoutCashFlowKey, { ...checkoutCashFlow, ts: Date.now() }, CHECKOUT_CASH_FLOW_TTL_SECONDS));
+              continue;
+            }
+
+            const nextFlow = buildCheckoutCashAmountState(checkoutCashFlow, amount);
+            await kvPut(env, checkoutCashFlowKey, nextFlow, CHECKOUT_CASH_FLOW_TTL_SECONDS);
+
+            const askImage = buildCheckoutCashImagePrompt(nextFlow);
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askImage }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askImage).catch(console.error));
+            }
+            continue;
+          }
+
+          if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_IMAGE)) {
+            const reminder = 'โปรดส่งรูปหลักฐานเงินสดเป็นรูปภาพในแชทนี้ค่ะ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reminder }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
+            }
+            ctx.waitUntil(kvPut(env, checkoutCashFlowKey, { ...checkoutCashFlow, ts: Date.now() }, CHECKOUT_CASH_FLOW_TTL_SECONDS));
+            continue;
+          }
+
           const checkinRoomCode = parseCheckinCommand(textIn);
           if (checkinRoomCode) {
             await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRoomCode);
@@ -4923,6 +5086,34 @@ export default {
         if (m.type === 'image') {
           const chatId = getChatId(ev);
           const imageUserId = String(ev?.source?.userId || '').trim();
+          const checkoutCashFlowKey = getCheckoutCashFlowKey(ev);
+          const checkoutCashFlow = await kvGet(env, checkoutCashFlowKey);
+          if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_IMAGE)) {
+            const cashPayload = buildCheckoutCashImagePayload(ev, checkoutCashFlow);
+            const ok = await notifyN8nCheckoutCash(env, cashPayload);
+
+            if (ok) {
+              ctx.waitUntil(kvDel(env, checkoutCashFlowKey));
+            }
+
+            const amountText = checkoutCashFlow.amountText || formatCheckoutCashAmount(checkoutCashFlow.amount);
+            const roomText = checkoutCashFlow.roomId ? `ห้อง ${checkoutCashFlow.roomId} ` : '';
+            const ackText = ok
+              ? `รับรูปหลักฐานเงินสด${roomText}${amountText ? `${amountText} บาท` : ''}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`
+              : 'รับรูปแล้ว แต่ส่งเข้าระบบไม่สำเร็จ กรุณาลองส่งรูปอีกครั้งค่ะ';
+
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
+
+            if (!ok) {
+              ctx.waitUntil(kvPut(env, checkoutCashFlowKey, { ...checkoutCashFlow, ts: Date.now() }, CHECKOUT_CASH_FLOW_TTL_SECONDS));
+            }
+            continue;
+          }
+
           const billManualState = imageUserId ? await getActiveBillManualPaymentState(env, imageUserId) : null;
           if (billManualState) {
             const slipPayload = buildBillManualSlipPayload(ev, billManualState);
@@ -8070,6 +8261,10 @@ function getPenaltyWebhook(env) {
   return env.PENALTY_WEBHOOK_URL || '';
 }
 
+function getCheckoutCashWebhook(env) {
+  return env.N8N_CHECKOUT_CASH_WEBHOOK_URL || env.N8N_CHECKOUT_CASH_PAYMENT_WEBHOOK_URL || env.PENALTY_WEBHOOK_URL || '';
+}
+
 const DEFAULT_WARN_PAYMENT_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/warn-payment';
 
 function getWarnPaymentWebhook(env) {
@@ -8105,6 +8300,36 @@ async function Penalty_webhook(env, payload, options = {}) {
     return res.ok;
   } catch (err) {
     console.error('Penalty_webhook error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCheckoutCash(env, payload) {
+  const url = getCheckoutCashWebhook(env);
+  if (!url) {
+    console.warn('notifyN8nCheckoutCash: missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nCheckoutCash: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nCheckoutCash error', err);
     return false;
   }
 }
@@ -8314,6 +8539,12 @@ export const __testables = {
   clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
+  isCheckoutCashPaymentPostback,
+  buildCheckoutCashFlowState,
+  parseCheckoutCashAmount,
+  buildCheckoutCashAmountState,
+  buildCheckoutCashImagePayload,
+  getCheckoutCashWebhook,
   parseCleaningCommand,
   isCleaningManagementAllowedLineUserId,
   buildCleaningManagementAckText,
