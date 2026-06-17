@@ -414,6 +414,26 @@ function buildCheckout2PaymentFlowState(data, event, postbackDataString, ts = Da
   };
 }
 
+function parseCheckoutPaymentText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const roomId = extractRoomId(raw);
+  const optionalRoom = String.raw`(?:\s+(?:ห้อง|room)?\s*[ab]\d{3,4})?`;
+  const checkout2Re = new RegExp(
+    String.raw`^\s*(ชำระค่าเช็คเอ้าท์สอง|จ่ายค่าเช็คเอ้าท์สอง|ชำระค่าเช็คเอาท์สอง|จ่ายค่าเช็คเอาท์สอง|ชำระค่าcheckout2|จ่ายค่าcheckout2|checkout2 payment)` + optionalRoom + String.raw`\s*$`,
+    'i'
+  );
+  if (checkout2Re.test(raw)) return { reason: 'CHECKOUT2', roomId };
+
+  const checkoutRe = new RegExp(
+    String.raw`^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)` + optionalRoom + String.raw`\s*$`,
+    'i'
+  );
+  if (checkoutRe.test(raw)) return { reason: 'CHECKOUT', roomId };
+
+  return null;
+}
+
 function getCheckoutCashFlowKey(event) {
   return `${getStateKey(event)}:checkout_cash_flow`;
 }
@@ -4166,7 +4186,8 @@ export default {
           const parkingServiceKeyword = isParkingIntent(textIn);
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass;
-          const presetOtherPaymentReason =
+          const checkoutPaymentShortcut = parseCheckoutPaymentText(textIn);
+          const fallbackPresetOtherPaymentReason =
             /^\s*(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)\s*$/i.test(textIn)
               ? 'CLEANING_PAYMENT'
               : (
@@ -4190,6 +4211,7 @@ export default {
                       )
                   )
               );
+          const presetOtherPaymentReason = checkoutPaymentShortcut?.reason || fallbackPresetOtherPaymentReason;
           const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
           const isPenaltyPayment = !!penaltyMatch;
           const penaltyType = penaltyMatch
@@ -4228,8 +4250,9 @@ export default {
               notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
             );
           };
-          const armOtherPaymentSlipFlow = (reasonText) => {
+          const armOtherPaymentSlipFlow = (reasonText, options = {}) => {
             const normalizedReason = normalizePenaltyReason(reasonText || '');
+            const roomId = String(options?.roomId || '').trim().toUpperCase();
             return kvPut(
               env,
               penaltyKey,
@@ -4238,7 +4261,8 @@ export default {
                 chatId,
                 userId,
                 type: 'Others_payment',
-                reason: normalizedReason || reasonText || 'ค่าอื่นๆ'
+                reason: normalizedReason || reasonText || 'ค่าอื่นๆ',
+                ...(roomId ? { roomId, room: roomId } : {})
               },
               PENALTY_FLOW_TTL_SECONDS
             );
@@ -4371,11 +4395,14 @@ export default {
 
           if (presetOtherPaymentReason) {
             ctx.waitUntil(kvDel(env, payRentKey));
-            ctx.waitUntil(armOtherPaymentSlipFlow(presetOtherPaymentReason));
+            ctx.waitUntil(armOtherPaymentSlipFlow(presetOtherPaymentReason, {
+              roomId: checkoutPaymentShortcut?.roomId || ''
+            }));
             const presetReasonLabel = presetOtherPaymentReason === 'CLEANING_PAYMENT'
               ? 'ค่าทำความสะอาด'
               : presetOtherPaymentReason;
-            const askSlip = `บันทึกรายการ${presetReasonLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            const presetRoomLabel = checkoutPaymentShortcut?.roomId ? ` ห้อง ${checkoutPaymentShortcut.roomId}` : '';
+            const askSlip = `บันทึกรายการ${presetReasonLabel}${presetRoomLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
             } else if (chatId) {
@@ -8564,6 +8591,7 @@ export const __testables = {
   clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
+  parseCheckoutPaymentText,
   isCheckoutCashPaymentPostback,
   buildCheckoutCashFlowState,
   parseCheckoutCashAmount,

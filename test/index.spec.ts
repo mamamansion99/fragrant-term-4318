@@ -760,6 +760,25 @@ describe('Worker routes', () => {
 		});
 	});
 
+	it('parses CHECKOUT2 payment text with a room id', () => {
+		expect(__testables.parseCheckoutPaymentText('ชำระค่าเช็คเอาท์สอง a101')).toMatchObject({
+			reason: 'CHECKOUT2',
+			roomId: 'A101'
+		});
+		expect(__testables.parseCheckoutPaymentText('จ่ายค่าcheckout2 room B514')).toMatchObject({
+			reason: 'CHECKOUT2',
+			roomId: 'B514'
+		});
+		expect(__testables.parseCheckoutPaymentText('ชำระค่าเช็คเอาท์ A202')).toMatchObject({
+			reason: 'CHECKOUT',
+			roomId: 'A202'
+		});
+		expect(__testables.parseCheckoutPaymentText('ชำระค่าเช็คเอาท์สอง')).toMatchObject({
+			reason: 'CHECKOUT2',
+			roomId: ''
+		});
+	});
+
 	it('arms checkout cash flow from postback button data and captures amount/image payload', () => {
 		const postbackData = 'act=CHECKOUT_CASH&roomId=A101&lineUserId=Utenant';
 		const data = __testables.parseQueryString(postbackData);
