@@ -93,6 +93,15 @@ describe('Worker routes', () => {
 		expect(payload.events[0].postback.data).toBe(postbackData);
 	});
 
+	it('uses dedicated payment review accept webhook URL', () => {
+		expect(__testables.getPayReviewAcceptWebhookUrl({})).toBe(
+			'https://n8n.srv1112305.hstgr.cloud/webhook/Approve%20Review%20Queue'
+		);
+		expect(__testables.getPayReviewAcceptWebhookUrl({
+			N8N_PAY_REVIEW_ACCEPT_URL: 'https://example.com/approve-review'
+		})).toBe('https://example.com/approve-review');
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',

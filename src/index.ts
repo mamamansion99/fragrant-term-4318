@@ -2668,7 +2668,7 @@ export default {
         const postbackActionLower = postbackAction.toLowerCase();
         if (postbackAction.toUpperCase() === 'PAY_REVIEW_ACCEPT') {
           const chatId = getChatId(ev);
-          const markPaidUrl = env.N8N_MMV2_MARK_PAID_URL || '';
+          const payReviewAcceptUrl = getPayReviewAcceptWebhookUrl(env);
           const forwardPayload = buildPayReviewAcceptForwardPayload(data, ev, postbackDataString);
           const roomText = forwardPayload.room ? ` room ${forwardPayload.room}` : '';
           const ackText = `Received payment approval${roomText}. Sending to payment system.`;
@@ -2679,20 +2679,20 @@ export default {
             ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
           }
 
-          if (markPaidUrl) {
+          if (payReviewAcceptUrl) {
             const headers = { 'Content-Type': 'application/json' };
             const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
             if (secret) headers['x-worker-secret'] = secret;
 
             ctx.waitUntil(
-              fetch(markPaidUrl, {
+              fetch(payReviewAcceptUrl, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify(forwardPayload)
               }).catch((err) => console.error('pay_review_accept_forward_failed', err))
             );
           } else {
-            console.warn('pay_review_accept: missing N8N_MMV2_MARK_PAID_URL');
+            console.warn('pay_review_accept: missing N8N_PAY_REVIEW_ACCEPT_URL');
           }
           continue;
         }
@@ -6488,6 +6488,12 @@ function buildMarkPaidForwardPayload(data, ev, receivedAt = new Date().toISOStri
   return payload;
 }
 
+const DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Approve%20Review%20Queue';
+
+function getPayReviewAcceptWebhookUrl(env) {
+  return env.N8N_PAY_REVIEW_ACCEPT_URL || DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL;
+}
+
 function buildPayReviewAcceptForwardPayload(data, ev, postbackData = '', receivedAt = new Date().toISOString()) {
   const originalData = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
   const source = ev?.source || {};
@@ -8685,6 +8691,7 @@ export const __testables = {
   isContinueTermReplyAction,
   getRenewalPostbackWebhookUrl,
   buildMarkPaidForwardPayload,
+  getPayReviewAcceptWebhookUrl,
   buildPayReviewAcceptForwardPayload,
   getPrebookWebhookUrl,
   isRoomRentInquiry,
