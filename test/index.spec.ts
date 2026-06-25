@@ -95,7 +95,7 @@ describe('Worker routes', () => {
 
 	it('uses dedicated payment review accept webhook URL', () => {
 		expect(__testables.getPayReviewAcceptWebhookUrl({})).toBe(
-			'https://n8n.srv1112305.hstgr.cloud/webhook/Approve%20Review%20Queue'
+			'https://n8n.srv1112305.hstgr.cloud/webhook/approve-review-queue'
 		);
 		expect(__testables.getPayReviewAcceptWebhookUrl({
 			N8N_PAY_REVIEW_ACCEPT_URL: 'https://example.com/approve-review'

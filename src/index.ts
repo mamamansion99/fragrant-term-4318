@@ -6488,7 +6488,7 @@ function buildMarkPaidForwardPayload(data, ev, receivedAt = new Date().toISOStri
   return payload;
 }
 
-const DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Approve%20Review%20Queue';
+const DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/approve-review-queue';
 
 function getPayReviewAcceptWebhookUrl(env) {
   return env.N8N_PAY_REVIEW_ACCEPT_URL || DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL;

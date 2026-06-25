@@ -19,7 +19,7 @@
     "N8N_PARKING_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/rent-parking",
     "N8N_POSTBACK_URL": "https://script.google.com/macros/s/AKfycbwRugkr-uUOzmu5HkmRw3W7fwGescjbL2xqsvyKIxLkYKibmJWItb1u_5PTZFatcI_B/exec",
     "N8N_MMV2_MARK_PAID_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/mmv2-mark-paid",
-    "N8N_PAY_REVIEW_ACCEPT_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/Approve%20Review%20Queue",
+    "N8N_PAY_REVIEW_ACCEPT_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/approve-review-queue",
     "N8N_TENANT_ID_CHANGE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/3a8f2c12-aa30-4118-9352-e78108bb0bc0",
     "N8N_CHECKIN_FLOW_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e",
     "N8N_KEY_FORGOT_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/key-webhook",
