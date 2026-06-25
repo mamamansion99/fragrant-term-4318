@@ -2668,31 +2668,17 @@ export default {
         const postbackActionLower = postbackAction.toLowerCase();
         if (postbackAction.toUpperCase() === 'PAY_REVIEW_ACCEPT') {
           const chatId = getChatId(ev);
-          const payReviewAcceptUrl = getPayReviewAcceptWebhookUrl(env);
           const forwardPayload = buildPayReviewAcceptForwardPayload(data, ev, postbackDataString);
           const roomText = forwardPayload.room ? ` room ${forwardPayload.room}` : '';
-          const ackText = `Received payment approval${roomText}. Sending to payment system.`;
+          const delivery = await notifyN8nPayReviewAccept(env, forwardPayload);
+          const ackText = delivery.ok
+            ? `Received payment approval${roomText}. Sent to payrent system.`
+            : `Received payment approval${roomText}, but n8n did not accept it (${delivery.status ? `HTTP ${delivery.status}` : delivery.error || 'no webhook URL'}).`;
 
           if (replyToken) {
-            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error));
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
           } else if (chatId) {
             ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-          }
-
-          if (payReviewAcceptUrl) {
-            const headers = { 'Content-Type': 'application/json' };
-            const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
-            if (secret) headers['x-worker-secret'] = secret;
-
-            ctx.waitUntil(
-              fetch(payReviewAcceptUrl, {
-                method: 'POST',
-                headers,
-                body: JSON.stringify(forwardPayload)
-              }).catch((err) => console.error('pay_review_accept_forward_failed', err))
-            );
-          } else {
-            console.warn('pay_review_accept: missing N8N_PAY_REVIEW_ACCEPT_URL');
           }
           continue;
         }
@@ -6492,6 +6478,58 @@ const DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL = 'https://n8n.srv1112305.hstgr.cloud/we
 
 function getPayReviewAcceptWebhookUrl(env) {
   return env.N8N_PAY_REVIEW_ACCEPT_URL || DEFAULT_N8N_PAY_REVIEW_ACCEPT_URL;
+}
+
+async function notifyN8nPayReviewAccept(env, payload) {
+  const url = getPayReviewAcceptWebhookUrl(env);
+  if (!url) {
+    console.warn('notifyN8nPayReviewAccept: missing webhook URL');
+    return { ok: false, status: 0, error: 'missing_webhook_url' };
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    const text = await res.text().catch(() => '');
+    if (!res.ok) {
+      console.error('notifyN8nPayReviewAccept: non-200 response', {
+        url,
+        status: res.status,
+        body: text.slice(0, 500),
+        reviewId: payload?.reviewId || '',
+        billId: payload?.billId || '',
+        room: payload?.room || ''
+      });
+    } else {
+      console.log('notifyN8nPayReviewAccept: accepted', {
+        url,
+        status: res.status,
+        reviewId: payload?.reviewId || '',
+        billId: payload?.billId || '',
+        room: payload?.room || ''
+      });
+    }
+    return { ok: res.ok, status: res.status, body: text };
+  } catch (err) {
+    const error = String(err?.message || err);
+    console.error('notifyN8nPayReviewAccept error', {
+      url,
+      error,
+      reviewId: payload?.reviewId || '',
+      billId: payload?.billId || '',
+      room: payload?.room || ''
+    });
+    return { ok: false, status: 0, error };
+  }
 }
 
 function buildPayReviewAcceptForwardPayload(data, ev, postbackData = '', receivedAt = new Date().toISOString()) {
