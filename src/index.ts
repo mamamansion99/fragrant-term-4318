@@ -2666,6 +2666,37 @@ export default {
         const act = String(data.act || '').trim();
         const postbackAction = String(data.act || data.action || data.type || data.eventType || data.postbackType || '').trim();
         const postbackActionLower = postbackAction.toLowerCase();
+        if (postbackAction.toUpperCase() === 'PAY_REVIEW_ACCEPT') {
+          const chatId = getChatId(ev);
+          const markPaidUrl = env.N8N_MMV2_MARK_PAID_URL || '';
+          const forwardPayload = buildPayReviewAcceptForwardPayload(data, ev, postbackDataString);
+          const roomText = forwardPayload.room ? ` room ${forwardPayload.room}` : '';
+          const ackText = `Received payment approval${roomText}. Sending to payment system.`;
+
+          if (replyToken) {
+            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error));
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+          }
+
+          if (markPaidUrl) {
+            const headers = { 'Content-Type': 'application/json' };
+            const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+            if (secret) headers['x-worker-secret'] = secret;
+
+            ctx.waitUntil(
+              fetch(markPaidUrl, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify(forwardPayload)
+              }).catch((err) => console.error('pay_review_accept_forward_failed', err))
+            );
+          } else {
+            console.warn('pay_review_accept: missing N8N_MMV2_MARK_PAID_URL');
+          }
+          continue;
+        }
+
         if (isCheckoutCashPaymentPostback(data)) {
           const chatId = getChatId(ev);
           const cashFlowKey = getCheckoutCashFlowKey(ev);
@@ -6457,6 +6488,48 @@ function buildMarkPaidForwardPayload(data, ev, receivedAt = new Date().toISOStri
   return payload;
 }
 
+function buildPayReviewAcceptForwardPayload(data, ev, postbackData = '', receivedAt = new Date().toISOString()) {
+  const originalData = (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  const source = ev?.source || {};
+  const action = 'PAY_REVIEW_ACCEPT';
+  const reviewId = String(originalData.reviewId || originalData.reviewID || originalData.review_id || '').trim();
+  const billId = String(originalData.billId || originalData.billID || originalData.bill_id || '').trim();
+  const room = String(originalData.room || originalData.roomId || originalData.roomID || '').trim();
+  const lineUserId = String(originalData.lineUserId || originalData.userId || originalData.uid || '').trim();
+  const clickedByUserId = String(source?.userId || '').trim();
+  const compatibleData = { ...originalData };
+
+  compatibleData.act = compatibleData.act || action;
+  compatibleData.action = compatibleData.action || action;
+  if (reviewId) compatibleData.reviewId = compatibleData.reviewId || reviewId;
+  if (billId) compatibleData.billId = compatibleData.billId || billId;
+  if (room) compatibleData.room = compatibleData.room || room;
+  if (lineUserId) compatibleData.lineUserId = compatibleData.lineUserId || lineUserId;
+
+  return {
+    source: 'line_postback',
+    channel: 'payment_review',
+    intent: 'pay_review_accept',
+    action,
+    act: action,
+    reviewId,
+    billId,
+    room,
+    lineUserId,
+    clickedByUserId,
+    chatId: getChatId(ev),
+    sourceType: String(source?.type || ''),
+    groupId: String(source?.groupId || ''),
+    roomId: String(source?.roomId || ''),
+    postbackData: String(postbackData || ''),
+    data: compatibleData,
+    parsed: compatibleData,
+    event: ev,
+    events: [ev],
+    receivedAt
+  };
+}
+
 function buildRenewalPostbackMeta(data, ev, act = '') {
   const pickFirst = (value) => Array.isArray(value) ? value[0] : value;
   const normalize = (value) => {
@@ -8612,6 +8685,7 @@ export const __testables = {
   isContinueTermReplyAction,
   getRenewalPostbackWebhookUrl,
   buildMarkPaidForwardPayload,
+  buildPayReviewAcceptForwardPayload,
   getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply,

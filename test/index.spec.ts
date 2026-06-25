@@ -47,6 +47,52 @@ describe('Worker routes', () => {
 		expect(payload.row).toBe('75');
 	});
 
+	it('parses and forwards payment review accept postback data', () => {
+		const postbackData = 'act=PAY_REVIEW_ACCEPT&reviewId=REV-1&billId=BILL-2&room=B212&lineUserId=Utenant';
+		const parsed = __testables.parsePostbackData(postbackData);
+		const event = {
+			type: 'postback',
+			replyToken: 'reply-token',
+			webhookEventId: 'event-id',
+			source: {
+				type: 'group',
+				groupId: 'Cmanager',
+				userId: 'Ustaff'
+			},
+			postback: { data: postbackData }
+		};
+
+		const payload = __testables.buildPayReviewAcceptForwardPayload(
+			parsed,
+			event,
+			postbackData,
+			'2026-06-25T04:00:00.000Z'
+		) as Record<string, any>;
+
+		expect(parsed).toMatchObject({
+			act: 'PAY_REVIEW_ACCEPT',
+			reviewId: 'REV-1',
+			billId: 'BILL-2',
+			room: 'B212',
+			lineUserId: 'Utenant'
+		});
+		expect(payload).toMatchObject({
+			source: 'line_postback',
+			channel: 'payment_review',
+			intent: 'pay_review_accept',
+			action: 'PAY_REVIEW_ACCEPT',
+			reviewId: 'REV-1',
+			billId: 'BILL-2',
+			room: 'B212',
+			lineUserId: 'Utenant',
+			clickedByUserId: 'Ustaff',
+			chatId: 'Cmanager',
+			postbackData
+		});
+		expect(payload.data.action).toBe('PAY_REVIEW_ACCEPT');
+		expect(payload.events[0].postback.data).toBe(postbackData);
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',
