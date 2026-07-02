@@ -103,7 +103,7 @@ describe('Worker routes', () => {
 	});
 
 	it('keeps pay-rent trigger worker-owned and n8n-only', () => {
-		expect(__testables.PAY_RENT_SLIP_PROMPT).toBe('plz send slip');
+		expect(__testables.PAY_RENT_SLIP_PROMPT).toBe('โปรดส่งสลิปได้เลยค่ะ');
 		expect(__testables.getN8nPayRentUrl({
 			N8N_PAYRENT_URL: 'https://example.com/pay-rent',
 			PAYRENT_GAS_URL: 'https://script.google.com/macros/s/legacy/exec'
