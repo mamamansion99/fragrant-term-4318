@@ -260,6 +260,7 @@ const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
 const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
 const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
 const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
+const PAY_RENT_SLIP_PROMPT = 'plz send slip';
 const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
 const CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX = 'checkin:keycard:waiting-photo:';
 const checkinKeycardWaitingPhotoMemory = new Map();
@@ -1960,10 +1961,6 @@ function corsHeaders(origin) {
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Vary': 'Origin'
   };
-}
-
-function getPayRentGas(env) {
-  return env.PAYRENT_GAS_URL || '';
 }
 
 function getN8nPayRentUrl(env) {
@@ -3802,14 +3799,13 @@ export default {
         }
 
         const stateKey = getStateKey(ev);
-        // Pay Rent postbacks → forward to PAYRENT GAS (no quick ack)
-        // Pay Rent postbacks → instant push from Worker, then forward to PAYRENT GAS
+        // Pay Rent postbacks → instant push from Worker, then forward to n8n only.
         if (
           data.scope === 'payrent' ||
           ['pick_month', 'quick_month', 'upload', 'status', 'faq', 'howto'].includes(data.act)
         ) {
           const chatId = getChatId(ev);
-          const rentUrl = getPayRentGas(env);
+          const rentUrl = getN8nPayRentUrl(env);
 
           // 1) show a quick "please wait" (PUSH so we don't consume replyToken)
           try {
@@ -3825,8 +3821,12 @@ export default {
             console.warn('lineStartLoading failed', e);
           }
 
-          // 3) forward the original postback to PAYRENT GAS (await for snappiest UX)
-          await forwardToSpecificGas(env, rentUrl, { events: [ev] });
+          // 3) forward the original postback to n8n (await for snappiest UX)
+          if (rentUrl) {
+            await forwardToSpecificGas(env, rentUrl, { events: [ev] });
+          } else {
+            console.warn('pay rent postback: missing N8N_PAYRENT_URL, skipping forward');
+          }
 
           continue;
         }
@@ -4246,13 +4246,6 @@ export default {
           const payRentFlow = await kvGet(env, payRentKey);
           const payRentActive = !!(payRentFlow && payRentFlow.ts && (Date.now() - payRentFlow.ts < 15 * 60 * 1000));
 
-          const forwardPayRent = () => {
-            const rentUrl = getPayRentGas(env);
-            if (rentUrl) return forwardToSpecificGas(env, rentUrl, { events: [ev] });
-            console.warn('pay rent text trigger: missing PAYRENT_GAS_URL, skipping forward');
-            return;
-          };
-
           const notifyTenantChange = (intent) => {
             const payload = {
               source: 'line_message',
@@ -4577,7 +4570,7 @@ export default {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
 
-            const notifyMsg = { type: 'text', text: 'กำลังเปิดขั้นตอนชำระค่าเช่าให้ค่ะ รอสักครู่…' };
+            const notifyMsg = { type: 'text', text: PAY_RENT_SLIP_PROMPT };
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [notifyMsg]).catch(console.error);
             } else if (chatId) {
@@ -4586,7 +4579,6 @@ export default {
 
             ctx.waitUntil(kvDel(env, penaltyKey)); // switch to rent flow, clear penalty flag
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
-            ctx.waitUntil(forwardPayRent());
             continue;
           }
 
@@ -5472,7 +5464,7 @@ export default {
           if (payRentActive) {
             if (m.type === 'image') {
               // When slip arrives, forward to n8n payrent with context
-              const rentUrl = getN8nPayRentUrl(env) || getPayRentGas(env);
+              const rentUrl = getN8nPayRentUrl(env);
               if (rentUrl) {
                 const payload = {
                   events: [ev],
@@ -5482,7 +5474,7 @@ export default {
                 };
                 ctx.waitUntil(forwardToSpecificGas(env, rentUrl, payload));
               } else {
-                console.warn('payrent image: missing both N8N_PAYRENT_URL and PAYRENT_GAS_URL');
+                console.warn('payrent image: missing N8N_PAYRENT_URL');
               }
               ctx.waitUntil(kvDel(env, stateKey + ':payrent_flow'));
             } else {
@@ -8731,6 +8723,8 @@ export const __testables = {
   buildMarkPaidForwardPayload,
   getPayReviewAcceptWebhookUrl,
   buildPayReviewAcceptForwardPayload,
+  getN8nPayRentUrl,
+  PAY_RENT_SLIP_PROMPT,
   getPrebookWebhookUrl,
   isRoomRentInquiry,
   quickKeywordReply,

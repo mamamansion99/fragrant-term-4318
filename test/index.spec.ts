@@ -102,6 +102,17 @@ describe('Worker routes', () => {
 		})).toBe('https://example.com/approve-review');
 	});
 
+	it('keeps pay-rent trigger worker-owned and n8n-only', () => {
+		expect(__testables.PAY_RENT_SLIP_PROMPT).toBe('plz send slip');
+		expect(__testables.getN8nPayRentUrl({
+			N8N_PAYRENT_URL: 'https://example.com/pay-rent',
+			PAYRENT_GAS_URL: 'https://script.google.com/macros/s/legacy/exec'
+		})).toBe('https://example.com/pay-rent');
+		expect(__testables.getN8nPayRentUrl({
+			PAYRENT_GAS_URL: 'https://script.google.com/macros/s/legacy/exec'
+		})).toBe('');
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',
