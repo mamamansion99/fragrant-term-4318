@@ -148,6 +148,37 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
+	it('renders distinct payment menu labels for forgot key and rent key', () => {
+		const flex = __testables.buildPaymentOptionsFlex() as Record<string, any>;
+		const serialized = JSON.stringify(flex);
+
+		expect(serialized).toContain('ลืม/ทำกุญแจหาย');
+		expect(serialized).toContain('เช่ากุญแจเพิ่ม');
+		expect(serialized).toContain('#DC2626');
+		expect(serialized).toContain('#2563EB');
+	});
+
+	it('maps internal payment reasons to Thai labels', () => {
+		expect(__testables.paymentReasonLabel('KEY_RENT')).toBe('ค่าเช่ากุญแจ/คีย์การ์ดเพิ่ม');
+		expect(__testables.paymentReasonLabel('KEY_FORGOT')).toBe('ค่าลืม/ทำกุญแจหาย');
+		expect(__testables.paymentReasonLabel('CLEANING_PAYMENT')).toBe('ค่าทำความสะอาด');
+	});
+
+	it('clears all user payment states when starting a new payment flow', () => {
+		const keys = __testables.getPaymentStateKeys({
+			source: {
+				type: 'user',
+				userId: 'Utenant'
+			}
+		}) as string[];
+
+		expect(keys).toContain('Utenant:Utenant:penalty_flow');
+		expect(keys).toContain('Utenant:Utenant:payrent_flow');
+		expect(keys).toContain('Utenant:Utenant:keyrent_flow');
+		expect(keys).toContain('Utenant:Utenant:checkout_cash_flow');
+		expect(keys).toContain('bill-manual:payment:Utenant');
+	});
+
 	it('uses OTHERS as the generic penalty slip type while preserving typed categories', () => {
 		expect(__testables.normalizePenaltySlipType('penalty')).toBe('OTHERS');
 		expect(__testables.normalizePenaltySlipType('Others_payment')).toBe('Others_payment');

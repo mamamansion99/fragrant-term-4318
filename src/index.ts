@@ -439,6 +439,25 @@ function getCheckoutCashFlowKey(event) {
   return `${getStateKey(event)}:checkout_cash_flow`;
 }
 
+function getPaymentStateKeys(event) {
+  const stateKey = getStateKey(event);
+  const lineUserId = String(event?.source?.userId || '').trim();
+  return [
+    `${stateKey}:penalty_flow`,
+    `${stateKey}:payrent_flow`,
+    `${stateKey}:keyrent_flow`,
+    `${stateKey}:checkout_cash_flow`,
+    lineUserId ? getBillManualPaymentStateKey(lineUserId) : ''
+  ].filter(Boolean);
+}
+
+async function clearPaymentStatesForEvent(env, event, keepKeys = []) {
+  const keepSet = new Set((keepKeys || []).filter(Boolean));
+  const keys = getPaymentStateKeys(event).filter((key) => !keepSet.has(key));
+  await Promise.all(keys.map((key) => kvDel(env, key)));
+  return keys;
+}
+
 function normalizeCheckoutCashAction(data) {
   const action = String(
     data?.act ||
@@ -2495,6 +2514,7 @@ export default {
           }
 
           const paymentState = buildBillManualPaymentState(ev, cleaningPostback, postbackDataString);
+          await clearPaymentStatesForEvent(env, ev);
           await kvPut(env, stateKey, paymentState, BILL_MANUAL_PAYMENT_TTL_SECONDS);
 
           const roomText = paymentState.room ? `ห้อง ${paymentState.room} ` : '';
@@ -2685,6 +2705,7 @@ export default {
           const cashFlowKey = getCheckoutCashFlowKey(ev);
           const flow = buildCheckoutCashFlowState(data, ev, postbackDataString);
 
+          await clearPaymentStatesForEvent(env, ev);
           await kvPut(env, cashFlowKey, flow, CHECKOUT_CASH_FLOW_TTL_SECONDS);
 
           const prompt = buildCheckoutCashAmountPrompt(flow);
@@ -2700,10 +2721,9 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const penaltyKey = stateKey + ':penalty_flow';
-          const payRentKey = stateKey + ':payrent_flow';
           const flow = buildCheckout2PaymentFlowState(data, ev, postbackDataString);
 
-          await kvDel(env, payRentKey);
+          await clearPaymentStatesForEvent(env, ev);
           await kvPut(
             env,
             penaltyKey,
@@ -2712,8 +2732,8 @@ export default {
           );
 
           const askSlip = flow.roomId
-            ? `บันทึกรายการ CHECKOUT2 ห้อง ${flow.roomId} แล้ว โปรดส่งสลิปได้เลยค่ะ`
-            : 'บันทึกรายการ CHECKOUT2 แล้ว โปรดส่งสลิปได้เลยค่ะ';
+            ? `บันทึกรายการ${paymentReasonLabel(flow.reason)} ห้อง ${flow.roomId} แล้ว โปรดส่งสลิปได้เลยค่ะ`
+            : `บันทึกรายการ${paymentReasonLabel(flow.reason)}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
           if (replyToken) {
             await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
           } else if (chatId) {
@@ -2852,6 +2872,7 @@ export default {
             startEventId: eventId || null,
             ts: Date.now()
           };
+          await clearPaymentStatesForEvent(env, ev);
           await kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS);
 
           const messages = [
@@ -3579,6 +3600,7 @@ export default {
           ctx.waitUntil(
             notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
           );
+          await clearPaymentStatesForEvent(env, ev);
           if (paymentMethod === 'MOBILE_BANKING') {
             ctx.waitUntil(
               kvPut(
@@ -3597,7 +3619,6 @@ export default {
           } else {
             ctx.waitUntil(kvDel(env, penaltyKey));
           }
-          ctx.waitUntil(kvDel(env, keyRentFlowKey));
           continue;
         }
 
@@ -4291,7 +4312,8 @@ export default {
               receivedAt: new Date().toISOString(),
               ts: Date.now()
             };
-            ctx.waitUntil(kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS));
+            await clearPaymentStatesForEvent(env, ev);
+            await kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS);
 
             const paymentMsg = buildKeyRentPaymentMessage(flow.keyRent);
             if (replyToken) {
@@ -4314,6 +4336,7 @@ export default {
             ctx.waitUntil(
               notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
             );
+            await clearPaymentStatesForEvent(env, ev);
             ctx.waitUntil(armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT'));
 
             const ackText = [
@@ -4335,11 +4358,11 @@ export default {
               '',
               'ชำระบิลทั่วไป',
               '- ชำระค่าเช่าห้อง',
-              '- ชำระค่าลืมกุญแจ',
+              '- ลืม/ทำกุญแจหาย',
               '- ชำระค่าทำความสะอาด',
               '',
-              'เช่าทรัพย์สินเพิ่มเติม',
-              '- ชำระค่าเช่ากุญแจ',
+              'ขอของเพิ่ม / เช่าเพิ่ม',
+              '- เช่ากุญแจเพิ่ม',
               '',
               'ยานพาหนะและที่จอดรถ',
               '- ชำระค่าเช่าที่จอดรถ',
@@ -4404,13 +4427,11 @@ export default {
           }
 
           if (presetOtherPaymentReason) {
-            ctx.waitUntil(kvDel(env, payRentKey));
+            await clearPaymentStatesForEvent(env, ev);
             ctx.waitUntil(armOtherPaymentSlipFlow(presetOtherPaymentReason, {
               roomId: checkoutPaymentShortcut?.roomId || ''
             }));
-            const presetReasonLabel = presetOtherPaymentReason === 'CLEANING_PAYMENT'
-              ? 'ค่าทำความสะอาด'
-              : presetOtherPaymentReason;
+            const presetReasonLabel = paymentReasonLabel(presetOtherPaymentReason);
             const presetRoomLabel = checkoutPaymentShortcut?.roomId ? ` ห้อง ${checkoutPaymentShortcut.roomId}` : '';
             const askSlip = `บันทึกรายการ${presetReasonLabel}${presetRoomLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
             if (replyToken) {
@@ -4450,7 +4471,6 @@ export default {
 
             const paymentMethodFromText = normalizeKeyRentPaymentMethod(keyRent.paymentMethod || '');
             if (paymentMethodFromText) {
-              const keyRentFlowKey = stateKey + ':keyrent_flow';
               const keyRentResolved = {
                 ...keyRent,
                 rawText: textIn || keyRent.rawText || ''
@@ -4491,6 +4511,7 @@ export default {
                 notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
               );
 
+              await clearPaymentStatesForEvent(env, ev);
               if (paymentMethodFromText === 'MOBILE_BANKING') {
                 ctx.waitUntil(
                   kvPut(
@@ -4509,7 +4530,6 @@ export default {
               } else {
                 ctx.waitUntil(kvDel(env, penaltyKey));
               }
-              ctx.waitUntil(kvDel(env, keyRentFlowKey));
               continue;
             }
 
@@ -4577,7 +4597,7 @@ export default {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
             }
 
-            ctx.waitUntil(kvDel(env, penaltyKey)); // switch to rent flow, clear penalty flag
+            await clearPaymentStatesForEvent(env, ev);
             ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
             continue;
           }
@@ -4600,7 +4620,7 @@ export default {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, replyText).catch(console.error));
             }
 
-            ctx.waitUntil(kvDel(env, payRentKey)); // switch to penalty flow, clear rent flag
+            await clearPaymentStatesForEvent(env, ev);
             ctx.waitUntil(
               kvPut(
                 env,
@@ -5406,7 +5426,7 @@ export default {
               continue;
             }
 
-            const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
+            const typeLabel = penaltyFlowPaymentLabel(penaltyFlow);
             const slipPayload = {
               source: 'line_message',
               intent: 'penalty_payment_slip',
@@ -5788,6 +5808,26 @@ function normalizePenaltyReason(reason) {
 
 function normalizePenaltyFlowReason(reason) {
   return normalizePenaltyReason(reason);
+}
+
+function paymentReasonLabel(reason) {
+  const normalized = normalizePenaltyReason(reason || '');
+  const labels = {
+    KEY_RENT: 'ค่าเช่ากุญแจ/คีย์การ์ดเพิ่ม',
+    KEY_FORGOT: 'ค่าลืม/ทำกุญแจหาย',
+    CLEANING_PAYMENT: 'ค่าทำความสะอาด',
+    CAR: 'ค่าเช่าที่จอดรถ',
+    CHECKOUT: 'ค่าเช็คเอาท์',
+    CHECKOUT2: 'ค่าเช็คเอาท์สอง',
+    OTHERS: 'ค่าปรับ/ค่าอื่นๆ'
+  };
+  return labels[normalized] || String(reason || '').trim() || 'รายการนี้';
+}
+
+function penaltyFlowPaymentLabel(flow) {
+  const type = String(flow?.type || '').trim();
+  if (type === 'penalty') return 'ค่าปรับ';
+  return paymentReasonLabel(flow?.reason || flow?.categories || 'ค่าอื่นๆ');
 }
 
 function normalizePenaltySlipType(type) {
@@ -7394,14 +7434,14 @@ function buildPaymentOptionsFlex() {
                 ctaColor: '#0B63E5'
               },
               {
-                title: 'ชำระค่าลืมกุญแจ',
-                description: 'ลืมกุญแจ / ลืมคีย์การ์ด / ทำหาย',
+                title: 'ลืม/ทำกุญแจหาย',
+                description: 'ค่าปรับกรณีลืมกุญแจ ลืมคีย์การ์ด หรือทำหาย',
                 text: 'ชำระค่าลืมกุญแจ',
-                stripeColor: '#EA7A00',
+                stripeColor: '#DC2626',
                 badgeText: 'ค่าปรับ',
-                badgeBackground: '#FCEFC9',
-                badgeColor: '#EA7A00',
-                ctaColor: '#EA7A00'
+                badgeBackground: '#FEE2E2',
+                badgeColor: '#B91C1C',
+                ctaColor: '#DC2626'
               },
               {
                 title: 'จ่ายค่าทำความสะอาด',
@@ -7416,17 +7456,17 @@ function buildPaymentOptionsFlex() {
             ]
           ),
           sectionBlock(
-            'เช่าทรัพย์สินเพิ่มเติม',
+            'ขอของเพิ่ม / เช่าเพิ่ม',
             [
               {
-                title: 'ชำระค่าเช่ากุญแจ',
-                description: 'เช่ากุญแจหรือคีย์การ์ดเพิ่ม',
+                title: 'เช่ากุญแจเพิ่ม',
+                description: 'ต้องการกุญแจ คีย์การ์ด หรือชุดกุญแจเพิ่ม',
                 text: 'ชำระค่าเช่ากุญแจ',
-                stripeColor: '#EA7A00',
-                badgeText: 'ทรัพย์สิน',
-                badgeBackground: '#FCEFC9',
-                badgeColor: '#EA7A00',
-                ctaColor: '#EA7A00'
+                stripeColor: '#2563EB',
+                badgeText: 'เช่าเพิ่ม',
+                badgeBackground: '#DBEAFE',
+                badgeColor: '#1D4ED8',
+                ctaColor: '#2563EB'
               }
             ]
           ),
@@ -8731,6 +8771,10 @@ export const __testables = {
   isKeyRentWaitingPhotoStateForUser,
   isCheckinKeycardWaitingPhotoStateForEvent,
   normalizePenaltyReason,
+  paymentReasonLabel,
+  penaltyFlowPaymentLabel,
+  getPaymentStateKeys,
+  buildPaymentOptionsFlex,
   buildParkingPostbackPayload,
   PARKING_OUTSIDER_PHONE_TTL_SECONDS,
   PARKING_OUTSIDER_PHONE_STATE,
