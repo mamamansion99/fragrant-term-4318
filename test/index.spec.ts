@@ -156,6 +156,17 @@ describe('Worker routes', () => {
 		expect(serialized).toContain('เช่ากุญแจเพิ่ม');
 		expect(serialized).toContain('#DC2626');
 		expect(serialized).toContain('#2563EB');
+		expect(serialized).toContain('"text":"ลืม/ทำกุญแจหาย"');
+		expect(serialized).toContain('"text":"เช่ากุญแจเพิ่ม"');
+		expect(serialized).not.toContain('"text":"ชำระค่าลืมกุญแจ"');
+		expect(serialized).not.toContain('"text":"ชำระค่าเช่ากุญแจ"');
+	});
+
+	it('routes new key payment menu text to the same payment reasons', () => {
+		expect(__testables.detectPresetOtherPaymentReason('ลืม/ทำกุญแจหาย')).toBe('KEY_FORGOT');
+		expect(__testables.detectPresetOtherPaymentReason('เช่ากุญแจเพิ่ม')).toBe('KEY_RENT');
+		expect(__testables.detectPresetOtherPaymentReason('ชำระค่าลืมกุญแจ')).toBe('KEY_FORGOT');
+		expect(__testables.detectPresetOtherPaymentReason('ชำระค่าเช่ากุญแจ')).toBe('KEY_RENT');
 	});
 
 	it('maps internal payment reasons to Thai labels', () => {

@@ -435,6 +435,21 @@ function parseCheckoutPaymentText(text) {
   return null;
 }
 
+function detectPresetOtherPaymentReason(text, checkoutPaymentShortcut = null) {
+  if (checkoutPaymentShortcut?.reason) return checkoutPaymentShortcut.reason;
+
+  const raw = String(text || '').trim();
+  if (/^\s*(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)\s*$/i.test(raw)) return 'CLEANING_PAYMENT';
+  if (/^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(raw)) return 'CAR';
+  if (/^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ|เช่ากุญแจเพิ่ม|เช่าคีย์การ์ดเพิ่ม|เช่าชุดกุญแจเพิ่ม)\s*$/i.test(raw)) {
+    return 'KEY_RENT';
+  }
+  if (/^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย|ลืม\/ทำกุญแจหาย|ลืมทำกุญแจหาย|กุญแจหาย|คีย์การ์ดหาย)\s*$/i.test(raw)) {
+    return 'KEY_FORGOT';
+  }
+  return null;
+}
+
 function getCheckoutCashFlowKey(event) {
   return `${getStateKey(event)}:checkout_cash_flow`;
 }
@@ -4225,31 +4240,7 @@ export default {
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass;
           const checkoutPaymentShortcut = parseCheckoutPaymentText(textIn);
-          const fallbackPresetOtherPaymentReason =
-            /^\s*(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)\s*$/i.test(textIn)
-              ? 'CLEANING_PAYMENT'
-              : (
-                /^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(textIn)
-                  ? 'CAR'
-                  : (
-                    /^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ)\s*$/i.test(textIn)
-                      ? 'KEY_RENT'
-                      : (
-                        /^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย)\s*$/i.test(textIn)
-                          ? 'KEY_FORGOT'
-                          : (
-                            /^\s*(ชำระค่าเช็คเอ้าท์สอง|จ่ายค่าเช็คเอ้าท์สอง|ชำระค่าเช็คเอาท์สอง|จ่ายค่าเช็คเอาท์สอง|ชำระค่าcheckout2|จ่ายค่าcheckout2|checkout2 payment)\s*$/i.test(textIn)
-                              ? 'CHECKOUT2'
-                              : (
-                                /^\s*(ชำระค่าเช็คเอาท์|จ่ายค่าเช็คเอาท์|ชำระค่าcheckout|จ่ายค่าcheckout|checkout payment)\s*$/i.test(textIn)
-                                  ? 'CHECKOUT'
-                                  : null
-                              )
-                          )
-                      )
-                  )
-              );
-          const presetOtherPaymentReason = checkoutPaymentShortcut?.reason || fallbackPresetOtherPaymentReason;
+          const presetOtherPaymentReason = detectPresetOtherPaymentReason(textIn, checkoutPaymentShortcut);
           const penaltyMatch = /^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.exec(textIn);
           const isPenaltyPayment = !!penaltyMatch;
           const penaltyType = penaltyMatch
@@ -7436,7 +7427,7 @@ function buildPaymentOptionsFlex() {
               {
                 title: 'ลืม/ทำกุญแจหาย',
                 description: 'ค่าปรับกรณีลืมกุญแจ ลืมคีย์การ์ด หรือทำหาย',
-                text: 'ชำระค่าลืมกุญแจ',
+                text: 'ลืม/ทำกุญแจหาย',
                 stripeColor: '#DC2626',
                 badgeText: 'ค่าปรับ',
                 badgeBackground: '#FEE2E2',
@@ -7461,7 +7452,7 @@ function buildPaymentOptionsFlex() {
               {
                 title: 'เช่ากุญแจเพิ่ม',
                 description: 'ต้องการกุญแจ คีย์การ์ด หรือชุดกุญแจเพิ่ม',
-                text: 'ชำระค่าเช่ากุญแจ',
+                text: 'เช่ากุญแจเพิ่ม',
                 stripeColor: '#2563EB',
                 badgeText: 'เช่าเพิ่ม',
                 badgeBackground: '#DBEAFE',
@@ -8741,6 +8732,7 @@ export const __testables = {
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
   parseCheckoutPaymentText,
+  detectPresetOtherPaymentReason,
   isCheckoutCashPaymentPostback,
   buildCheckoutCashFlowState,
   parseCheckoutCashAmount,
