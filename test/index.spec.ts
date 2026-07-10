@@ -113,6 +113,16 @@ describe('Worker routes', () => {
 		})).toBe('');
 	});
 
+	it('uses MM_WORKER_SECRET as the forward secret fallback', () => {
+		expect(__testables.getWorkerForwardSecret({
+			MM_WORKER_SECRET: 'test123'
+		})).toBe('test123');
+		expect(__testables.getWorkerForwardSecret({
+			WORKER_SECRET: 'primary',
+			MM_WORKER_SECRET: 'fallback'
+		})).toBe('primary');
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',

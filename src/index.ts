@@ -1909,6 +1909,10 @@ function getReservationAdminKey(env) {
   return env.ADMIN_API_KEY || '';
 }
 
+function getWorkerForwardSecret(env) {
+  return String(env?.WORKER_SECRET || env?.MM_WORKER_SECRET || '').trim();
+}
+
 // GAS #2: new Move-out API (resolve_token / status / moveout_upsert)
 function getMoveoutGas(env) {
   return env.MOVEOUT_GAS_URL || '';
@@ -2116,7 +2120,7 @@ async function reservationAdminCallWithAuthGuard(env, action, payload) {
 }
 
 async function forwardToSpecificGas(env, gasUrl, body) {
-  const secret = env.WORKER_SECRET || '';
+  const secret = getWorkerForwardSecret(env);
   const payload = { ...body, workerSecret: secret };
 
   if (!gasUrl || !secret) {
@@ -4581,15 +4585,15 @@ export default {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
 
+            await clearPaymentStatesForEvent(env, ev, [payRentKey]);
+            await kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }, 15 * 60);
+
             const notifyMsg = { type: 'text', text: PAY_RENT_SLIP_PROMPT };
             if (replyToken) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [notifyMsg]).catch(console.error);
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
             }
-
-            await clearPaymentStatesForEvent(env, ev);
-            ctx.waitUntil(kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }));
             continue;
           }
 
@@ -8753,6 +8757,7 @@ export const __testables = {
   isContinueTermReplyAction,
   getRenewalPostbackWebhookUrl,
   buildMarkPaidForwardPayload,
+  getWorkerForwardSecret,
   getPayReviewAcceptWebhookUrl,
   buildPayReviewAcceptForwardPayload,
   getN8nPayRentUrl,
