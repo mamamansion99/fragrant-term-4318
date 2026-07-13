@@ -4279,6 +4279,8 @@ export default {
           const armOtherPaymentSlipFlow = (reasonText, options = {}) => {
             const normalizedReason = normalizePenaltyReason(reasonText || '');
             const roomId = String(options?.roomId || '').trim().toUpperCase();
+            const webhookTarget = String(options?.webhookTarget || '').trim() ||
+              (normalizedReason === 'KEY_FORGOT' ? 'key_forgot' : '');
             return kvPut(
               env,
               penaltyKey,
@@ -4288,6 +4290,8 @@ export default {
                 userId,
                 type: 'Others_payment',
                 reason: normalizedReason || reasonText || 'ค่าอื่นๆ',
+                ...(webhookTarget ? { webhookTarget } : {}),
+                ...(options?.keyForgot ? { keyForgot: options.keyForgot } : {}),
                 ...(roomId ? { roomId, room: roomId } : {})
               },
               PENALTY_FLOW_TTL_SECONDS
@@ -4332,7 +4336,10 @@ export default {
               notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
             );
             await clearPaymentStatesForEvent(env, ev);
-            ctx.waitUntil(armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT'));
+            ctx.waitUntil(armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT', {
+              webhookTarget: 'key_forgot',
+              keyForgot: payload
+            }));
 
             const ackText = [
               `ส่งข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} ให้เจ้าหน้าที่แล้วค่ะ`,
@@ -5422,19 +5429,24 @@ export default {
             }
 
             const typeLabel = penaltyFlowPaymentLabel(penaltyFlow);
+            const slipReason = normalizePenaltySlipReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || '');
+            const isKeyForgotSlip = String(penaltyFlow?.webhookTarget || '').trim() === 'key_forgot' ||
+              normalizePenaltyReason(penaltyFlow?.reason || '') === 'KEY_FORGOT';
             const slipPayload = {
               source: 'line_message',
-              intent: 'penalty_payment_slip',
-              channel: 'penalty',
+              intent: isKeyForgotSlip ? 'key_forgot_payment_slip' : 'penalty_payment_slip',
+              channel: isKeyForgotSlip ? 'key_forgot' : 'penalty',
               event: ev,
               lineUserId: ev?.source?.userId || null,
               chatId,
               imageMessageId: ev?.message?.id || null,
               type: normalizePenaltySlipType(penaltyFlow?.type || 'penalty'),
-              reason: normalizePenaltySlipReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || ''),
+              reason: slipReason,
+              paymentReason: slipReason,
               categories: penaltyFlow?.categories || penaltyFlow?.reason || '',
               roomId: penaltyFlow?.roomId || penaltyFlow?.room || '',
               room: penaltyFlow?.roomId || penaltyFlow?.room || '',
+              keyForgot: penaltyFlow?.keyForgot || null,
               receivedAt: new Date().toISOString()
             };
 
@@ -8447,7 +8459,14 @@ async function notifyN8nPrebookWebhook(env, payload) {
   }
 }
 
-function getPenaltyWebhook(env) {
+function getKeyForgotWebhook(env) {
+  return env.N8N_KEY_FORGOT_WEBHOOK_URL || '';
+}
+
+function getPenaltyWebhook(env, target = '') {
+  if (String(target || '').trim() === 'key_forgot') {
+    return getKeyForgotWebhook(env);
+  }
   return env.PENALTY_WEBHOOK_URL || '';
 }
 
@@ -8471,7 +8490,7 @@ async function Penalty_webhook(env, payload, options = {}) {
   const target = String(options?.target || '').trim();
   const url = target === 'warn_payment'
     ? getWarnPaymentWebhook(env)
-    : getPenaltyWebhook(env);
+    : getPenaltyWebhook(env, target);
   if (!url) {
     console.warn('Penalty_webhook: missing webhook URL');
     return false;
@@ -8763,6 +8782,8 @@ export const __testables = {
   getN8nPayRentUrl,
   PAY_RENT_SLIP_PROMPT,
   getPrebookWebhookUrl,
+  getKeyForgotWebhook,
+  getPenaltyWebhook,
   isRoomRentInquiry,
   quickKeywordReply,
   isKeyRentWaitingPhotoStateForUser,

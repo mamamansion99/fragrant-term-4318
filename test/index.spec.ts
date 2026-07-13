@@ -209,6 +209,17 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyFlowReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
+	it('routes key-forgot payment slips to the dedicated n8n webhook', () => {
+		const envConfig = {
+			N8N_KEY_FORGOT_WEBHOOK_URL: 'https://example.com/key-forgot',
+			PENALTY_WEBHOOK_URL: 'https://example.com/penalty'
+		};
+
+		expect(__testables.getPenaltyWebhook(envConfig)).toBe('https://example.com/penalty');
+		expect(__testables.getPenaltyWebhook(envConfig, 'key_forgot')).toBe('https://example.com/key-forgot');
+		expect(__testables.getKeyForgotWebhook(envConfig)).toBe('https://example.com/key-forgot');
+	});
+
 	it('normalizes cleaning manager price postbacks', () => {
 		const postbackData = 'act=CLEANING_MANAGER_PRICE&requestId=CLN-20260517-123456&roomId=A101&price=300&tenantLineUserId=Utenant&source=TENANT_LINE';
 		const parsed = __testables.parseQueryString(postbackData);
