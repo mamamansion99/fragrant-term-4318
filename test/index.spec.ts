@@ -166,9 +166,8 @@ describe('Worker routes', () => {
 		expect(serialized).toContain('เช่ากุญแจเพิ่ม');
 		expect(serialized).toContain('#DC2626');
 		expect(serialized).toContain('#2563EB');
-		expect(serialized).toContain('"text":"ลืม/ทำกุญแจหาย"');
+		expect(serialized).toContain('"text":"ชำระค่าลืมกุญแจ"');
 		expect(serialized).toContain('"text":"เช่ากุญแจเพิ่ม"');
-		expect(serialized).not.toContain('"text":"ชำระค่าลืมกุญแจ"');
 		expect(serialized).not.toContain('"text":"ชำระค่าเช่ากุญแจ"');
 	});
 
@@ -209,15 +208,16 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyFlowReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
-	it('routes key-forgot payment slips to the dedicated n8n webhook', () => {
+	it('keeps key-forgot payment slips on the legacy Others_Slip webhook contract', () => {
 		const envConfig = {
 			N8N_KEY_FORGOT_WEBHOOK_URL: 'https://example.com/key-forgot',
 			PENALTY_WEBHOOK_URL: 'https://example.com/penalty'
 		};
 
 		expect(__testables.getPenaltyWebhook(envConfig)).toBe('https://example.com/penalty');
-		expect(__testables.getPenaltyWebhook(envConfig, 'key_forgot')).toBe('https://example.com/key-forgot');
-		expect(__testables.getKeyForgotWebhook(envConfig)).toBe('https://example.com/key-forgot');
+		expect(__testables.getPenaltyWebhook(envConfig, 'key_forgot')).toBe('https://example.com/penalty');
+		expect(__testables.normalizePenaltySlipType('Others_payment')).toBe('Others_payment');
+		expect(__testables.normalizePenaltySlipReason('Others_payment', 'KEY_FORGOT')).toBe('KEY_FORGOT');
 	});
 
 	it('normalizes cleaning manager price postbacks', () => {
