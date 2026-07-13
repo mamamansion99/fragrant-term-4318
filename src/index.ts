@@ -3046,19 +3046,6 @@ export default {
 
           if (act === 'LEAD_START') {
             await clearLead(env, userId);
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, buildPrebookPromptMessages(env, 'booking')).catch(console.error);
-            continue;
-          }
-
-          if (act === 'LEAD_CANCEL') {
-            await clearLead(env, userId);
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'ยกเลิกการกรอกข้อมูลแล้วครับ ✅' }
-            ]).catch(console.error);
-            continue;
-          }
-
-          if (act === 'LEAD_START') {
             const lead = {
               userId,
               createdAt: Date.now(),
@@ -3073,9 +3060,17 @@ export default {
             continue;
           }
 
+          if (act === 'LEAD_CANCEL') {
+            await clearLead(env, userId);
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+              { type: 'text', text: 'ยกเลิกการกรอกข้อมูลแล้วครับ ✅' }
+            ]).catch(console.error);
+            continue;
+          }
+
           if (act === 'LEAD_A') {
             const q = String(data.q || '').trim();
-            const v = String(data.v || '').trim();
+            const v = normalizeLeadAnswer(q, data.v, ev?.postback?.params);
             if (!q || !v) {
               await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
                 { type: 'text', text: 'ข้อมูลไม่ครบ กรุณาลองใหม่ครับ' }
@@ -3100,7 +3095,7 @@ export default {
             lead.answers[q] = v;
             lead.updatedAt = Date.now();
 
-            const stepMap = { movein: 2, people: 3, status: 4, vehicle: 5, stay: 999 };
+            const stepMap = { status: 2, movein: 999 };
             let next = stepMap[q] || (Number(lead.step) || 1) + 1;
             if (next > 5) next = 999;
 
@@ -3116,23 +3111,22 @@ export default {
               if (getOwnerGroupIds(env).length) {
                 const a = lead.answers || {};
                 const valueMap = {
-                  movein: { IN3: 'ภายใน 3 วัน', IN7: 'ภายใน 7 วัน', IN30: 'ภายในเดือนนี้', UNSURE: 'ยังไม่แน่ใจ' },
-                  people: { '1': '1 คน', '2': '2 คน', '3PLUS': 'มากกว่า 2' },
-                  status: { STUDENT: 'นักเรียน/นักศึกษา', WORK: 'ทำงานประจำ', SHIFT: 'ทำงานกะ/กลางคืน', OTHER: 'อื่นๆ' },
-                  vehicle: { NONE: 'ไม่มี', MOTO: 'มอเตอร์ไซค์', CAR: 'รถยนต์' },
-                  stay: { '6M': '6 เดือน', '1Y': '1 ปี', '1YPLUS': 'มากกว่า 1 ปี' }
+                  movein: { IN7: 'ภายใน 7 วัน', IN30: 'ภายในเดือนนี้', UNSURE: 'ยังไม่แน่ใจ' },
+                  status: { STUDENT: 'นักศึกษา', FACTORY: 'พนักงานโรงงาน', OFFICE: 'พนักงานออฟฟิศ', OTHER: 'อื่น ๆ' }
                 };
-                const formatAnswer = (key, value) => (valueMap[key] && valueMap[key][value]) ? valueMap[key][value] : (value || '-');
+                const formatAnswer = (key, value) => {
+                  if (key === 'movein' && String(value || '').startsWith('DATE:')) {
+                    return String(value).slice(5);
+                  }
+                  return (valueMap[key] && valueMap[key][value]) ? valueMap[key][value] : (value || '-');
+                };
                 const summary = [
-                  '🧾 Lead Screening (SUBMITTED)',
+                  '🧾 Booking Lead (SUBMITTED)',
                   `👤 UserId: ${userId}`,
                   `🕒 Time: ${nowBkkString()}`,
                   '',
-                  `1) Move-in: ${formatAnswer('movein', a.movein)}`,
-                  `2) People: ${formatAnswer('people', a.people)}`,
-                  `3) Status: ${formatAnswer('status', a.status)}`,
-                  `4) Vehicle: ${formatAnswer('vehicle', a.vehicle)}`,
-                  `5) Stay: ${formatAnswer('stay', a.stay)}`
+                  `อาชีพ: ${formatAnswer('status', a.status)}`,
+                  `ต้องการเข้าอยู่: ${formatAnswer('movein', a.movein)}`
                 ].join('\n');
 
                 const msg = [
@@ -6768,13 +6762,13 @@ function leadQuestion(step) {
   if (step === 1) {
     return {
       type: 'text',
-      text: '1) ต้องการย้ายเข้าเมื่อไหร่ครับ?',
+      text: 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่',
       quickReply: {
         items: [
-          mk('ภายใน 3 วัน', 'movein', 'IN3'),
-          mk('ภายใน 7 วัน', 'movein', 'IN7'),
-          mk('ภายในเดือนนี้', 'movein', 'IN30'),
-          mk('ยังไม่แน่ใจ', 'movein', 'UNSURE')
+          mk('นักศึกษา', 'status', 'STUDENT'),
+          mk('พนักงานโรงงาน', 'status', 'FACTORY'),
+          mk('พนักงานออฟฟิศ', 'status', 'OFFICE'),
+          mk('อื่น ๆ', 'status', 'OTHER')
         ]
       }
     };
@@ -6782,57 +6776,36 @@ function leadQuestion(step) {
   if (step === 2) {
     return {
       type: 'text',
-      text: '2) อยู่กี่คนครับ?',
+      text: 'ต้องการเข้าอยู่เมื่อไหร่ครับ?',
       quickReply: {
         items: [
-          mk('1 คน', 'people', '1'),
-          mk('2 คน', 'people', '2'),
-          mk('มากกว่า 2', 'people', '3PLUS')
-        ]
-      }
-    };
-  }
-  if (step === 3) {
-    return {
-      type: 'text',
-      text: '3) สถานะปัจจุบันครับ',
-      quickReply: {
-        items: [
-          mk('นักเรียน/นักศึกษา', 'status', 'STUDENT'),
-          mk('ทำงานประจำ', 'status', 'WORK'),
-          mk('ทำงานกะ/กลางคืน', 'status', 'SHIFT'),
-          mk('อื่นๆ', 'status', 'OTHER')
-        ]
-      }
-    };
-  }
-  if (step === 4) {
-    return {
-      type: 'text',
-      text: '4) มียานพาหนะไหมครับ?',
-      quickReply: {
-        items: [
-          mk('ไม่มี', 'vehicle', 'NONE'),
-          mk('มอเตอร์ไซค์', 'vehicle', 'MOTO'),
-          mk('รถยนต์', 'vehicle', 'CAR')
-        ]
-      }
-    };
-  }
-  if (step === 5) {
-    return {
-      type: 'text',
-      text: '5) ตั้งใจอยู่ประมาณกี่เดือน/กี่ปีครับ?',
-      quickReply: {
-        items: [
-          mk('6 เดือน', 'stay', '6M'),
-          mk('1 ปี', 'stay', '1Y'),
-          mk('มากกว่า 1 ปี', 'stay', '1YPLUS')
+          mk('ภายใน 7 วัน', 'movein', 'IN7'),
+          mk('ภายในเดือนนี้', 'movein', 'IN30'),
+          {
+            type: 'action',
+            action: {
+              type: 'datetimepicker',
+              label: 'เลือกวันที่',
+              data: 'act=LEAD_A&q=movein&v=DATE',
+              mode: 'date'
+            }
+          },
+          mk('ยังไม่แน่ใจ', 'movein', 'UNSURE')
         ]
       }
     };
   }
   return null;
+}
+
+function normalizeLeadAnswer(q, value, postbackParams = {}) {
+  const answerKey = String(q || '').trim();
+  const rawValue = String(value || '').trim();
+  if (answerKey === 'movein' && rawValue === 'DATE') {
+    const selectedDate = String(postbackParams?.date || '').trim();
+    return selectedDate ? `DATE:${selectedDate}` : '';
+  }
+  return rawValue;
 }
 
 function getPrebookUrl(env) {
@@ -7191,69 +7164,19 @@ async function quickKeywordReply(text, env, userId) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
-    return buildPrebookPromptMessages(env, 'booking');
-    const enabled = await getScreeningEnabled(env);
-    if (enabled) {
-      const lead = userId ? await getLead(env, userId) : null;
-      if (lead && lead.status === 'SUBMITTED') {
-        return [
-          { type: 'text', text: 'รับข้อมูลเรียบร้อยแล้วครับ ✅ เดี๋ยวแอดมินติดต่อกลับใน LINE ครับ' }
-        ];
-      }
-      if (lead && lead.status === 'IN_PROGRESS' && lead.step) {
-        const nextQuestion = leadQuestion(lead.step);
-        if (nextQuestion) {
-          return [nextQuestion];
-        }
-      }
-      return [
-        {
-          type: 'text',
-          text: 'ก่อนส่งลิงก์จอง ขออนุญาตถามสั้นๆ 5 ข้อเพื่อจัดห้องให้เหมาะที่สุดครับ 😊',
-          quickReply: {
-            items: [
-              { type: 'action', action: { type: 'postback', label: 'เริ่มตอบคำถาม ✅', data: 'act=LEAD_START', displayText: 'เริ่มตอบคำถาม' } },
-              { type: 'action', action: { type: 'postback', label: 'ยกเลิก', data: 'act=LEAD_CANCEL', displayText: 'ยกเลิก' } }
-            ]
-          }
-        }
-      ];
+    if (userId) {
+      const lead = {
+        userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        submittedAt: null,
+        status: 'IN_PROGRESS',
+        step: 1,
+        answers: {}
+      };
+      await saveLead(env, userId, lead);
     }
-
-    const bookingUrl = String((env?.BOOKING_URL || '').trim() || 'https://mm-v2.pages.dev/#reservation');
-    const bookingStepsText = [
-      '[📅 วิธีจองห้องพัก]',
-      '',
-      `1) เข้า “ระบบจอง” ที่ลิงก์นี้: ${bookingUrl}`,
-      '2) กรอกข้อมูล เลือกห้องและวันที่เข้าอยู่ แล้วส่งฟอร์ม',
-      '3) ระบบออกเลขรหัส #MMxxx',
-      '4) พิมพ์รหัส #MMxxx ในแชทนี้',
-      '5) ชำระค่าจองและรอยืนยันจากเจ้าหน้าที่',
-      '6) ⚠️ หลังจองในเว็บไซต์ ต้องยืนยันและชำระค่าจองทาง LINE นี้ภายใน 2 ชั่วโมง มิฉะนั้นระบบจะยกเลิกอัตโนมัติ'
-    ].join('\n');
-
-    const defaultBookingImageUrls = [
-      'https://drive.google.com/uc?export=view&id=146RJw9oS4fr1gEMiqrePMTwS-bXZYcZJ',
-      'https://drive.google.com/uc?export=view&id=1Y6KUvNmw0wkBoSCldHNA38sBvrDniuR3'
-    ];
-
-    const bookingImages = defaultBookingImageUrls
-      .map((fallbackUrl, idx) => {
-        const override = idx === 0 ? env?.HOWTO_IMAGE_URL_1 : env?.HOWTO_IMAGE_URL_2;
-        const url = String((override || '').trim() || fallbackUrl);
-        if (!url) return null;
-        return {
-          type: 'image',
-          originalContentUrl: url,
-          previewImageUrl: url
-        };
-      })
-      .filter(Boolean);
-
-    return [
-      { type: 'text', text: bookingStepsText },
-      ...bookingImages
-    ];
+    return [leadQuestion(1)];
   }
 
   if (normalized.includes('แม่บ้าน') || lower.includes('maid')) {
@@ -8766,6 +8689,8 @@ export const __testables = {
   getPenaltyWebhook,
   isRoomRentInquiry,
   quickKeywordReply,
+  leadQuestion,
+  normalizeLeadAnswer,
   isKeyRentWaitingPhotoStateForUser,
   isCheckinKeycardWaitingPhotoStateForEvent,
   normalizePenaltyReason,

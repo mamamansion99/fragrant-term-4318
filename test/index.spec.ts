@@ -1232,6 +1232,49 @@ describe('Worker routes', () => {
 		expect(messages[1].text).toContain('https://mm-prebook.pages.dev/');
 	});
 
+	it('starts วิธีจอง with the interactive occupation choices', async () => {
+		const messages = await __testables.quickKeywordReply('วิธีจอง', env, '') as Array<Record<string, any>>;
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0].text).toBe('รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่');
+		expect(messages[0].quickReply.items.map((item: Record<string, any>) => item.action.label)).toEqual([
+			'นักศึกษา',
+			'พนักงานโรงงาน',
+			'พนักงานออฟฟิศ',
+			'อื่น ๆ'
+		]);
+		expect(messages[0].quickReply.items.map((item: Record<string, any>) => item.action.data)).toEqual([
+			'act=LEAD_A&q=status&v=STUDENT',
+			'act=LEAD_A&q=status&v=FACTORY',
+			'act=LEAD_A&q=status&v=OFFICE',
+			'act=LEAD_A&q=status&v=OTHER'
+		]);
+	});
+
+	it('offers the requested move-in choices with a native date picker', () => {
+		const message = __testables.leadQuestion(2) as Record<string, any>;
+		const actions = message.quickReply.items.map((item: Record<string, any>) => item.action);
+
+		expect(message.text).toBe('ต้องการเข้าอยู่เมื่อไหร่ครับ?');
+		expect(actions.map((action: Record<string, unknown>) => action.label)).toEqual([
+			'ภายใน 7 วัน',
+			'ภายในเดือนนี้',
+			'เลือกวันที่',
+			'ยังไม่แน่ใจ'
+		]);
+		expect(actions[2]).toMatchObject({
+			type: 'datetimepicker',
+			data: 'act=LEAD_A&q=movein&v=DATE',
+			mode: 'date'
+		});
+	});
+
+	it('normalizes a selected move-in date from LINE postback params', () => {
+		expect(__testables.normalizeLeadAnswer('movein', 'DATE', { date: '2026-08-15' })).toBe('DATE:2026-08-15');
+		expect(__testables.normalizeLeadAnswer('movein', 'DATE', {})).toBe('');
+		expect(__testables.normalizeLeadAnswer('movein', 'IN7', {})).toBe('IN7');
+	});
+
 	it('validates repo format for /git/latest-commit before calling GitHub', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/git/latest-commit?repo=invalid-repo-format');
 		const ctx = createExecutionContext();
