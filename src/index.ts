@@ -7164,19 +7164,12 @@ async function quickKeywordReply(text, env, userId) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
-    if (userId) {
-      const lead = {
-        userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        submittedAt: null,
-        status: 'IN_PROGRESS',
-        step: 1,
-        answers: {}
-      };
-      await saveLead(env, userId, lead);
-    }
-    return [leadQuestion(1)];
+    return [
+      {
+        type: 'text',
+        text: 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่'
+      }
+    ];
   }
 
   if (normalized.includes('แม่บ้าน') || lower.includes('maid')) {
