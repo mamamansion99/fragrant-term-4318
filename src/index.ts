@@ -608,7 +608,7 @@ function isCheckinFlowStateActive(state, now = Date.now()) {
   );
 }
 
-async function clearUserWorkflowStatesForCheckin(env, event) {
+async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command') {
   const userId = String(event?.source?.userId || '').trim();
   const chatId = getChatId(event);
   if (!userId) return [];
@@ -616,17 +616,14 @@ async function clearUserWorkflowStatesForCheckin(env, event) {
   const stateKey = getStateKey(event);
   const groupId = String(event?.source?.groupId || '').trim();
   const keys = new Set([
+    ...getPaymentStateKeys(event),
     buildActiveFlowKey(userId),
     buildBookingFlowKey(userId, chatId),
     buildCheckinFlowKey(userId, chatId),
-    getBillManualPaymentStateKey(userId),
     `reg_id:${userId}`,
     `${TENANT_CHANGE_KEY_PREFIX}${userId}`,
     parkingOutsiderPhoneFlowKey(userId),
     `${stateKey}:moveout_flow`,
-    `${stateKey}:penalty_flow`,
-    `${stateKey}:payrent_flow`,
-    `${stateKey}:keyrent_flow`,
     getCheckinKeycardWaitingPhotoUserKey(userId)
   ].filter(Boolean));
 
@@ -657,12 +654,17 @@ async function clearUserWorkflowStatesForCheckin(env, event) {
 
   const clearedKeys = [...keys];
   await Promise.all(clearedKeys.map((key) => kvDel(env, key)));
-  console.log('checkin_user_workflow_states_cleared', {
+  console.log('user_workflow_states_cleared', {
+    reason,
     userId,
     chatId,
     clearedKeys
   });
   return clearedKeys;
+}
+
+async function clearUserWorkflowStatesForCheckin(env, event) {
+  return clearUserWorkflowStatesForEvent(env, event, 'checkin');
 }
 
 async function startCheckinFlow(env, ctx, event, replyToken, text, roomId) {
@@ -4325,7 +4327,7 @@ export default {
             ctx.waitUntil(
               notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
             );
-            await clearPaymentStatesForEvent(env, ev);
+            await clearUserWorkflowStatesForEvent(env, ev, 'key_forgot');
             await armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT');
 
             const ackText = [
@@ -4416,7 +4418,11 @@ export default {
           }
 
           if (presetOtherPaymentReason) {
-            await clearPaymentStatesForEvent(env, ev);
+            if (presetOtherPaymentReason === 'KEY_FORGOT') {
+              await clearUserWorkflowStatesForEvent(env, ev, 'key_forgot');
+            } else {
+              await clearPaymentStatesForEvent(env, ev);
+            }
             await armOtherPaymentSlipFlow(presetOtherPaymentReason, {
               roomId: checkoutPaymentShortcut?.roomId || ''
             });
@@ -5251,39 +5257,6 @@ export default {
             continue;
           }
 
-          const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
-          // Optional quick ack
-          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
-          ]).catch(console.error));
-
-          const autoImgUrl = getAutoImgGas(env);
-          if (autoImgUrl) {
-            ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev] }));
-          }
-
-          if (
-            reservationActiveFlow &&
-            String(reservationActiveFlow.flowType || '') === 'reservation' &&
-            isReservationActiveFlowPhase(reservationActiveFlow.phase) &&
-            isReservationFlowScopeMatchEvent(reservationActiveFlow, ev)
-          ) {
-            const resvUrl = getReservationGas(env);
-            if (resvUrl) {
-              console.log('reservation_image_forward_by_active_flow', {
-                chatId,
-                userId: imageUserId,
-                phase: reservationActiveFlow.phase,
-                code: reservationActiveFlow.code || '',
-                scopeType: reservationActiveFlow.scopeType || '',
-                scopeId: reservationActiveFlow.scopeId || '',
-                resvUrl
-              });
-              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
-              continue;
-            }
-          }
-
           const stateKey = getStateKey(ev);
           const penaltyKey = stateKey + ':penalty_flow';
           const penaltyFlow = await kvGet(env, penaltyKey);
@@ -5496,6 +5469,41 @@ export default {
               ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
             }
             continue;
+          }
+
+          // Reservation and generic image handlers are fallbacks. Payment
+          // commands above must get the image without also forwarding it to
+          // reservation automation.
+          const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
+          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
+            { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
+          ]).catch(console.error));
+
+          const autoImgUrl = getAutoImgGas(env);
+          if (autoImgUrl) {
+            ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev] }));
+          }
+
+          if (
+            reservationActiveFlow &&
+            String(reservationActiveFlow.flowType || '') === 'reservation' &&
+            isReservationActiveFlowPhase(reservationActiveFlow.phase) &&
+            isReservationFlowScopeMatchEvent(reservationActiveFlow, ev)
+          ) {
+            const resvUrl = getReservationGas(env);
+            if (resvUrl) {
+              console.log('reservation_image_forward_by_active_flow', {
+                chatId,
+                userId: imageUserId,
+                phase: reservationActiveFlow.phase,
+                code: reservationActiveFlow.code || '',
+                scopeType: reservationActiveFlow.scopeType || '',
+                scopeId: reservationActiveFlow.scopeId || '',
+                resvUrl
+              });
+              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+              continue;
+            }
           }
 
           // Booking flow: forward booking images directly to reservation GAS (GAS owns slip/ID flow)
@@ -8648,6 +8656,7 @@ export const __testables = {
   parseKeyRent,
   parseCheckinCommand,
   isCheckinFlowStateActive,
+  clearUserWorkflowStatesForEvent,
   clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,

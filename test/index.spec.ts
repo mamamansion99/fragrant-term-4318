@@ -547,6 +547,41 @@ describe('Worker routes', () => {
 		expect(values.has(`active_flow:${otherUserId}`)).toBe(true);
 	});
 
+	it('clears stale image commands before starting a key-forgot payment', async () => {
+		const userId = 'U-tenant';
+		const stateKey = `${userId}:${userId}`;
+		const values = new Map<string, any>([
+			[`active_flow:${userId}`, { flowType: 'reservation', phase: 'await_slip' }],
+			[`booking_flow:${userId}`, { phase: 'await_slip' }],
+			[`checkin_flow:${userId}`, { roomId: 'B206', ts: Date.now() }],
+			[`${stateKey}:payrent_flow`, { ts: Date.now() }],
+			[`${stateKey}:keyrent_flow`, { ts: Date.now() }],
+			[`${stateKey}:checkout_cash_flow`, { ts: Date.now() }],
+			[`bill-manual:payment:${userId}`, { billId: 'BILL-1' }]
+		]);
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => values.get(key) ?? null,
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+		const event = { source: { type: 'user', userId } };
+
+		const clearedKeys = await __testables.clearUserWorkflowStatesForEvent(
+			mockEnv,
+			event,
+			'key_forgot'
+		);
+
+		expect(clearedKeys).toContain(`active_flow:${userId}`);
+		expect(clearedKeys).toContain(`booking_flow:${userId}`);
+		expect(clearedKeys).toContain(`checkin_flow:${userId}`);
+		expect(clearedKeys).toContain(`${stateKey}:checkout_cash_flow`);
+		expect(values.size).toBe(0);
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);
