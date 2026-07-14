@@ -582,6 +582,47 @@ describe('Worker routes', () => {
 		expect(values.size).toBe(0);
 	});
 
+	it('makes reservation confirmation replace stale payment image commands', async () => {
+		const userId = 'U-booking';
+		const stateKey = `${userId}:${userId}`;
+		const values = new Map<string, any>([
+			[`${stateKey}:payrent_flow`, { ts: Date.now() }],
+			[`${stateKey}:penalty_flow`, { ts: Date.now(), reason: 'KEY_FORGOT' }],
+			[`checkin_flow:${userId}`, { ts: Date.now(), roomId: 'A312' }]
+		]);
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => {
+					const value = values.get(key) ?? null;
+					return typeof value === 'string' ? JSON.parse(value) : value;
+				},
+				put: async (key: string, value: string) => {
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+		const event = { source: { type: 'user', userId } };
+
+		const flow = await __testables.replaceWithReservationFlow(mockEnv, event, {
+			phase: 'await_slip',
+			code: '#MM519'
+		}) as Record<string, any>;
+
+		expect(values.has(`${stateKey}:payrent_flow`)).toBe(false);
+		expect(values.has(`${stateKey}:penalty_flow`)).toBe(false);
+		expect(values.has(`checkin_flow:${userId}`)).toBe(false);
+		expect(flow).toMatchObject({
+			flowType: 'reservation',
+			phase: 'await_slip',
+			code: '#MM519',
+			scopeType: 'user',
+			userId
+		});
+	});
+
 	it('parses contract renewal pipe postback format', async () => {
 		const encoded = encodeURIComponent('renewal_reply|ans=CONTINUE&room=A101&end=2026-05-23&inq=RI-A101-2026-05-23&trig=60');
 		const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/debug/postback?data=${encoded}`);

@@ -1045,6 +1045,26 @@ async function setActiveFlow(env, userId, flow) {
   await kvPut(env, buildActiveFlowKey(uid), state, ttl);
 }
 
+async function replaceWithReservationFlow(env, event, flow) {
+  const userId = String(event?.source?.userId || '').trim();
+  if (!userId) return null;
+
+  const scopeType = String(event?.source?.type || '').trim() || 'user';
+  const scopeId = scopeType === 'group'
+    ? String(event?.source?.groupId || '').trim()
+    : (scopeType === 'room' ? String(event?.source?.roomId || '').trim() : '');
+
+  await clearUserWorkflowStatesForEvent(env, event, 'reservation');
+  await setActiveFlow(env, userId, {
+    ...flow,
+    flowType: 'reservation',
+    scopeType,
+    scopeId
+  });
+
+  return getActiveFlow(env, userId);
+}
+
 async function getActiveFlow(env, userId) {
   const uid = String(userId || '').trim();
   if (!uid) return null;
@@ -2918,24 +2938,17 @@ export default {
             const normalizedCode = codeHint
               ? extractBookingCode(codeHint) || String(codeHint).trim().toUpperCase()
               : String(currentFlow?.code || '').trim().toUpperCase();
-            const scopeType = String(ev?.source?.type || '').trim() || 'user';
-            const scopeId = scopeType === 'group'
-              ? String(ev?.source?.groupId || '').trim()
-              : (scopeType === 'room' ? String(ev?.source?.roomId || '').trim() : '');
             if (flowUserId) {
               if (act === 'id_yes') {
-                ctx.waitUntil(clearActiveFlow(env, flowUserId));
+                await clearActiveFlow(env, flowUserId);
               } else {
                 const nextPhase = (act === 'confirm' || act === 'booking_confirm')
                   ? 'await_slip'
                   : (act === 'slip_yes' ? 'await_id' : (act === 'slip_no' ? 'await_slip' : 'await_id'));
-                ctx.waitUntil(setActiveFlow(env, flowUserId, {
-                  flowType: 'reservation',
+                await replaceWithReservationFlow(env, ev, {
                   phase: nextPhase,
-                  code: normalizedCode || '',
-                  scopeType: scopeType || 'user',
-                  scopeId
-                }));
+                  code: normalizedCode || ''
+                });
               }
             }
             const ackMsg = (act === 'id_yes' || act === 'id_no')
@@ -4828,23 +4841,16 @@ export default {
           if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
             const resvUrl = getReservationGas(env);
             const bookingCode = extractBookingCode(textIn);
-            const scopeType = String(ev?.source?.type || '').trim() || 'user';
-            const scopeId = scopeType === 'group'
-              ? String(ev?.source?.groupId || '').trim()
-              : (scopeType === 'room' ? String(ev?.source?.roomId || '').trim() : '');
             if (!resvUrl) {
               await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
               continue;
             }
             if (userId) {
-              ctx.waitUntil(setActiveFlow(env, userId, {
-                flowType: 'reservation',
+              await replaceWithReservationFlow(env, ev, {
                 phase: 'await_confirm',
                 code: bookingCode || '',
-                scopeType,
-                scopeId,
                 ttlSeconds: BOOKING_SLIP_TTL_SECONDS
-              }));
+              });
             }
             const ackMsg = bookingCode
               ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
@@ -8656,6 +8662,7 @@ export const __testables = {
   parseKeyRent,
   parseCheckinCommand,
   isCheckinFlowStateActive,
+  replaceWithReservationFlow,
   clearUserWorkflowStatesForEvent,
   clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
