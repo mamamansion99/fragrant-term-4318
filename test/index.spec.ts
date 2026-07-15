@@ -965,6 +965,83 @@ describe('Worker routes', () => {
 		});
 	});
 
+	it('falls back to the group CHECKOUT2 slip state when the image sender key is unavailable', () => {
+		const now = 1784118600000;
+		const groupEvent = {
+			source: {
+				type: 'group',
+				groupId: 'C-manager-group'
+			}
+		};
+		const groupFlow = {
+			ts: now - 1000,
+			chatId: 'C-manager-group',
+			userId: 'U-manager',
+			type: 'Others_payment',
+			reason: 'CHECKOUT2',
+			categories: 'CHECKOUT2',
+			roomId: 'A101'
+		};
+
+		expect(__testables.getCheckout2GroupWaitingSlipKey(groupEvent)).toBe(
+			'checkout2:waiting-slip:C-manager-group'
+		);
+		expect(__testables.selectPenaltyFlowForImage(null, groupFlow, 'C-manager-group', now)).toMatchObject({
+			flow: groupFlow,
+			active: true,
+			directActive: false,
+			checkout2GroupActive: true
+		});
+		expect(__testables.selectPenaltyFlowForImage(null, groupFlow, 'C-other-group', now).active).toBe(false);
+	});
+
+	it('arms regular checkout transfer under both user and group keys', async () => {
+		const values = new Map<string, string>();
+		const mockEnv = {
+			KV: {
+				get: async (key: string, type?: string) => {
+					const value = values.get(key) ?? null;
+					return type === 'json' && value ? JSON.parse(value) : value;
+				},
+				put: async (key: string, value: string) => {
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+		const event = {
+			source: {
+				type: 'group',
+				groupId: 'C-manager-group',
+				userId: 'U-manager'
+			}
+		};
+
+		const result = await __testables.armCheckoutTransferSlipFlow(mockEnv, event, {
+			reason: 'CHECKOUT',
+			roomId: 'A101'
+		}) as Record<string, any>;
+
+		expect(result.flow).toMatchObject({
+			chatId: 'C-manager-group',
+			userId: 'U-manager',
+			type: 'Others_payment',
+			reason: 'CHECKOUT',
+			categories: 'CHECKOUT',
+			roomId: 'A101'
+		});
+		expect(JSON.parse(values.get('C-manager-group:U-manager:penalty_flow') || '{}')).toMatchObject({
+			reason: 'CHECKOUT',
+			roomId: 'A101'
+		});
+		expect(JSON.parse(values.get('checkout2:waiting-slip:C-manager-group') || '{}')).toMatchObject({
+			reason: 'CHECKOUT',
+			roomId: 'A101'
+		});
+	});
+
 	it('parses CHECKOUT2 payment text with a room id', () => {
 		expect(__testables.parseCheckoutPaymentText('ชำระค่าเช็คเอาท์สอง a101')).toMatchObject({
 			reason: 'CHECKOUT2',

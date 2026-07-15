@@ -263,10 +263,45 @@ const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
 const PAY_RENT_SLIP_PROMPT = 'โปรดส่งสลิปได้เลยค่ะ';
 const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
 const CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX = 'checkin:keycard:waiting-photo:';
+const CHECKOUT2_GROUP_WAITING_SLIP_KEY_PREFIX = 'checkout2:waiting-slip:';
 const checkinKeycardWaitingPhotoMemory = new Map();
 
 function getKeyRentWaitingPhotoKey(groupId) {
   return `${KEY_RENT_WAITING_PHOTO_KEY_PREFIX}${String(groupId || '').trim()}`;
+}
+
+function getCheckout2GroupWaitingSlipKey(event) {
+  const groupId = String(event?.source?.groupId || '').trim();
+  return groupId ? `${CHECKOUT2_GROUP_WAITING_SLIP_KEY_PREFIX}${groupId}` : '';
+}
+
+function isCheckout2SlipFlow(flow) {
+  return String(flow?.reason || flow?.categories || '').trim().toUpperCase() === 'CHECKOUT2';
+}
+
+function isCheckoutTransferSlipFlow(flow) {
+  const reason = String(flow?.reason || flow?.categories || '').trim().toUpperCase();
+  return reason === 'CHECKOUT' || reason === 'CHECKOUT2';
+}
+
+function selectPenaltyFlowForImage(directFlow, checkout2GroupFlow, chatId, now = Date.now()) {
+  const isActive = (flow) => !!(
+    flow &&
+    flow.ts &&
+    (now - flow.ts < PENALTY_FLOW_TTL_MS)
+  );
+  const directActive = isActive(directFlow);
+  const checkout2GroupActive = !!(
+    isActive(checkout2GroupFlow) &&
+    isCheckoutTransferSlipFlow(checkout2GroupFlow) &&
+    String(checkout2GroupFlow?.chatId || '') === String(chatId || '')
+  );
+  return {
+    flow: directActive ? directFlow : (checkout2GroupActive ? checkout2GroupFlow : directFlow),
+    active: directActive || checkout2GroupActive,
+    directActive,
+    checkout2GroupActive
+  };
 }
 
 function isKeyRentWaitingPhotoStateForUser(state, userId) {
@@ -435,6 +470,51 @@ function parseCheckoutPaymentText(text) {
   return null;
 }
 
+async function armCheckoutTransferSlipFlow(env, event, checkoutPayment, postbackData = '') {
+  const reason = String(checkoutPayment?.reason || '').trim().toUpperCase();
+  if (reason !== 'CHECKOUT' && reason !== 'CHECKOUT2') return null;
+
+  const roomId = String(checkoutPayment?.roomId || '').trim().toUpperCase();
+  const chatId = getChatId(event);
+  const userId = String(event?.source?.userId || '').trim();
+  const penaltyKey = `${getStateKey(event)}:penalty_flow`;
+  const groupKey = getCheckout2GroupWaitingSlipKey(event);
+  const flow = {
+    ts: Date.now(),
+    chatId,
+    userId,
+    type: 'Others_payment',
+    reason,
+    categories: reason,
+    ...(roomId ? { roomId, room: roomId } : {}),
+    ...(postbackData ? { postbackData: String(postbackData) } : {})
+  };
+
+  await clearPaymentStatesForEvent(env, event);
+  await Promise.all([
+    kvPut(env, penaltyKey, flow, PENALTY_FLOW_TTL_SECONDS),
+    groupKey ? kvPut(env, groupKey, flow, PENALTY_FLOW_TTL_SECONDS) : Promise.resolve()
+  ]);
+
+  return { flow, penaltyKey, groupKey };
+}
+
+async function replyOrPushText(env, replyToken, chatId, text, logLabel = 'line_reply_or_push_failed') {
+  let replied = false;
+  if (replyToken) {
+    try {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]);
+      replied = true;
+    } catch (err) {
+      console.error(`${logLabel}_reply`, err);
+    }
+  }
+  if (!replied && chatId) {
+    return safeLinePushText(env.LINE_ACCESS_TOKEN, chatId, text, `${logLabel}_push`);
+  }
+  return replied;
+}
+
 function detectPresetOtherPaymentReason(text, checkoutPaymentShortcut = null) {
   if (checkoutPaymentShortcut?.reason) return checkoutPaymentShortcut.reason;
 
@@ -462,7 +542,8 @@ function getPaymentStateKeys(event) {
     `${stateKey}:payrent_flow`,
     `${stateKey}:keyrent_flow`,
     `${stateKey}:checkout_cash_flow`,
-    lineUserId ? getBillManualPaymentStateKey(lineUserId) : ''
+    lineUserId ? getBillManualPaymentStateKey(lineUserId) : '',
+    getCheckout2GroupWaitingSlipKey(event)
   ].filter(Boolean);
 }
 
@@ -588,6 +669,102 @@ function buildCheckoutCashImagePayload(event, flow, receivedAt = new Date().toIS
     event,
     receivedAt
   };
+}
+
+async function handlePenaltyPaymentImage(env, ctx, options = {}) {
+  const {
+    event,
+    replyToken,
+    chatId,
+    penaltyFlow,
+    penaltyStateKeys = []
+  } = options;
+  const stateKeys = Array.from(new Set((penaltyStateKeys || []).filter(Boolean)));
+
+  if (!penaltyFlow?.reason) {
+    const askReason = (penaltyFlow?.type || '') === 'Others_payment'
+      ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
+      : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
+    let replied = false;
+    if (replyToken) {
+      try {
+        await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askReason }]);
+        replied = true;
+      } catch (err) {
+        console.error('penalty_reason_reply_failed', err);
+      }
+    }
+    if (!replied && chatId) {
+      await safeLinePushText(env.LINE_ACCESS_TOKEN, chatId, askReason, 'penalty_reason_push_failed');
+    }
+    ctx.waitUntil(Promise.all(
+      stateKeys.map((key) => kvPut(env, key, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS))
+    ));
+    return true;
+  }
+
+  const typeLabel = penaltyFlowPaymentLabel(penaltyFlow);
+  const slipPayload = {
+    source: 'line_message',
+    intent: 'penalty_payment_slip',
+    channel: 'penalty',
+    event,
+    lineUserId: event?.source?.userId || penaltyFlow?.userId || null,
+    chatId,
+    imageMessageId: event?.message?.id || null,
+    type: normalizePenaltySlipType(penaltyFlow?.type || 'penalty'),
+    reason: normalizePenaltySlipReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || ''),
+    categories: penaltyFlow?.categories || penaltyFlow?.reason || '',
+    roomId: penaltyFlow?.roomId || penaltyFlow?.room || '',
+    room: penaltyFlow?.roomId || penaltyFlow?.room || '',
+    receivedAt: new Date().toISOString()
+  };
+
+  // Acknowledge LINE before waiting for n8n. LINE reply tokens are short-lived,
+  // and the downstream workflow can be slow or temporarily unavailable.
+  const receivedText = `รับสลิปชำระ${typeLabel}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`;
+  let replied = false;
+  if (replyToken) {
+    try {
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: receivedText }]);
+      replied = true;
+    } catch (err) {
+      console.error('penalty_slip_immediate_reply_failed', err);
+    }
+  }
+  if (!replied && chatId) {
+    await safeLinePushText(env.LINE_ACCESS_TOKEN, chatId, receivedText, 'penalty_slip_immediate_push_failed');
+  }
+
+  ctx.waitUntil((async () => {
+    let ok = false;
+    try {
+      ok = await Penalty_webhook(env, slipPayload, {
+        target: penaltyFlow?.webhookTarget || ''
+      });
+    } catch (err) {
+      console.error('Penalty_webhook failed', err);
+    }
+
+    if (ok) {
+      await Promise.all(stateKeys.map((key) => kvDel(env, key)));
+      return;
+    }
+
+    await Promise.all(
+      stateKeys.map((key) => kvPut(env, key, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS))
+    );
+    if (chatId) {
+      await safeLinePushText(
+        env.LINE_ACCESS_TOKEN,
+        chatId,
+        `รับรูปแล้ว แต่ระบบปลายทางยังไม่ตอบรับสลิปชำระ${typeLabel} กรุณาลองส่งอีกครั้งค่ะ`,
+        'penalty_slip_failure_push_failed'
+      );
+    }
+  })());
+
+  return true;
 }
 
 function buildCheckinFlowKey(userId, chatId) {
@@ -2508,6 +2685,23 @@ export default {
 
     for (const ev of events) {
       const replyToken = ev?.replyToken;
+      const receiptChatId = getChatId(ev) || 'unknown';
+      const eventReceipt = {
+        receivedAt: new Date().toISOString(),
+        eventTimestamp: ev?.timestamp || null,
+        eventType: ev?.type || '',
+        messageType: ev?.message?.type || '',
+        messageId: ev?.message?.id || '',
+        textPreview: ev?.message?.type === 'text' ? String(ev?.message?.text || '').slice(0, 160) : '',
+        sourceType: ev?.source?.type || '',
+        groupId: ev?.source?.groupId || '',
+        roomId: ev?.source?.roomId || '',
+        userId: ev?.source?.userId || '',
+        webhookEventId: ev?.webhookEventId || '',
+        isRedelivery: !!ev?.deliveryContext?.isRedelivery
+      };
+      console.log('line_event_received', eventReceipt);
+      ctx.waitUntil(kvPut(env, `line:event-receipt:${receiptChatId}`, eventReceipt, 60 * 60));
 
       /* -----------------------
        * POSTBACK HANDLER
@@ -2762,15 +2956,16 @@ export default {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const penaltyKey = stateKey + ':penalty_flow';
+          const checkout2GroupKey = getCheckout2GroupWaitingSlipKey(ev);
           const flow = buildCheckout2PaymentFlowState(data, ev, postbackDataString);
 
           await clearPaymentStatesForEvent(env, ev);
-          await kvPut(
-            env,
-            penaltyKey,
-            flow,
-            PENALTY_FLOW_TTL_SECONDS
-          );
+          await Promise.all([
+            kvPut(env, penaltyKey, flow, PENALTY_FLOW_TTL_SECONDS),
+            checkout2GroupKey
+              ? kvPut(env, checkout2GroupKey, flow, PENALTY_FLOW_TTL_SECONDS)
+              : Promise.resolve()
+          ]);
 
           const askSlip = flow.roomId
             ? `บันทึกรายการ${paymentReasonLabel(flow.reason)} ห้อง ${flow.roomId} แล้ว โปรดส่งสลิปได้เลยค่ะ`
@@ -4051,6 +4246,27 @@ export default {
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
 
+          // Checkout transfer commands are high-priority state transitions.
+          // Handle them before any older registration/payment state can consume
+          // the text, and fall back to a group push if LINE rejects replyToken.
+          const priorityCheckoutPayment = parseCheckoutPaymentText(textIn);
+          if (priorityCheckoutPayment) {
+            const armed = await armCheckoutTransferSlipFlow(env, ev, priorityCheckoutPayment);
+            const reasonLabel = paymentReasonLabel(priorityCheckoutPayment.reason);
+            const roomLabel = priorityCheckoutPayment.roomId ? ` ห้อง ${priorityCheckoutPayment.roomId}` : '';
+            const askSlip = `บันทึกรายการ${reasonLabel}${roomLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
+            console.log('checkout_transfer_text_armed', {
+              reason: priorityCheckoutPayment.reason,
+              roomId: priorityCheckoutPayment.roomId || '',
+              chatId,
+              userId,
+              penaltyKey: armed?.penaltyKey || '',
+              groupKey: armed?.groupKey || ''
+            });
+            await replyOrPushText(env, replyToken, chatId, askSlip, 'checkout_transfer_text_ack_failed');
+            continue;
+          }
+
           const checkoutCashFlowKey = getCheckoutCashFlowKey(ev);
           const checkoutCashFlow = await kvGet(env, checkoutCashFlowKey);
           if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_AMOUNT)) {
@@ -4288,19 +4504,26 @@ export default {
           const armOtherPaymentSlipFlow = (reasonText, options = {}) => {
             const normalizedReason = normalizePenaltyReason(reasonText || '');
             const roomId = String(options?.roomId || '').trim().toUpperCase();
-            return kvPut(
-              env,
-              penaltyKey,
-              {
-                ts: Date.now(),
-                chatId,
-                userId,
-                type: 'Others_payment',
-                reason: normalizedReason || reasonText || 'ค่าอื่นๆ',
-                ...(roomId ? { roomId, room: roomId } : {})
-              },
-              PENALTY_FLOW_TTL_SECONDS
-            );
+            const flow = {
+              ts: Date.now(),
+              chatId,
+              userId,
+              type: 'Others_payment',
+              reason: normalizedReason || reasonText || 'ค่าอื่นๆ',
+              ...((normalizedReason === 'CHECKOUT' || normalizedReason === 'CHECKOUT2')
+                ? { categories: normalizedReason }
+                : {}),
+              ...(roomId ? { roomId, room: roomId } : {})
+            };
+            const checkout2GroupKey = (normalizedReason === 'CHECKOUT' || normalizedReason === 'CHECKOUT2')
+              ? getCheckout2GroupWaitingSlipKey(ev)
+              : '';
+            return Promise.all([
+              kvPut(env, penaltyKey, flow, PENALTY_FLOW_TTL_SECONDS),
+              checkout2GroupKey
+                ? kvPut(env, checkout2GroupKey, flow, PENALTY_FLOW_TTL_SECONDS)
+                : Promise.resolve()
+            ]);
           };
           const startKeyRentPayment = async (keyRent, rawTextOverride) => {
             const keyRentFlowKey = stateKey + ':keyrent_flow';
@@ -5265,13 +5488,38 @@ export default {
 
           const stateKey = getStateKey(ev);
           const penaltyKey = stateKey + ':penalty_flow';
-          const penaltyFlow = await kvGet(env, penaltyKey);
-          const penaltyActive = !!(
-            penaltyFlow &&
-            penaltyFlow.ts &&
-            (Date.now() - penaltyFlow.ts < PENALTY_FLOW_TTL_MS)
+          const checkout2GroupKey = getCheckout2GroupWaitingSlipKey(ev);
+          const directPenaltyFlow = await kvGet(env, penaltyKey);
+          const checkout2GroupFlow = checkout2GroupKey ? await kvGet(env, checkout2GroupKey) : null;
+          const penaltySelection = selectPenaltyFlowForImage(
+            directPenaltyFlow,
+            checkout2GroupFlow,
+            chatId
           );
-          const penaltyReasonNeeded = penaltyActive && !penaltyFlow?.reason;
+          const penaltyFlow = penaltySelection.flow;
+          const penaltyActive = penaltySelection.active;
+          const penaltyFlowOwnerKey = isCheckoutTransferSlipFlow(penaltyFlow) && penaltyFlow?.chatId && penaltyFlow?.userId
+            ? `${penaltyFlow.chatId}:${penaltyFlow.userId}:penalty_flow`
+            : '';
+          const penaltyStateKeys = Array.from(new Set([
+            penaltyKey,
+            isCheckoutTransferSlipFlow(penaltyFlow) ? checkout2GroupKey : '',
+            penaltyFlowOwnerKey
+          ].filter(Boolean)));
+
+          // An explicitly armed payment flow owns the next image. Handle it
+          // before slower keycard-state retries or generic reservation routes.
+          if (penaltyActive) {
+            await handlePenaltyPaymentImage(env, ctx, {
+              event: ev,
+              replyToken,
+              chatId,
+              penaltyFlow,
+              penaltyStateKeys
+            });
+            continue;
+          }
+
           const sourceType = String(ev?.source?.type || '');
           const groupId = String(ev?.source?.groupId || '');
           const managerUserId = String(ev?.source?.userId || '');
@@ -5375,70 +5623,6 @@ export default {
                 detail: `ageMs=${ageMs}; userKey=${checkinKeycardStateUserKey || '-'}; groupKey=${checkinKeycardStateGroupKey || '-'}; userOnlyKey=${checkinKeycardStateUserOnlyKey || '-'}`
               }).catch(console.error)
             );
-            continue;
-          }
-
-          if (penaltyActive) {
-            if (penaltyReasonNeeded) {
-              const askReason = (penaltyFlow?.type || '') === 'Others_payment'
-                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
-                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: askReason }
-                ]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askReason).catch(console.error));
-              }
-              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
-              continue;
-            }
-
-            const typeLabel = penaltyFlowPaymentLabel(penaltyFlow);
-            const slipPayload = {
-              source: 'line_message',
-              intent: 'penalty_payment_slip',
-              channel: 'penalty',
-              event: ev,
-              lineUserId: ev?.source?.userId || null,
-              chatId,
-              imageMessageId: ev?.message?.id || null,
-              type: normalizePenaltySlipType(penaltyFlow?.type || 'penalty'),
-              reason: normalizePenaltySlipReason(penaltyFlow?.type || 'penalty', penaltyFlow?.reason || ''),
-              categories: penaltyFlow?.categories || penaltyFlow?.reason || '',
-              roomId: penaltyFlow?.roomId || penaltyFlow?.room || '',
-              room: penaltyFlow?.roomId || penaltyFlow?.room || '',
-              receivedAt: new Date().toISOString()
-            };
-
-            let ok = false;
-            try {
-              ok = await Penalty_webhook(env, slipPayload, {
-                target: penaltyFlow?.webhookTarget || ''
-              });
-            } catch (err) {
-              console.error('Penalty_webhook failed', err);
-            }
-
-            if (ok) {
-              ctx.waitUntil(kvDel(env, penaltyKey));
-            }
-
-            const slipAck = ok
-              ? `รับสลิปชำระ${typeLabel}แล้ว กำลังส่งต่อให้เจ้าหน้าที่ตรวจสอบค่ะ`
-              : `ส่งสลิปชำระ${typeLabel}ไม่สำเร็จ กรุณาลองส่งอีกครั้งค่ะ`;
-
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: slipAck }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, slipAck).catch(console.error));
-            }
-
-            if (!ok) {
-              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
-            }
             continue;
           }
 
@@ -8381,6 +8565,8 @@ function getPenaltyWebhook(env) {
   return env.PENALTY_WEBHOOK_URL || '';
 }
 
+const PENALTY_WEBHOOK_TIMEOUT_MS = 10 * 1000;
+
 const DEFAULT_N8N_CHECKOUT_CASH2_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-admin-cash-receiver';
 
 function getCheckoutCashWebhook(env, payload = {}) {
@@ -8413,11 +8599,14 @@ async function Penalty_webhook(env, payload, options = {}) {
     headers['x-worker-secret'] = secret;
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort('penalty_webhook_timeout'), PENALTY_WEBHOOK_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers,
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal
     });
     const text = await res.text().catch(() => '');
     if (!res.ok) {
@@ -8427,6 +8616,8 @@ async function Penalty_webhook(env, payload, options = {}) {
   } catch (err) {
     console.error('Penalty_webhook error', err);
     return false;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -8667,7 +8858,12 @@ export const __testables = {
   clearUserWorkflowStatesForCheckin,
   isCheckout2PaymentPostback,
   buildCheckout2PaymentFlowState,
+  getCheckout2GroupWaitingSlipKey,
+  isCheckout2SlipFlow,
+  isCheckoutTransferSlipFlow,
+  selectPenaltyFlowForImage,
   parseCheckoutPaymentText,
+  armCheckoutTransferSlipFlow,
   detectPresetOtherPaymentReason,
   isCheckoutCashPaymentPostback,
   buildCheckoutCashFlowState,
