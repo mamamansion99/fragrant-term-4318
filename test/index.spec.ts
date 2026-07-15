@@ -158,10 +158,16 @@ describe('Worker routes', () => {
 		expect(__testables.normalizePenaltyReason('ชำระค่าทำความสะอาด')).toBe('CLEANING_PAYMENT');
 	});
 
-	it('renders distinct payment menu labels for forgot key and rent key', () => {
+	it('groups optional payment services together and removes checkout payment', () => {
 		const flex = __testables.buildPaymentOptionsFlex() as Record<string, any>;
 		const serialized = JSON.stringify(flex);
+		const sections = flex.contents.body.contents.slice(1) as Array<Record<string, any>>;
+		const firstSection = JSON.stringify(sections[0]);
+		const secondSection = JSON.stringify(sections[1]);
 
+		expect(sections).toHaveLength(2);
+		expect(sections[0].contents[0].text).toBe('ชำระบิลทั่วไป');
+		expect(sections[1].contents[0].text).toBe('บริการเพิ่มเติม / เช่าเพิ่ม');
 		expect(serialized).toContain('ลืม/ทำกุญแจหาย');
 		expect(serialized).toContain('เช่ากุญแจเพิ่ม');
 		expect(serialized).toContain('#DC2626');
@@ -169,6 +175,11 @@ describe('Worker routes', () => {
 		expect(serialized).toContain('"text":"ชำระค่าลืมกุญแจ"');
 		expect(serialized).toContain('"text":"เช่ากุญแจเพิ่ม"');
 		expect(serialized).not.toContain('"text":"ชำระค่าเช่ากุญแจ"');
+		expect(firstSection).not.toContain('ชำระค่าทำความสะอาด');
+		expect(secondSection.indexOf('ชำระค่าทำความสะอาด')).toBeLessThan(secondSection.indexOf('ชำระค่าเช่าที่จอดรถ'));
+		expect(secondSection.indexOf('ชำระค่าเช่าที่จอดรถ')).toBeLessThan(secondSection.indexOf('เช่ากุญแจเพิ่ม'));
+		expect(serialized).not.toContain('ชำระค่าเช็คเอาท์');
+		expect(serialized).not.toContain('ย้ายออกและเช็คเอาท์');
 	});
 
 	it('routes new key payment menu text to the same payment reasons', () => {

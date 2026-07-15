@@ -4586,16 +4586,11 @@ export default {
               'ชำระบิลทั่วไป',
               '- ชำระค่าเช่าห้อง',
               '- ลืม/ทำกุญแจหาย',
+              '',
+              'บริการเพิ่มเติม / เช่าเพิ่ม',
               '- ชำระค่าทำความสะอาด',
-              '',
-              'ขอของเพิ่ม / เช่าเพิ่ม',
-              '- เช่ากุญแจเพิ่ม',
-              '',
-              'ยานพาหนะและที่จอดรถ',
               '- ชำระค่าเช่าที่จอดรถ',
-              '',
-              'ย้ายออกและเช็คเอาท์',
-              '- ชำระค่าเช็คเอาท์'
+              '- เช่ากุญแจเพิ่ม'
             ].join('\n');
 
             try {
@@ -7551,7 +7546,12 @@ function buildPaymentOptionsFlex() {
                 badgeBackground: '#FEE2E2',
                 badgeColor: '#B91C1C',
                 ctaColor: '#DC2626'
-              },
+              }
+            ]
+          ),
+          sectionBlock(
+            'บริการเพิ่มเติม / เช่าเพิ่ม',
+            [
               {
                 title: 'จ่ายค่าทำความสะอาด',
                 description: 'ค่าบริการทำความสะอาดห้อง 300-500 บาท',
@@ -7561,27 +7561,7 @@ function buildPaymentOptionsFlex() {
                 badgeBackground: '#D7F4E1',
                 badgeColor: '#0CA54A',
                 ctaColor: '#0CA54A'
-              }
-            ]
-          ),
-          sectionBlock(
-            'ขอของเพิ่ม / เช่าเพิ่ม',
-            [
-              {
-                title: 'เช่ากุญแจเพิ่ม',
-                description: 'ต้องการกุญแจ คีย์การ์ด หรือชุดกุญแจเพิ่ม',
-                text: 'เช่ากุญแจเพิ่ม',
-                stripeColor: '#2563EB',
-                badgeText: 'เช่าเพิ่ม',
-                badgeBackground: '#DBEAFE',
-                badgeColor: '#1D4ED8',
-                ctaColor: '#2563EB'
-              }
-            ]
-          ),
-          sectionBlock(
-            'ยานพาหนะและที่จอดรถ',
-            [
+              },
               {
                 title: 'ชำระค่าเช่าที่จอดรถ',
                 description: 'ค่าเช่าที่จอดรถรายเดือน',
@@ -7591,21 +7571,16 @@ function buildPaymentOptionsFlex() {
                 badgeBackground: '#D7F4E1',
                 badgeColor: '#0CA54A',
                 ctaColor: '#0CA54A'
-              }
-            ]
-          ),
-          sectionBlock(
-            'ย้ายออกและเช็คเอาท์',
-            [
+              },
               {
-                title: 'ชำระค่าเช็คเอาท์',
-                description: 'ค่าใช้จ่ายตอนย้ายออก',
-                text: 'ชำระค่าเช็คเอาท์',
-                stripeColor: '#DC2626',
-                badgeText: 'เช็คเอาท์',
-                badgeBackground: '#FEE2E2',
-                badgeColor: '#B91C1C',
-                ctaColor: '#B91C1C'
+                title: 'เช่ากุญแจเพิ่ม',
+                description: 'ต้องการกุญแจ คีย์การ์ด หรือชุดกุญแจเพิ่ม',
+                text: 'เช่ากุญแจเพิ่ม',
+                stripeColor: '#2563EB',
+                badgeText: 'เช่าเพิ่ม',
+                badgeBackground: '#DBEAFE',
+                badgeColor: '#1D4ED8',
+                ctaColor: '#2563EB'
               }
             ]
           )
