@@ -176,7 +176,7 @@ describe('Worker routes', () => {
 		}
 	});
 
-	it('replies to booking codes before forwarding to reservation GAS', async () => {
+	it('acknowledges fresh and repeated booking codes before state work and forwards canonical text to reservation GAS', async () => {
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 			new Response(JSON.stringify({ ok: true }), {
 				status: 200,
@@ -195,8 +195,108 @@ describe('Worker routes', () => {
 			message: {
 				type: 'text',
 				id: 'message-booking-code',
-				text: '#MM522'
+				text: '\u200B＃ＭＭ ５２２\u2060'
 			}
+		};
+		const repeatedBookingEvent = {
+			...bookingEvent,
+			replyToken: 'reply-token-booking-repeat',
+			webhookEventId: 'event-booking-code-repeat',
+			message: {
+				...bookingEvent.message,
+				id: 'message-booking-code-repeat',
+				text: '#mm522'
+			}
+		};
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			CONFIRMBOOKING_URL: 'https://example.com/reservation-gas',
+			MM_WORKER_SECRET: 'test123',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log'
+		};
+
+		try {
+			const bodyText = JSON.stringify({ events: [bookingEvent, repeatedBookingEvent] });
+			const signatureKey = await crypto.subtle.importKey(
+				'raw',
+				new TextEncoder().encode('line-secret'),
+				{ name: 'HMAC', hash: 'SHA-256' },
+				false,
+				['sign']
+			);
+			const signatureBuffer = await crypto.subtle.sign(
+				'HMAC',
+				signatureKey,
+				new TextEncoder().encode(bodyText)
+			);
+			const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)));
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/webhook', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					'x-line-signature': signature
+				},
+				body: bodyText
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const replyCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			);
+			const gasCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+				String(url) === 'https://example.com/reservation-gas'
+			);
+			const replyCalls = fetchMock.mock.calls.filter(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			);
+			const gasCalls = fetchMock.mock.calls.filter(([url]) =>
+				String(url) === 'https://example.com/reservation-gas'
+			);
+			expect(replyCallIndex).toBeGreaterThanOrEqual(0);
+			expect(gasCallIndex).toBeGreaterThanOrEqual(0);
+			expect(replyCallIndex).toBeLessThan(gasCallIndex);
+			expect(replyCalls).toHaveLength(2);
+			expect(gasCalls).toHaveLength(2);
+
+			const replyBody = JSON.parse(String(fetchMock.mock.calls[replyCallIndex][1]?.body));
+			expect(replyBody.replyToken).toBe('reply-token-booking');
+			expect(replyBody.messages[0].text).toContain('#MM522');
+			for (const gasCall of gasCalls) {
+				const gasBody = JSON.parse(String(gasCall[1]?.body));
+				expect(gasBody.workerSecret).toBe('test123');
+				expect(gasBody.events[0].message.text).toBe('#MM522');
+			}
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('pushes an explicit fallback when reservation GAS rejects a booking code', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			const url = String(input);
+			if (url === 'https://example.com/reservation-gas') {
+				return new Response(JSON.stringify({ ok: false, error: 'temporary_failure' }), {
+					status: 200,
+					headers: { 'content-type': 'application/json' }
+				});
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const bookingEvent = {
+			type: 'message',
+			replyToken: 'reply-token-booking-failure',
+			webhookEventId: 'event-booking-code-failure',
+			timestamp: Date.now(),
+			source: { type: 'user', userId: 'Ubookingfailure' },
+			message: { type: 'text', id: 'message-booking-code-failure', text: '#MM523' }
 		};
 		const mockEnv = {
 			...env,
@@ -235,22 +335,14 @@ describe('Worker routes', () => {
 			await waitOnExecutionContext(ctx);
 
 			expect(response.status).toBe(200);
-			const replyCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
-				String(url).includes('/v2/bot/message/reply')
+			const pushCall = fetchMock.mock.calls.find(([url]) =>
+				String(url).includes('/v2/bot/message/push')
 			);
-			const gasCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
-				String(url) === 'https://example.com/reservation-gas'
-			);
-			expect(replyCallIndex).toBeGreaterThanOrEqual(0);
-			expect(gasCallIndex).toBeGreaterThanOrEqual(0);
-			expect(replyCallIndex).toBeLessThan(gasCallIndex);
-
-			const replyBody = JSON.parse(String(fetchMock.mock.calls[replyCallIndex][1]?.body));
-			expect(replyBody.replyToken).toBe('reply-token-booking');
-			expect(replyBody.messages[0].text).toContain('#MM522');
-			const gasBody = JSON.parse(String(fetchMock.mock.calls[gasCallIndex][1]?.body));
-			expect(gasBody.workerSecret).toBe('test123');
-			expect(gasBody.events[0].message.text).toBe('#MM522');
+			expect(pushCall).toBeTruthy();
+			const pushBody = JSON.parse(String(pushCall?.[1]?.body));
+			expect(pushBody.to).toBe('Ubookingfailure');
+			expect(pushBody.messages[0].text).toContain('#MM523');
+			expect(pushBody.messages[0].text).toContain('ระบบตรวจสอบการจองขัดข้อง');
 		} finally {
 			fetchMock.mockRestore();
 		}
@@ -1569,6 +1661,15 @@ describe('Worker routes', () => {
 				statePolicy: __testables.TEXT_COMMAND_REPLACE_FLOW
 			});
 		}
+	});
+
+	it('normalizes visually identical booking codes before command routing', () => {
+		expect(__testables.normalizeCommandText('\u200B＃ＭＭ ５２１\u2060')).toBe('#MM 521');
+		expect(__testables.parseBookingCodeCommand('\u200B＃ＭＭ ５２１\u2060')).toBe('#MM521');
+		expect(__testables.classifyTextCommand('\u200B＃ＭＭ ５２１\u2060')).toMatchObject({
+			kind: 'booking_code',
+			statePolicy: __testables.TEXT_COMMAND_REPLACE_FLOW
+		});
 	});
 
 	it('lets information keywords bypass a workflow without canceling it', () => {

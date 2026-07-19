@@ -1299,11 +1299,38 @@ async function clearActiveFlow(env, userId) {
   await kvDel(env, buildActiveFlowKey(uid));
 }
 
+const COMMAND_INVISIBLE_CHAR_RE = /[\u200B-\u200D\u2060\uFEFF\u202A-\u202E\u2066-\u2069]/g;
+
+function normalizeCommandText(text) {
+  return String(text || '')
+    .normalize('NFKC')
+    .replace(COMMAND_INVISIBLE_CHAR_RE, '')
+    .replace(/\u00A0/g, ' ')
+    .trim();
+}
+
+function parseBookingCodeCommand(text) {
+  const compact = normalizeCommandText(text).replace(/\s+/g, '').toUpperCase();
+  const match = /^#?MM(\d{3,})$/.exec(compact);
+  return match ? `#MM${match[1]}` : null;
+}
+
 function extractBookingCode(text) {
-  const match = /MM\d{3,}/i.exec(text || '');
+  const normalized = normalizeCommandText(text).replace(/\s+/g, '');
+  const match = /MM\d{3,}/i.exec(normalized);
   if (!match) return null;
   const code = match[0].toUpperCase();
   return code.startsWith('#') ? code : `#${code}`;
+}
+
+function withCanonicalTextEvent(event, text) {
+  return {
+    ...event,
+    message: {
+      ...(event?.message || {}),
+      text
+    }
+  };
 }
 
 const PREBOOK_BIND_TTL_SECONDS = 180 * 24 * 60 * 60;
@@ -2065,7 +2092,7 @@ function classifyTextCommand(text, options = {}) {
   if (/^#?\s*PB\d{3,}$/i.test(raw)) {
     return { kind: 'prebook_code', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
-  if (/^#?\s*MM\d{3,}$/i.test(raw)) {
+  if (parseBookingCodeCommand(raw)) {
     return { kind: 'booking_code', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
 
@@ -4390,7 +4417,8 @@ export default {
 
         // === TEXT ===
         if (m.type === 'text') {
-          const textIn = (m.text || '').trim();
+          const rawTextIn = String(m.text || '');
+          const textIn = rawTextIn.trim();
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
@@ -4409,6 +4437,7 @@ export default {
             messageId: m?.id || '',
             webhookEventId: ev?.webhookEventId || '',
             deliveryContext: ev?.deliveryContext || null,
+            normalizedBookingCode: parseBookingCodeCommand(textIn) || '',
             raw: ev
           };
 
@@ -4416,9 +4445,10 @@ export default {
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
 
-          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+          const priorityBookingCode = parseBookingCodeCommand(textIn);
+          if (priorityBookingCode) {
             const resvUrl = getReservationGas(env);
-            const bookingCode = extractBookingCode(textIn);
+            const bookingCode = priorityBookingCode;
             if (!resvUrl) {
               await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
               continue;
@@ -4435,24 +4465,23 @@ export default {
               webhookEventId: ev?.webhookEventId || ''
             });
 
-            ctx.waitUntil((async () => {
-              if (userId) {
-                try {
-                  await replaceWithReservationFlow(env, ev, {
-                    phase: 'await_confirm',
-                    code: bookingCode || '',
-                    ttlSeconds: BOOKING_SLIP_TTL_SECONDS
-                  });
-                } catch (err) {
-                  console.error('booking_code_state_sync_failed', {
-                    bookingCode,
-                    userId,
-                    chatId,
-                    error: String(err?.message || err)
-                  });
-                }
-              }
+            const canonicalEvent = withCanonicalTextEvent(ev, bookingCode);
+            const stateSyncPromise = userId
+              ? replaceWithReservationFlow(env, canonicalEvent, {
+                phase: 'await_confirm',
+                code: bookingCode,
+                ttlSeconds: BOOKING_SLIP_TTL_SECONDS
+              }).catch((err) => {
+                console.error('booking_code_state_sync_failed', {
+                  bookingCode,
+                  userId,
+                  chatId,
+                  error: String(err?.message || err)
+                });
+              })
+              : Promise.resolve();
 
+            const reservationForwardPromise = (async () => {
               try {
                 console.log('reservation_text_forward_to_gas', {
                   bookingCode,
@@ -4460,7 +4489,21 @@ export default {
                   userId,
                   resvUrl
                 });
-                await forwardToSpecificGas(env, resvUrl, { events: [ev] });
+                const forwarded = await forwardToSpecificGas(env, resvUrl, { events: [canonicalEvent] });
+                if (!forwarded) {
+                  console.error('booking_code_forward_rejected', {
+                    bookingCode,
+                    userId,
+                    chatId
+                  });
+                  if (chatId) {
+                    await linePushText(
+                      env.LINE_ACCESS_TOKEN,
+                      chatId,
+                      `รับรหัสจอง ${bookingCode} แล้ว แต่ระบบตรวจสอบการจองขัดข้อง กรุณาลองส่งรหัสอีกครั้งหรือติดต่อแอดมินค่ะ`
+                    ).catch((pushErr) => console.error('booking_code_forward_failure_push_failed', pushErr));
+                  }
+                }
               } catch (err) {
                 console.error('booking_code_forward_failed', {
                   bookingCode,
@@ -4469,7 +4512,13 @@ export default {
                   error: String(err?.message || err)
                 });
               }
-            })());
+            })();
+
+            // Preserve the proven booking ownership model: acknowledge at the
+            // edge, then let reservation GAS process immediately while local
+            // user state is replaced independently. Neither task blocks the
+            // other or any older workflow state.
+            ctx.waitUntil(Promise.all([stateSyncPromise, reservationForwardPromise]));
             continue;
           }
 
@@ -5262,7 +5311,7 @@ export default {
             continue;
           }
 
-          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+          if (parseBookingCodeCommand(textIn)) {
             const resvUrl = getReservationGas(env);
             const bookingCode = extractBookingCode(textIn);
             if (!resvUrl) {
@@ -5465,7 +5514,7 @@ export default {
           }
 
           // (F) Booking code → ack + forward
-          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+          if (parseBookingCodeCommand(textIn)) {
             const bookingCode = extractBookingCode(textIn);
             const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
             const flow = {
@@ -9038,6 +9087,9 @@ export const __testables = {
   getN8nBillManualWebhookUrl,
   parseKeyRent,
   parseKeyKeyword,
+  normalizeCommandText,
+  parseBookingCodeCommand,
+  withCanonicalTextEvent,
   forwardToSpecificGas,
   forwardToGas,
   classifyTextCommand,
