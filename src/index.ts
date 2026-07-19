@@ -499,20 +499,39 @@ async function armCheckoutTransferSlipFlow(env, event, checkoutPayment, postback
   return { flow, penaltyKey, groupKey };
 }
 
-async function replyOrPushText(env, replyToken, chatId, text, logLabel = 'line_reply_or_push_failed') {
+async function replyOrPushMessages(env, replyToken, chatId, messages, logLabel = 'line_reply_or_push_failed') {
   let replied = false;
   if (replyToken) {
     try {
-      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]);
+      await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages);
       replied = true;
     } catch (err) {
       console.error(`${logLabel}_reply`, err);
     }
   }
   if (!replied && chatId) {
-    return safeLinePushText(env.LINE_ACCESS_TOKEN, chatId, text, `${logLabel}_push`);
+    try {
+      await linePush(env.LINE_ACCESS_TOKEN, chatId, messages);
+      return true;
+    } catch (err) {
+      console.error(`${logLabel}_push`, {
+        to: chatId,
+        error: String(err?.message || err)
+      });
+      return false;
+    }
   }
   return replied;
+}
+
+async function replyOrPushText(env, replyToken, chatId, text, logLabel = 'line_reply_or_push_failed') {
+  return replyOrPushMessages(
+    env,
+    replyToken,
+    chatId,
+    [{ type: 'text', text }],
+    logLabel
+  );
 }
 
 function detectPresetOtherPaymentReason(text, checkoutPaymentShortcut = null) {
@@ -547,9 +566,32 @@ function getPaymentStateKeys(event) {
   ].filter(Boolean);
 }
 
+async function getClearablePaymentStateKeys(env, event) {
+  const keys = getPaymentStateKeys(event);
+  const groupKey = getCheckout2GroupWaitingSlipKey(event);
+  if (!groupKey || !keys.includes(groupKey)) return keys;
+
+  const groupState = await kvGet(env, groupKey);
+  const currentUserId = String(event?.source?.userId || '').trim();
+  const ownerUserId = String(
+    groupState?.userId ||
+    groupState?.startedByUserId ||
+    groupState?.operatorLineUserId ||
+    ''
+  ).trim();
+
+  // A group fallback state may belong to another operator. Never let a new
+  // command from this sender erase another sender's in-progress image flow.
+  if (!groupState || !ownerUserId || !currentUserId || ownerUserId !== currentUserId) {
+    return keys.filter((key) => key !== groupKey);
+  }
+  return keys;
+}
+
 async function clearPaymentStatesForEvent(env, event, keepKeys = []) {
   const keepSet = new Set((keepKeys || []).filter(Boolean));
-  const keys = getPaymentStateKeys(event).filter((key) => !keepSet.has(key));
+  const clearableKeys = await getClearablePaymentStateKeys(env, event);
+  const keys = clearableKeys.filter((key) => !keepSet.has(key));
   await Promise.all(keys.map((key) => kvDel(env, key)));
   return keys;
 }
@@ -792,8 +834,9 @@ async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command
 
   const stateKey = getStateKey(event);
   const groupId = String(event?.source?.groupId || '').trim();
+  const clearablePaymentKeys = await getClearablePaymentStateKeys(env, event);
   const keys = new Set([
-    ...getPaymentStateKeys(event),
+    ...clearablePaymentKeys,
     buildActiveFlowKey(userId),
     buildBookingFlowKey(userId, chatId),
     buildCheckinFlowKey(userId, chatId),
@@ -885,13 +928,7 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId) {
   }
 
   const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
-  if (replyToken) {
-    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-      { type: 'text', text: ackMsg }
-    ]).catch(console.error);
-  } else if (chatId) {
-    ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
-  }
+  await replyOrPushText(env, replyToken, chatId, ackMsg, 'checkin_start_ack_failed');
 }
 
 function parseCheckinCommand(text) {
@@ -1943,6 +1980,139 @@ function parseKeyKeyword(text) {
   if (!room) return null;
 
   return { building, room, amount };
+}
+
+const TEXT_COMMAND_REPLACE_FLOW = 'replace_flow';
+const TEXT_COMMAND_BYPASS_FLOW = 'bypass_flow';
+const TEXT_STATE_CHECKOUT_AMOUNT = 'checkout_cash_amount';
+const TEXT_STATE_CHECKOUT_IMAGE = 'checkout_cash_image';
+const TEXT_STATE_PARKING_PHONE = 'parking_phone';
+const TEXT_STATE_REGISTRATION_ROOM = 'registration_room';
+const TEXT_STATE_TENANT_CHANGE_ROOM = 'tenant_change_room';
+const TEXT_STATE_PENALTY_REASON = 'penalty_reason';
+const TEXT_STATE_PAYMENT_IMAGE = 'payment_image';
+
+// This is the single routing policy for text that represents a new command.
+// A known command must never be consumed as input for an older workflow state.
+// Commands that start a new workflow replace the sender's old state; information
+// commands bypass the old state without canceling it.
+function classifyTextCommand(text, options = {}) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const checkoutPayment = parseCheckoutPaymentText(raw);
+  if (checkoutPayment) {
+    return { kind: 'checkout_payment', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseCheckinCommand(raw)) {
+    return { kind: 'checkin', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseCleaningCommand(raw)) {
+    return { kind: 'cleaning', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+  if (options.isOwnerGroup && /โหมดคัดกรอง/i.test(raw)) {
+    return { kind: 'screening_config', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+
+  const coAdminShortcut = parseCoAdminShortcut(raw);
+  if (coAdminShortcut) {
+    return {
+      kind: 'co_admin',
+      statePolicy: isCheckoutStartShortcut(coAdminShortcut)
+        ? TEXT_COMMAND_REPLACE_FLOW
+        : TEXT_COMMAND_BYPASS_FLOW
+    };
+  }
+
+  if (/^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(raw)) {
+    return { kind: 'payment_menu', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+
+  const presetPaymentReason = detectPresetOtherPaymentReason(raw, checkoutPayment);
+  if (presetPaymentReason) {
+    return { kind: 'preset_payment', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseKeyRent(raw)) {
+    return { kind: 'key_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseKeyKeyword(raw)) {
+    return { kind: 'key_forgot', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/เปลี่ยนไอดีผู้เช่า/i.test(raw)) {
+    return { kind: 'tenant_id_change', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (raw === 'ลงทะเบียนไอดี') {
+    return { kind: 'registration', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/^\s*แจ้งออก\s*$/i.test(raw)) {
+    return { kind: 'moveout', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|ชำระค่าเช่าห้อง|จ่ายค่าเช่า|จ่ายค่าเช่าห้อง|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(raw)) {
+    return { kind: 'pay_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.test(raw)) {
+    return { kind: 'penalty_payment', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseCheckoutTrigger(raw)) {
+    return { kind: 'checkout', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseReturnKeyTrigger(raw)) {
+    return { kind: 'return_key', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (isCheckinChangeIntent(raw)) {
+    return { kind: 'checkin_change', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/^#?\s*PB\d{3,}$/i.test(raw)) {
+    return { kind: 'prebook_code', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (/^#?\s*MM\d{3,}$/i.test(raw)) {
+    return { kind: 'booking_code', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+
+  const fridgeIntent = detectFridgeIntent(raw);
+  if (fridgeIntent.matches) {
+    return { kind: 'fridge_info', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+  if (isParkingIntent(raw)) {
+    return { kind: 'parking_info', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+  if (ROOM_LABEL_MAP[raw] || FIX_LABEL_MAP[raw]) {
+    return { kind: 'menu_label', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+  if (options.fastReply) {
+    return { kind: 'quick_keyword', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+
+  return null;
+}
+
+// A state is allowed to consume text only when the text matches the exact
+// input type that state is waiting for. Waiting-for-image states never own text.
+function shouldTextStateConsumeInput(stateType, text, commandRoute = null) {
+  if (commandRoute) return false;
+  const raw = String(text || '').trim();
+
+  if (stateType === TEXT_STATE_CHECKOUT_AMOUNT) {
+    return !!parseCheckoutCashAmount(raw);
+  }
+  if (stateType === TEXT_STATE_PARKING_PHONE) {
+    return isValidParkingPhone(normalizeParkingPhone(raw));
+  }
+  if (stateType === TEXT_STATE_REGISTRATION_ROOM) {
+    if (raw === 'ยกเลิก' || raw.toLowerCase() === 'cancel') return true;
+    return /^([AB])(\d{3,4})$/i.test(raw.replace(/\s+/g, ''));
+  }
+  if (stateType === TEXT_STATE_TENANT_CHANGE_ROOM) {
+    return !!parseRoomToken(raw.replace(/\s+/g, ''));
+  }
+  if (stateType === TEXT_STATE_PENALTY_REASON) {
+    return !!raw;
+  }
+  if (stateType === TEXT_STATE_CHECKOUT_IMAGE || stateType === TEXT_STATE_PAYMENT_IMAGE) {
+    return false;
+  }
+
+  return false;
 }
 
 /* =========================
@@ -4246,6 +4416,31 @@ export default {
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
 
+          const precomputedFastReply = await quickKeywordReply(textIn, env, userId);
+          const commandRoute = classifyTextCommand(textIn, {
+            fastReply: precomputedFastReply,
+            isOwnerGroup: isOwnerGroupChat(env, chatId)
+          });
+          let clearedForCommand = [];
+          if (commandRoute?.statePolicy === TEXT_COMMAND_REPLACE_FLOW) {
+            clearedForCommand = await clearUserWorkflowStatesForEvent(
+              env,
+              ev,
+              `text_command:${commandRoute.kind}`
+            );
+          }
+          if (commandRoute) {
+            console.log('text_command_classified', {
+              kind: commandRoute.kind,
+              statePolicy: commandRoute.statePolicy,
+              userId,
+              chatId,
+              clearedStateCount: clearedForCommand.length,
+              webhookEventId: ev?.webhookEventId || ''
+            });
+          }
+          let deferredStatePrompt = '';
+
           // Checkout transfer commands are high-priority state transitions.
           // Handle them before any older registration/payment state can consume
           // the text, and fall back to a group push if LINE rejects replyToken.
@@ -4270,39 +4465,26 @@ export default {
           const checkoutCashFlowKey = getCheckoutCashFlowKey(ev);
           const checkoutCashFlow = await kvGet(env, checkoutCashFlowKey);
           if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_AMOUNT)) {
-            const amount = parseCheckoutCashAmount(textIn);
-            if (!amount) {
-              const askAgain = 'ยอดเงินสดไม่ถูกต้อง กรุณาพิมพ์เฉพาะตัวเลข เช่น 1500 หรือ 1,500';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askAgain }]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
-              }
-              ctx.waitUntil(kvPut(env, checkoutCashFlowKey, { ...checkoutCashFlow, ts: Date.now() }, CHECKOUT_CASH_FLOW_TTL_SECONDS));
+            if (shouldTextStateConsumeInput(TEXT_STATE_CHECKOUT_AMOUNT, textIn, commandRoute)) {
+              const amount = parseCheckoutCashAmount(textIn);
+              const nextFlow = buildCheckoutCashAmountState(checkoutCashFlow, amount);
+              await kvPut(env, checkoutCashFlowKey, nextFlow, CHECKOUT_CASH_FLOW_TTL_SECONDS);
+
+              const askImage = buildCheckoutCashImagePrompt(nextFlow);
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                askImage,
+                'checkout_cash_amount_ack_failed'
+              );
               continue;
             }
-
-            const nextFlow = buildCheckoutCashAmountState(checkoutCashFlow, amount);
-            await kvPut(env, checkoutCashFlowKey, nextFlow, CHECKOUT_CASH_FLOW_TTL_SECONDS);
-
-            const askImage = buildCheckoutCashImagePrompt(nextFlow);
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askImage }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askImage).catch(console.error));
-            }
-            continue;
+            deferredStatePrompt = 'ยอดเงินสดไม่ถูกต้อง กรุณาพิมพ์เฉพาะตัวเลข เช่น 1500 หรือ 1,500';
           }
 
           if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_IMAGE)) {
-            const reminder = 'โปรดส่งรูปหลักฐานเงินสดเป็นรูปภาพในแชทนี้ค่ะ';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: reminder }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
-            }
-            ctx.waitUntil(kvPut(env, checkoutCashFlowKey, { ...checkoutCashFlow, ts: Date.now() }, CHECKOUT_CASH_FLOW_TTL_SECONDS));
-            continue;
+            deferredStatePrompt = 'โปรดส่งรูปหลักฐานเงินสดเป็นรูปภาพในแชทนี้ค่ะ';
           }
 
           const checkinRoomCode = parseCheckinCommand(textIn);
@@ -4311,24 +4493,35 @@ export default {
             continue;
           }
 
-          if (await handleParkingOutsiderPhoneText(env, ctx, ev, replyToken, textIn)) {
-            continue;
+          const parkingPhoneStateKey = parkingOutsiderPhoneFlowKey(userId);
+          const parkingPhoneState = parkingPhoneStateKey ? await kvGet(env, parkingPhoneStateKey) : null;
+          if (parkingPhoneState?.state === PARKING_OUTSIDER_PHONE_STATE) {
+            if (shouldTextStateConsumeInput(TEXT_STATE_PARKING_PHONE, textIn, commandRoute)) {
+              if (await handleParkingOutsiderPhoneText(env, ctx, ev, replyToken, textIn)) {
+                continue;
+              }
+            } else {
+              deferredStatePrompt = 'กรุณาส่งเบอร์โทรศัพท์ให้ถูกต้อง เช่น 0812345678 ภายใน 2 นาทีครับ';
+            }
           }
 
           const cleaningCommand = parseCleaningCommand(textIn);
           if (cleaningCommand) {
             if (cleaningCommand.act === 'management' && !isCleaningManagementAllowedLineUserId(userId)) {
               console.log('cleaning_management_unauthorized', { userId, text: textIn.slice(0, 80) });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งจัดการงานทำความสะอาดใช้ได้เฉพาะเจ้าหน้าที่ที่ได้รับอนุญาตค่ะ',
+                'cleaning_management_unauthorized_reply_failed'
+              );
               continue;
             }
 
             if (cleaningCommand.act === 'tenant') {
               const confirmFlex = buildCleaningTenantConfirmFlex();
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmFlex]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmFlex]).catch(console.error));
-              }
+              await replyOrPushMessages(env, replyToken, chatId, [confirmFlex], 'cleaning_tenant_reply_failed');
               continue;
             }
 
@@ -4352,11 +4545,7 @@ export default {
             );
 
             const ackText = buildCleaningManagementAckText(cleaningCommand.roomId);
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, ackText, 'cleaning_management_ack_failed');
             continue;
           }
 
@@ -4374,7 +4563,7 @@ export default {
                 ]
               }
             };
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [msg]).catch(console.error);
+            await replyOrPushMessages(env, replyToken, chatId, [msg], 'screening_config_reply_failed');
             continue;
           }
 
@@ -4392,6 +4581,13 @@ export default {
 
             if (requiresCoAdminShortcutPermission(coAdminShortcut) && !isCoAdminAllowedLineUserId(userId)) {
               console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งนี้ใช้ได้เฉพาะเจ้าหน้าที่ที่ได้รับอนุญาตค่ะ',
+                'co_admin_unauthorized_reply_failed'
+              );
               continue;
             }
 
@@ -4416,24 +4612,22 @@ export default {
               ? `Command received: ${coAdminShortcut.normalizedCommand}`
               : 'Command received, but webhook failed';
 
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: ackText }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
             continue;
           }
 
           // --- Registration Flow State ---
           const regKey = userId ? 'reg_id:' + userId : '';
           const regState = userId ? await kvGet(env, regKey) : null;
-          if (regState && regState.action === 'ask_roomid') {
+          if (
+            regState &&
+            regState.action === 'ask_roomid' &&
+            shouldTextStateConsumeInput(TEXT_STATE_REGISTRATION_ROOM, textIn, commandRoute)
+          ) {
             // Allow cancel
-            if (textIn === 'ยกเลิก' || textIn === 'cancel') {
+            if (textIn === 'ยกเลิก' || textIn.toLowerCase() === 'cancel') {
               await kvDel(env, regKey);
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: 'ยกเลิกการลงทะเบียนแล้วค่ะ' }]).catch(console.error);
+              await replyOrPushText(env, replyToken, chatId, 'ยกเลิกการลงทะเบียนแล้วค่ะ', 'registration_cancel_ack_failed');
               continue;
             }
 
@@ -4450,16 +4644,18 @@ export default {
                 }).catch(err => console.error('GetLineUserId mapping failed', err))
               );
               await kvDel(env, regKey);
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: `ลงทะเบียนห้อง ${normalized} เรียบร้อยแล้วค่ะ` }
-              ]).catch(console.error);
-              continue;
-            } else {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: 'รูปแบบไม่ถูกต้อง กรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514 (หรือพิมพ์ "ยกเลิก")' }
-              ]).catch(console.error);
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `ลงทะเบียนห้อง ${normalized} เรียบร้อยแล้วค่ะ`,
+                'registration_room_ack_failed'
+              );
               continue;
             }
+          }
+          if (regState && regState.action === 'ask_roomid') {
+            deferredStatePrompt = 'รูปแบบไม่ถูกต้อง กรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514 (หรือพิมพ์ "ยกเลิก")';
           }
 
           const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
@@ -4543,11 +4739,7 @@ export default {
             await kvPut(env, keyRentFlowKey, flow, KEY_RENT_FLOW_TTL_SECONDS);
 
             const paymentMsg = buildKeyRentPaymentMessage(flow.keyRent);
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [paymentMsg]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [paymentMsg]).catch(console.error));
-            }
+            await replyOrPushMessages(env, replyToken, chatId, [paymentMsg], 'key_rent_payment_prompt_failed');
           };
           const submitKeyForgot = async (keyForgotPayload, rawTextOverride, penaltyReasonOverride) => {
             const timestamp = new Date().toISOString();
@@ -4570,11 +4762,7 @@ export default {
               `ส่งข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} ให้เจ้าหน้าที่แล้วค่ะ`,
               'หากชำระแล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ'
             ].join('\n');
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, ackText, 'key_forgot_ack_failed');
           };
 
           // Payment menu entry point should bypass any stale payment state.
@@ -4609,23 +4797,11 @@ export default {
           }
 
           // While waiting for penalty reason, treat the next text as reason first.
-          if (penaltyReasonNeeded) {
+          if (
+            penaltyReasonNeeded &&
+            shouldTextStateConsumeInput(TEXT_STATE_PENALTY_REASON, textIn, commandRoute)
+          ) {
             const reason = (textIn || '').trim();
-            if (!reason) {
-              const askAgain = (penaltyFlow?.type || '') === 'Others_payment'
-                ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
-                : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: askAgain }
-                ]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askAgain).catch(console.error));
-              }
-              ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS));
-              continue;
-            }
-
             const updated = {
               ...penaltyFlow,
               reason: normalizePenaltyFlowReason(reason),
@@ -4638,14 +4814,13 @@ export default {
 
             const typeLabel = (penaltyFlow?.type || '') === 'Others_payment' ? 'ค่าอื่นๆ' : 'ค่าปรับ';
             const askSlip = `บันทึก${typeLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: askSlip }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, askSlip, 'penalty_reason_ack_failed');
             continue;
+          }
+          if (penaltyReasonNeeded && !commandRoute) {
+            deferredStatePrompt = (penaltyFlow?.type || '') === 'Others_payment'
+              ? 'โปรดระบุว่าเป็นค่าอะไร เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม ฯลฯ'
+              : 'โปรดระบุว่าค่าปรับเรื่องอะไร เช่น เสียงดัง, จอดรถ, สูบบุหรี่ ฯลฯ';
           }
 
           if (presetOtherPaymentReason) {
@@ -4660,11 +4835,7 @@ export default {
             const presetReasonLabel = paymentReasonLabel(presetOtherPaymentReason);
             const presetRoomLabel = checkoutPaymentShortcut?.roomId ? ` ห้อง ${checkoutPaymentShortcut.roomId}` : '';
             const askSlip = `บันทึกรายการ${presetReasonLabel}${presetRoomLabel}แล้ว โปรดส่งสลิปได้เลยค่ะ`;
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askSlip }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askSlip).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, askSlip, 'preset_payment_ack_failed');
             continue;
           }
 
@@ -4673,11 +4844,7 @@ export default {
               { type: 'text', text: buildKeyRentStartInstructionText(env) },
               buildKeyRentStartOptionsMessage()
             ];
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
-            }
+            await replyOrPushMessages(env, replyToken, chatId, messages, 'key_rent_start_reply_failed');
             continue;
           }
 
@@ -4687,11 +4854,7 @@ export default {
           if (keyRent) {
             if (keyRent.error === 'MISSING_ROOM') {
               const askRoomText = 'พิมพ์เช่น “เช่าชุดกุญแจ A101” หรือ “เช่าคีย์การ์ด A101 โอน”';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: askRoomText }]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, askRoomText).catch(console.error));
-              }
+              await replyOrPushText(env, replyToken, chatId, askRoomText, 'key_rent_room_prompt_failed');
               continue;
             }
 
@@ -4727,11 +4890,7 @@ export default {
                 messages.push({ type: 'text', text: KEY_RENT_MOBILE_BANKING_TEXT });
                 messages.push({ type: 'text', text: buildKeyRentSlipPrompt(keyRentResolved) });
               }
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
-              }
+              await replyOrPushMessages(env, replyToken, chatId, messages, 'key_rent_ack_failed');
 
               ctx.waitUntil(
                 notifyN8nKeyWebhook(env, payload).catch((err) => console.error('key webhook failed', err))
@@ -4773,9 +4932,13 @@ export default {
               await kvPut(env, changeLineKey, { state: WAIT_ROOM_STATE, ts: Date.now(), chatId, userId });
             }
             notifyTenantChange('tenant_id_change_request');
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้ว กำลังส่งเรื่องให้เจ้าหน้าที่ค่ะ',
+              'tenant_change_start_ack_failed'
+            );
             continue;
           }
 
@@ -4785,9 +4948,13 @@ export default {
               await kvPut(env, 'reg_id:' + userId, { action: 'ask_roomid', ts: Date.now() }, 600); // 10 min TTL
             }
 
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: '✅ รับทราบครับ\nกรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              '✅ รับทราบครับ\nกรุณาพิมพ์เลขห้องของคุณ เช่น A102 หรือ B514',
+              'registration_start_ack_failed'
+            );
             continue;
           }
 
@@ -4795,9 +4962,13 @@ export default {
           // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
           if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
             // quick acknowledge so user sees immediate response
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่',
+              'moveout_start_ack_failed'
+            );
 
             // forward the original LINE event to GAS
             // (your GAS doPost will detect text === แจ้งออก and call _issueAndSendMoveOutMagicLink_)
@@ -4820,11 +4991,7 @@ export default {
             await kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }, 15 * 60);
 
             const notifyMsg = { type: 'text', text: PAY_RENT_SLIP_PROMPT };
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [notifyMsg]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg.text).catch(console.error));
-            }
+            await replyOrPushMessages(env, replyToken, chatId, [notifyMsg], 'pay_rent_start_ack_failed');
             continue;
           }
 
@@ -4838,13 +5005,7 @@ export default {
             const replyText = genericPenalty
               ? 'โปรดส่งสลิปได้เลยค่ะ'
               : 'เป็นค่าอะไรคะ เช่น ค่าคีย์การ์ด, ค่าน้ำดื่ม, ค่าผ้า ฯลฯ';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: replyText }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, replyText).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, replyText, 'penalty_start_ack_failed');
 
             await clearPaymentStatesForEvent(env, ev);
             ctx.waitUntil(
@@ -4867,42 +5028,20 @@ export default {
           }
 
           if (payRentActive && !isPaymentMenuBypass) {
-            const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: reminder }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
-            }
-            ctx.waitUntil(kvPut(env, payRentKey, { ...payRentFlow, ts: Date.now(), chatId, userId }));
-            continue;
+            // This state is waiting for an image. Text must continue through
+            // the command router instead of extending or trapping the state.
+            deferredStatePrompt = 'โปรดส่งสลิปเป็นรูปภาพได้เลยค่ะ';
           }
 
           if (penaltyActive && !penaltyMatch && !isPaymentMenuBypass && !penaltyReasonNeeded) {
-            const reminder = 'โปรดส่งสลิปได้เลยค่ะ';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: reminder }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, reminder).catch(console.error));
-            }
-            ctx.waitUntil(kvPut(env, penaltyKey, { ...penaltyFlow, ts: Date.now(), chatId, userId }, PENALTY_FLOW_TTL_SECONDS));
-            continue;
+            deferredStatePrompt = 'โปรดส่งสลิปเป็นรูปภาพได้เลยค่ะ';
           }
 
           // (C.1) Fridge service button → link to n8n automation
           if (fridgeIntent.matches) {
             if (fridgeIntent.isCancel && !fridgeIntent.isAdd) {
               const cancelAck = 'ได้รับคำขอยกเลิกตู้เย็นแล้ว เจ้าหน้าที่จะแจ้งกลับโดยเร็วที่สุดนะคะ';
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                  { type: 'text', text: cancelAck }
-                ]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, cancelAck).catch(console.error));
-              }
+              await replyOrPushText(env, replyToken, chatId, cancelAck, 'fridge_cancel_ack_failed');
 
               ctx.waitUntil(
                 pushFridgeCancelNotification(env, ev, textIn)
@@ -4917,7 +5056,7 @@ export default {
                 chatId: getChatId(ev) || null
               })
             ];
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
+            await replyOrPushMessages(env, replyToken, chatId, replies, 'fridge_info_reply_failed');
             continue;
           }
 
@@ -4930,7 +5069,7 @@ export default {
               parkingPlanTextMessage(),
               parkingButtonsMessage(commonOptions)
             ];
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, replies).catch(console.error);
+            await replyOrPushMessages(env, replyToken, chatId, replies, 'parking_info_reply_failed');
             continue;
           }
 
@@ -4956,20 +5095,34 @@ export default {
             if (handled) continue;
           }
 
-          if (changeLineState?.state === WAIT_ROOM_STATE) {
+          if (
+            changeLineState?.state === WAIT_ROOM_STATE &&
+            shouldTextStateConsumeInput(TEXT_STATE_TENANT_CHANGE_ROOM, textIn, commandRoute)
+          ) {
             notifyTenantChange('tenant_id_change_room');
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'รับรหัสห้องแล้วค่ะ เจ้าหน้าที่แจ้งกลับให้เร็วที่สุด' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'รับรหัสห้องแล้วค่ะ เจ้าหน้าที่แจ้งกลับให้เร็วที่สุด',
+              'tenant_change_room_ack_failed'
+            );
             continue;
+          }
+          if (changeLineState?.state === WAIT_ROOM_STATE) {
+            deferredStatePrompt = 'กรุณาพิมพ์เลขห้อง เช่น A102 หรือ B514 ค่ะ';
           }
 
           if (OWNER_APPROVAL_KEYWORD_RE.test(textIn)) {
             const intent = textIn.trim().startsWith('ไม่') ? 'tenant_id_change_reject' : 'tenant_id_change_approve';
             notifyTenantChange(intent);
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'ส่งสถานะไปยังเจ้าหน้าที่เรียบร้อยแล้วค่ะ' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'ส่งสถานะไปยังเจ้าหน้าที่เรียบร้อยแล้วค่ะ',
+              'tenant_change_approval_ack_failed'
+            );
             continue;
           }
 
@@ -4985,28 +5138,28 @@ export default {
             ctx.waitUntil(
               notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant id change notify failed', err))
             );
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-              { type: 'text', text: 'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้วค่ะ เจ้าหน้าที่จะติดต่อกลับโดยเร็วที่สุด' }
-            ]).catch(console.error);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'ได้รับคำขอเปลี่ยนไอดีผู้เช่าแล้วค่ะ เจ้าหน้าที่จะติดต่อกลับโดยเร็วที่สุด',
+              'tenant_change_notify_ack_failed'
+            );
             continue;
           }
 
           // (D) Quick keyword replies
-          const fast = await quickKeywordReply(textIn, env, userId);
+          const fast = precomputedFastReply;
           if (fast) {
-            ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, fast).catch(console.error));
+            ctx.waitUntil(
+              replyOrPushMessages(env, replyToken, chatId, fast, 'quick_keyword_reply_failed')
+            );
             continue;
           }
 
           if (isCheckinChangeIntent(textIn)) {
             const notifyMsg = 'กำลังส่งปุ่มเลือกวัน–เวลาเช็คอินให้ค่ะ รอสักครู่…';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: notifyMsg }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, notifyMsg).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, notifyMsg, 'checkin_change_ack_failed');
             // Forward the original event so GAS can run the regular check-in picker flow
             const reservationUrl = getReservationGas(env);
             if (reservationUrl) {
@@ -5048,11 +5201,7 @@ export default {
               'หากมีห้องว่างหรือมีห้องตรงเงื่อนไข ทีมงานจะติดต่อกลับทาง LINE นี้'
             ].join('\n');
 
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, ackText, 'prebook_code_ack_failed');
             continue;
           }
 
@@ -5073,13 +5222,7 @@ export default {
             const ackMsg = bookingCode
               ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
               : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
-            if (replyToken) {
-              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-                { type: 'text', text: ackMsg }
-              ]).catch(console.error);
-            } else if (chatId) {
-              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
-            }
+            await replyOrPushText(env, replyToken, chatId, ackMsg, 'booking_code_ack_failed');
             console.log('reservation_text_forward_to_gas', {
               bookingCode,
               chatId,
@@ -5369,6 +5512,17 @@ export default {
               const h = await moveoutTextGate(env, stateKey, textIn, replyToken);
               if (h) continue;
             }
+          }
+
+          if (deferredStatePrompt && !commandRoute) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              deferredStatePrompt,
+              'deferred_state_prompt_failed'
+            );
+            continue;
           }
 
           // (H) Forward everything else to GAS
@@ -8826,6 +8980,18 @@ export const __testables = {
   buildBillManualSlipPayload,
   getN8nBillManualWebhookUrl,
   parseKeyRent,
+  parseKeyKeyword,
+  classifyTextCommand,
+  shouldTextStateConsumeInput,
+  TEXT_COMMAND_REPLACE_FLOW,
+  TEXT_COMMAND_BYPASS_FLOW,
+  TEXT_STATE_CHECKOUT_AMOUNT,
+  TEXT_STATE_CHECKOUT_IMAGE,
+  TEXT_STATE_PARKING_PHONE,
+  TEXT_STATE_REGISTRATION_ROOM,
+  TEXT_STATE_TENANT_CHANGE_ROOM,
+  TEXT_STATE_PENALTY_REASON,
+  TEXT_STATE_PAYMENT_IMAGE,
   parseCheckinCommand,
   isCheckinFlowStateActive,
   replaceWithReservationFlow,

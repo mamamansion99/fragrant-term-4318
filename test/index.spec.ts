@@ -558,6 +558,43 @@ describe('Worker routes', () => {
 		expect(values.has(`active_flow:${otherUserId}`)).toBe(true);
 	});
 
+	it('does not clear a group payment state owned by another sender', async () => {
+		const currentUserId = 'U-current';
+		const otherUserId = 'U-other';
+		const groupId = 'C-manager-group';
+		const currentStateKey = `${groupId}:${currentUserId}`;
+		const groupPaymentKey = `checkout2:waiting-slip:${groupId}`;
+		const values = new Map<string, any>([
+			[`${currentStateKey}:payrent_flow`, { ts: Date.now(), userId: currentUserId }],
+			[groupPaymentKey, { ts: Date.now(), userId: otherUserId, reason: 'CHECKOUT2' }]
+		]);
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => values.get(key) ?? null,
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+		const event = {
+			source: {
+				type: 'group',
+				groupId,
+				userId: currentUserId
+			}
+		};
+
+		const clearedKeys = await __testables.clearUserWorkflowStatesForEvent(
+			mockEnv,
+			event,
+			'new_command'
+		);
+
+		expect(clearedKeys).not.toContain(groupPaymentKey);
+		expect(values.has(`${currentStateKey}:payrent_flow`)).toBe(false);
+		expect(values.get(groupPaymentKey)).toMatchObject({ userId: otherUserId });
+	});
+
 	it('clears stale image commands before starting a key-forgot payment', async () => {
 		const userId = 'U-tenant';
 		const stateKey = `${userId}:${userId}`;
@@ -1381,6 +1418,80 @@ describe('Worker routes', () => {
 		expect(parsed.room).toBe('A102');
 		expect(parsed.amount).toBe(500);
 		expect(parsed.paymentMethod).toBeUndefined();
+	});
+
+	it('classifies every workflow-starting text command as a state replacement', () => {
+		const examples = [
+			['คีย์ A301 100', 'key_forgot'],
+			['#MM521', 'booking_code'],
+			['#pb123', 'prebook_code'],
+			['ชำระค่าเช่าห้อง', 'pay_rent'],
+			['ลงทะเบียนไอดี', 'registration'],
+			['เปลี่ยนไอดีผู้เช่า', 'tenant_id_change']
+		];
+
+		for (const [text, kind] of examples) {
+			expect(__testables.classifyTextCommand(text)).toMatchObject({
+				kind,
+				statePolicy: __testables.TEXT_COMMAND_REPLACE_FLOW
+			});
+		}
+	});
+
+	it('lets information keywords bypass a workflow without canceling it', () => {
+		expect(__testables.classifyTextCommand('บริการที่จอดรถ')).toMatchObject({
+			kind: 'parking_info',
+			statePolicy: __testables.TEXT_COMMAND_BYPASS_FLOW
+		});
+		expect(__testables.classifyTextCommand('รหัส wifi', {
+			fastReply: [{ type: 'text', text: 'wifi' }]
+		})).toMatchObject({
+			kind: 'quick_keyword',
+			statePolicy: __testables.TEXT_COMMAND_BYPASS_FLOW
+		});
+		expect(__testables.classifyTextCommand('A301')).toBeNull();
+	});
+
+	it('allows states to consume only the exact input type they await', () => {
+		const bookingRoute = __testables.classifyTextCommand('#MM521');
+
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_CHECKOUT_AMOUNT,
+			'1,500'
+		)).toBe(true);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_CHECKOUT_AMOUNT,
+			'คีย์ A301 100'
+		)).toBe(false);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_CHECKOUT_IMAGE,
+			'#MM521'
+		)).toBe(false);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_PARKING_PHONE,
+			'0812345678'
+		)).toBe(true);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_REGISTRATION_ROOM,
+			'A301'
+		)).toBe(true);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_TENANT_CHANGE_ROOM,
+			'B514'
+		)).toBe(true);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_PENALTY_REASON,
+			'เสียงดัง'
+		)).toBe(true);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_PENALTY_REASON,
+			'#MM521',
+			bookingRoute
+		)).toBe(false);
+		expect(__testables.shouldTextStateConsumeInput(
+			__testables.TEXT_STATE_PAYMENT_IMAGE,
+			'ข้อความอะไรก็ได้'
+		)).toBe(false);
 	});
 
 	it('replies to combined availability and room price questions', async () => {

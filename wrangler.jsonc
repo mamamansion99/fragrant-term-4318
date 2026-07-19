@@ -4,6 +4,14 @@
   "compatibility_date": "2025-08-08",
   "workers_dev": true,
   "preview_urls": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true
+    }
+  },
   "vars": {
     "ALLOWED_ORIGIN": "https://mamamansion-ar2.pages.dev",
     "GITHUB_REPO": "mamamansion99/fragrant-term-4318",
