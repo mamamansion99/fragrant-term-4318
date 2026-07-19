@@ -2512,7 +2512,7 @@ async function forwardToSpecificGas(env, gasUrl, body) {
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
       const j = await res.json().catch(() => ({}));
-      ok = !!j.ok || res.ok;
+      ok = Object.prototype.hasOwnProperty.call(j, 'ok') ? !!j.ok : res.ok;
       text = JSON.stringify(j);
     } else {
       text = await res.text();
@@ -2528,7 +2528,7 @@ async function forwardToSpecificGas(env, gasUrl, body) {
 /** Forward any payload to GAS with header+body secret. Returns boolean ok. */
 async function forwardToGas(env, body) {
   const gasUrl = getWebhookGas(env);
-  const secret = env.WORKER_SECRET || '';
+  const secret = getWorkerForwardSecret(env);
   const payload = { ...body, workerSecret: secret }; // body secret for edge calls
 
   if (!gasUrl || !secret) {
@@ -4415,6 +4415,63 @@ export default {
           ctx.waitUntil(
             notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
           );
+
+          if (/^#?\s*MM\d{3,}$/i.test(textIn)) {
+            const resvUrl = getReservationGas(env);
+            const bookingCode = extractBookingCode(textIn);
+            if (!resvUrl) {
+              await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
+              continue;
+            }
+
+            const ackMsg = bookingCode
+              ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
+              : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
+            await replyOrPushText(env, replyToken, chatId, ackMsg, 'booking_code_ack_failed');
+            console.log('booking_code_immediate_ack', {
+              bookingCode,
+              chatId,
+              userId,
+              webhookEventId: ev?.webhookEventId || ''
+            });
+
+            ctx.waitUntil((async () => {
+              if (userId) {
+                try {
+                  await replaceWithReservationFlow(env, ev, {
+                    phase: 'await_confirm',
+                    code: bookingCode || '',
+                    ttlSeconds: BOOKING_SLIP_TTL_SECONDS
+                  });
+                } catch (err) {
+                  console.error('booking_code_state_sync_failed', {
+                    bookingCode,
+                    userId,
+                    chatId,
+                    error: String(err?.message || err)
+                  });
+                }
+              }
+
+              try {
+                console.log('reservation_text_forward_to_gas', {
+                  bookingCode,
+                  chatId,
+                  userId,
+                  resvUrl
+                });
+                await forwardToSpecificGas(env, resvUrl, { events: [ev] });
+              } catch (err) {
+                console.error('booking_code_forward_failed', {
+                  bookingCode,
+                  userId,
+                  chatId,
+                  error: String(err?.message || err)
+                });
+              }
+            })());
+            continue;
+          }
 
           const precomputedFastReply = await quickKeywordReply(textIn, env, userId);
           const commandRoute = classifyTextCommand(textIn, {
@@ -8981,6 +9038,8 @@ export const __testables = {
   getN8nBillManualWebhookUrl,
   parseKeyRent,
   parseKeyKeyword,
+  forwardToSpecificGas,
+  forwardToGas,
   classifyTextCommand,
   shouldTextStateConsumeInput,
   TEXT_COMMAND_REPLACE_FLOW,

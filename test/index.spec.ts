@@ -1,5 +1,5 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import worker from '../src';
 import { __testables } from '../src/index';
 
@@ -121,6 +121,139 @@ describe('Worker routes', () => {
 			WORKER_SECRET: 'primary',
 			MM_WORKER_SECRET: 'fallback'
 		})).toBe('primary');
+	});
+
+	it('forwards legacy MM webhook with MM_WORKER_SECRET fallback', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		try {
+			const ok = await __testables.forwardToGas({
+				MM_WEBHOOK_URL: 'https://example.com/mm-webhook',
+				MM_WORKER_SECRET: 'test123'
+			}, {
+				events: [{ type: 'message' }]
+			});
+
+			expect(ok).toBe(true);
+			expect(fetchMock).toHaveBeenCalledOnce();
+			const [url, init] = fetchMock.mock.calls[0];
+			expect(url).toBe('https://example.com/mm-webhook');
+			expect(init?.method).toBe('POST');
+			expect((init?.headers as Record<string, string>)['X-Worker-Secret']).toBe('test123');
+			expect(JSON.parse(String(init?.body))).toMatchObject({
+				workerSecret: 'test123',
+				events: [{ type: 'message' }]
+			});
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('does not mask explicit reservation GAS JSON failures', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: false, error: 'unauthorized' }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		try {
+			const ok = await __testables.forwardToSpecificGas({
+				MM_WORKER_SECRET: 'wrong-secret'
+			}, 'https://example.com/reservation-gas', {
+				events: [{ type: 'message' }]
+			});
+
+			expect(ok).toBe(false);
+			expect(fetchMock).toHaveBeenCalledOnce();
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('replies to booking codes before forwarding to reservation GAS', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		const bookingEvent = {
+			type: 'message',
+			replyToken: 'reply-token-booking',
+			webhookEventId: 'event-booking-code',
+			timestamp: Date.now(),
+			source: {
+				type: 'user',
+				userId: 'Ubooking'
+			},
+			message: {
+				type: 'text',
+				id: 'message-booking-code',
+				text: '#MM522'
+			}
+		};
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			CONFIRMBOOKING_URL: 'https://example.com/reservation-gas',
+			MM_WORKER_SECRET: 'test123',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log'
+		};
+
+		try {
+			const bodyText = JSON.stringify({ events: [bookingEvent] });
+			const signatureKey = await crypto.subtle.importKey(
+				'raw',
+				new TextEncoder().encode('line-secret'),
+				{ name: 'HMAC', hash: 'SHA-256' },
+				false,
+				['sign']
+			);
+			const signatureBuffer = await crypto.subtle.sign(
+				'HMAC',
+				signatureKey,
+				new TextEncoder().encode(bodyText)
+			);
+			const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)));
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/webhook', {
+				method: 'POST',
+				headers: {
+					'content-type': 'application/json',
+					'x-line-signature': signature
+				},
+				body: bodyText
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const replyCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			);
+			const gasCallIndex = fetchMock.mock.calls.findIndex(([url]) =>
+				String(url) === 'https://example.com/reservation-gas'
+			);
+			expect(replyCallIndex).toBeGreaterThanOrEqual(0);
+			expect(gasCallIndex).toBeGreaterThanOrEqual(0);
+			expect(replyCallIndex).toBeLessThan(gasCallIndex);
+
+			const replyBody = JSON.parse(String(fetchMock.mock.calls[replyCallIndex][1]?.body));
+			expect(replyBody.replyToken).toBe('reply-token-booking');
+			expect(replyBody.messages[0].text).toContain('#MM522');
+			const gasBody = JSON.parse(String(fetchMock.mock.calls[gasCallIndex][1]?.body));
+			expect(gasBody.workerSecret).toBe('test123');
+			expect(gasBody.events[0].message.text).toBe('#MM522');
+		} finally {
+			fetchMock.mockRestore();
+		}
 	});
 
 	it('parses cleaning tenant and management commands', () => {
