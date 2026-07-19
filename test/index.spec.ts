@@ -3,6 +3,31 @@ import { describe, it, expect, vi } from 'vitest';
 import worker from '../src';
 import { __testables } from '../src/index';
 
+async function buildSignedLineRequest(events: Array<Record<string, any>>, secret = 'line-secret') {
+	const bodyText = JSON.stringify({ events });
+	const signatureKey = await crypto.subtle.importKey(
+		'raw',
+		new TextEncoder().encode(secret),
+		{ name: 'HMAC', hash: 'SHA-256' },
+		false,
+		['sign']
+	);
+	const signatureBuffer = await crypto.subtle.sign(
+		'HMAC',
+		signatureKey,
+		new TextEncoder().encode(bodyText)
+	);
+	const signature = btoa(String.fromCharCode(...new Uint8Array(signatureBuffer)));
+	return new Request<unknown, IncomingRequestCfProperties>('http://example.com/webhook', {
+		method: 'POST',
+		headers: {
+			'content-type': 'application/json',
+			'x-line-signature': signature
+		},
+		body: bodyText
+	});
+}
+
 describe('Worker routes', () => {
 	it('returns OK for non-POST requests outside known GET routes', async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/message');
@@ -853,6 +878,100 @@ describe('Worker routes', () => {
 		expect(clearedKeys).toContain(`checkin_flow:${userId}`);
 		expect(clearedKeys).toContain(`${stateKey}:checkout_cash_flow`);
 		expect(values.size).toBe(0);
+	});
+
+	it('acknowledges and arms canonical key-forgot flow when one legacy KV delete fails', async () => {
+		const userId = 'U-key-forgot-delete-failure';
+		const keyForgotUrl = 'https://example.com/key-forgot-delete-failure';
+		const failedDeleteKey = `booking_flow:${userId}`;
+		const failedMirrorKey = `${userId}:${userId}:penalty_flow`;
+		const values = new Map<string, string>([
+			[failedDeleteKey, JSON.stringify({ phase: 'await_slip' })]
+		]);
+		const calls: Array<{ url: string; body: any }> = [];
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			let body: any = {};
+			try { body = JSON.parse(String(init?.body || '{}')); } catch { }
+			calls.push({ url: String(input), body });
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			N8N_KEY_FORGOT_WEBHOOK_URL: keyForgotUrl,
+			N8N_CHAT_LOG_URL: '',
+			WORKER_SECRET: 'worker-secret',
+			KV: {
+				get: async (key: string) => {
+					const raw = values.get(key);
+					return raw ? JSON.parse(raw) : null;
+				},
+				put: async (key: string, value: string) => {
+					if (key === failedMirrorKey) throw new Error('transient_kv_put_failure');
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					if (key === failedDeleteKey) throw new Error('transient_kv_delete_failure');
+					values.delete(key);
+				}
+			}
+		};
+
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message',
+				replyToken: 'reply-key-forgot-delete-failure',
+				webhookEventId: 'evt-key-forgot-delete-failure',
+				timestamp: Date.now(),
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-key-forgot-delete-failure', text: 'คีย์ A405 100' }
+			}]);
+			const ctx = createExecutionContext();
+			expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
+			await waitOnExecutionContext(ctx);
+
+			const activeFlow = await __testables.getActiveFlow(
+				mockEnv,
+				userId,
+				{ source: { type: 'user', userId } }
+			);
+			expect(activeFlow).toMatchObject({
+				flowType: 'key_forgot',
+				phase: 'await_slip',
+				context: { penaltyFlow: { roomId: 'A405', amount: 100, reason: 'KEY_FORGOT' } }
+			});
+			expect(calls.some((call) => (
+				call.url.includes('/v2/bot/message/reply') &&
+				call.body?.messages?.some((message: any) => String(message?.text || '').includes('รับข้อมูลคีย์ตึก A ห้อง 405 จำนวน 100'))
+			))).toBe(true);
+			expect(calls.some((call) => call.url === keyForgotUrl)).toBe(true);
+			expect(warnSpy).toHaveBeenCalledWith(
+				'user_workflow_state_cleanup_partial_failure',
+				expect.objectContaining({
+					userId,
+					failedDeletes: expect.arrayContaining([
+						expect.objectContaining({ key: failedDeleteKey })
+					])
+				})
+			);
+			expect(warnSpy).toHaveBeenCalledWith(
+				'key_forgot_kv_mirror_partial_failure',
+				expect.objectContaining({
+					userId,
+					failedMirrors: expect.arrayContaining([
+						expect.objectContaining({ key: failedMirrorKey })
+					])
+				})
+			);
+		} finally {
+			fetchMock.mockRestore();
+			warnSpy.mockRestore();
+		}
 	});
 
 	it('makes reservation confirmation replace stale payment image commands', async () => {
@@ -1758,6 +1877,627 @@ describe('Worker routes', () => {
 		const body = await response.json() as Record<string, unknown>;
 		expect(body.ok).toBe(false);
 		expect(String(body.error || '')).toContain('invalid GitHub repo format');
+	});
+
+	it('normalizes visually equivalent forgot-key commands', () => {
+		expect(__testables.parseKeyKeyword('\u200BＫＥＹ　Ａ４０５　１００\u2060')).toEqual({
+			building: 'A',
+			room: '405',
+			amount: 100
+		});
+	});
+
+	it('guards active-flow updates and deletes from stale callback versions', async () => {
+		const userId = 'U-version-guard';
+		const values = new Map<string, string>();
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => {
+					const raw = values.get(key);
+					return raw ? JSON.parse(raw) : null;
+				},
+				put: async (key: string, value: string) => values.set(key, value),
+				delete: async (key: string) => values.delete(key)
+			}
+		};
+		const oldFlow = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'key_forgot',
+			phase: 'await_slip',
+			event: { timestamp: 100, webhookEventId: 'old-command' }
+		});
+		const latestFlow = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'reservation',
+			phase: 'await_slip',
+			code: '#MM901',
+			event: { timestamp: 200, webhookEventId: 'latest-command' }
+		});
+
+		expect(await __testables.updateActiveFlowIfCurrent(
+			mockEnv,
+			userId,
+			oldFlow,
+			{ phase: 'await_slip' }
+		)).toBeNull();
+		expect(await __testables.clearActiveFlowIfCurrent(mockEnv, userId, oldFlow)).toBe(false);
+		expect(await __testables.getActiveFlow(mockEnv, userId)).toMatchObject({
+			flowId: latestFlow.flowId,
+			version: latestFlow.version,
+			flowType: 'reservation',
+			code: '#MM901'
+		});
+	});
+
+	it('uses the exact GAS deadline and never stretches a near-expiry booking flow', async () => {
+		const userId = 'U-near-expiry';
+		const values = new Map<string, string>();
+		const mockEnv = {
+			KV: {
+				get: async (key: string) => {
+					const raw = values.get(key);
+					return raw ? JSON.parse(raw) : null;
+				},
+				put: async (key: string, value: string) => values.set(key, value),
+				delete: async (key: string) => values.delete(key)
+			}
+		};
+		const original = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'reservation', phase: 'await_slip', code: '#MM901',
+			event: { timestamp: Date.now(), webhookEventId: 'near-expiry-owner' }
+		}) as Record<string, any>;
+		const exactDeadline = Date.now() + 4500;
+		const synced = await __testables.syncReservationFlowFromGasAck(mockEnv, userId, original, {
+			reservationFlow: {
+				flowPhase: 'confirm_slip',
+				flowId: original.flowId,
+				flowVersion: '2',
+				reservationId: '#MM901',
+				expiresAt: new Date(exactDeadline).toISOString(),
+				flowTtlSeconds: 4
+			}
+		}) as Record<string, any>;
+
+		expect(synced).toMatchObject({ phase: 'confirm_slip', version: '2' });
+		expect(synced.expiresAt).toBe(exactDeadline);
+		expect(__testables.getReservationFlowAck({
+			flowPhase: 'await_slip', flowId: original.flowId, flowVersion: '2', flowTtlSeconds: 7
+		})?.ttlSeconds).toBe(7);
+	});
+
+	it('does not run keycard KV retries for private images', async () => {
+		let reads = 0;
+		const timeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+		const mockEnv = {
+			KV: {
+				get: async () => {
+					reads += 1;
+					return null;
+				}
+			}
+		};
+		try {
+			const result = await __testables.getCheckinKeycardWaitingPhotoState(
+				mockEnv,
+				'user-key',
+				'group-key',
+				'user-only-key',
+				'',
+				'U-private'
+			);
+			expect(result.state).toBeNull();
+			expect(reads).toBe(3);
+			expect(timeoutSpy).not.toHaveBeenCalled();
+		} finally {
+			timeoutSpy.mockRestore();
+		}
+	});
+
+	it('routes an immediate #MM image only to reservation GAS and never AUTO_IMG', async () => {
+		const reservationUrl = 'https://example.com/reservation';
+		const autoImgUrl = 'https://example.com/auto-img';
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			let body: any = {};
+			try { body = JSON.parse(String(init?.body || '{}')); } catch { }
+			calls.push({ url, body });
+			if (url === reservationUrl) {
+				const messageType = body?.events?.[0]?.message?.type;
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM902',
+						flowPhase: messageType === 'image' ? 'confirm_slip' : 'await_slip',
+						flowId: body.flowId,
+						flowVersion: body.flowVersion,
+						flowTtlSeconds: 3600
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const userId = 'U-immediate-booking-image';
+		const now = Date.now();
+		const request = await buildSignedLineRequest([
+			{
+				type: 'message', replyToken: 'reply-code', webhookEventId: 'evt-code', timestamp: now,
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-code', text: '#MM902' }
+			},
+			{
+				type: 'message', replyToken: 'reply-image', webhookEventId: 'evt-image', timestamp: now + 1,
+				source: { type: 'user', userId },
+				message: { type: 'image', id: 'msg-image' }
+			}
+		]);
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			AUTO_IMG_URL: autoImgUrl,
+			N8N_CHAT_LOG_URL: '',
+			MM_WORKER_SECRET: 'test123'
+		};
+
+		try {
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const reservationCalls = calls.filter((call) => call.url === reservationUrl);
+			expect(reservationCalls).toHaveLength(2);
+			expect(reservationCalls[1].body.events[0].message.type).toBe('image');
+			expect(reservationCalls[1].body).toMatchObject({
+				lineUserId: userId,
+				bookingCode: '#MM902'
+			});
+			expect(reservationCalls[1].body.flowId).toBeTruthy();
+			expect(reservationCalls[1].body.flowVersion).toBeTruthy();
+			expect(calls.some((call) => call.url === autoImgUrl)).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('lets a latest forgot-key command replace booking and keeps both webhook contracts', async () => {
+		const reservationUrl = 'https://example.com/reservation-switch';
+		const keyForgotUrl = 'https://example.com/key-webhook';
+		const penaltyUrl = 'https://example.com/others-slip';
+		const autoImgUrl = 'https://example.com/auto-switch';
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			let body: any = {};
+			try { body = JSON.parse(String(init?.body || '{}')); } catch { }
+			calls.push({ url, body });
+			if (url === reservationUrl) {
+				const flow = body?.events?.[0]?.reservationFlow || body?.reservationFlow || {};
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM903',
+						flowPhase: body?.events?.[0]?.message?.type === 'image' ? 'confirm_slip' : 'await_slip',
+						flowId: flow.flowId,
+						flowVersion: flow.flowVersion,
+						flowTtlSeconds: 3600
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const userId = 'U-booking-to-key-forgot';
+		const now = Date.now();
+		const request = await buildSignedLineRequest([
+			{
+				type: 'message', replyToken: 'reply-booking', webhookEventId: 'evt-booking-old', timestamp: now,
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-booking-old', text: '#MM903' }
+			},
+			{
+				type: 'message', replyToken: 'reply-key', webhookEventId: 'evt-key-new', timestamp: now + 1,
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-key-new', text: 'ＫＥＹ　Ａ４０５　１００' }
+			},
+			{
+				type: 'message', replyToken: 'reply-slip', webhookEventId: 'evt-slip', timestamp: now + 2,
+				source: { type: 'user', userId },
+				message: { type: 'image', id: 'msg-slip' }
+			}
+		]);
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			N8N_KEY_FORGOT_WEBHOOK_URL: keyForgotUrl,
+			PENALTY_WEBHOOK_URL: penaltyUrl,
+			AUTO_IMG_URL: autoImgUrl,
+			N8N_CHAT_LOG_URL: '',
+			MM_WORKER_SECRET: 'test123'
+		};
+
+		try {
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const keyCall = calls.find((call) => call.url === keyForgotUrl);
+			const penaltyCall = calls.find((call) => call.url === penaltyUrl);
+			expect(keyCall?.body).toMatchObject({ building: 'A', room: '405', amount: 100 });
+			expect(penaltyCall?.body).toMatchObject({
+				type: 'Others_payment',
+				reason: 'KEY_FORGOT',
+				roomId: 'A405',
+				amount: 100,
+				imageMessageId: 'msg-slip'
+			});
+			expect(penaltyCall?.body.flowId).toBeTruthy();
+			expect(calls.filter((call) => call.url === reservationUrl)).toHaveLength(1);
+			expect(calls.some((call) => call.url === autoImgUrl)).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('lets a latest #MM command replace forgot-key so its image reaches reservation only', async () => {
+		const reservationUrl = 'https://example.com/reservation-latest';
+		const keyForgotUrl = 'https://example.com/key-latest';
+		const penaltyUrl = 'https://example.com/penalty-should-not-run';
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			let body: any = {};
+			try { body = JSON.parse(String(init?.body || '{}')); } catch { }
+			calls.push({ url, body });
+			if (url === reservationUrl) {
+				const flow = body?.events?.[0]?.reservationFlow || body?.reservationFlow || {};
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM904',
+						flowPhase: body?.events?.[0]?.message?.type === 'image' ? 'confirm_slip' : 'await_slip',
+						flowId: flow.flowId,
+						flowVersion: flow.flowVersion,
+						flowTtlSeconds: 3600
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const userId = 'U-key-to-booking';
+		const now = Date.now();
+		const request = await buildSignedLineRequest([
+			{
+				type: 'message', replyToken: 'reply-key-old', webhookEventId: 'evt-key-old', timestamp: now,
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-key-old', text: 'คีย์ B303 100' }
+			},
+			{
+				type: 'message', replyToken: 'reply-booking-new', webhookEventId: 'evt-booking-new', timestamp: now + 1,
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-booking-new', text: '#MM904' }
+			},
+			{
+				type: 'message', replyToken: 'reply-booking-image', webhookEventId: 'evt-booking-image', timestamp: now + 2,
+				source: { type: 'user', userId },
+				message: { type: 'image', id: 'msg-booking-image' }
+			}
+		]);
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			N8N_KEY_FORGOT_WEBHOOK_URL: keyForgotUrl,
+			PENALTY_WEBHOOK_URL: penaltyUrl,
+			N8N_CHAT_LOG_URL: '',
+			MM_WORKER_SECRET: 'test123'
+		};
+
+		try {
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(calls.filter((call) => call.url === keyForgotUrl)).toHaveLength(1);
+			expect(calls.filter((call) => call.url === reservationUrl)).toHaveLength(2);
+			expect(calls.filter((call) => call.url === reservationUrl)[1].body.events[0].message.id).toBe('msg-booking-image');
+			expect(calls.some((call) => call.url === penaltyUrl)).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('keeps Worker flow identity through GAS confirm postback and syncs the returned phase/version', async () => {
+		const reservationUrl = 'https://example.com/reservation-contract';
+		const userId = 'U-contract-confirm';
+		const flowId = 'reservation:evt-contract-code';
+		const gasBodies: any[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			if (url === reservationUrl) {
+				const body = JSON.parse(String(init?.body || '{}'));
+				gasBodies.push(body);
+				const isPostback = body?.events?.[0]?.type === 'postback';
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM920',
+						flowPhase: isPostback ? 'await_slip' : 'await_confirm',
+						flowId,
+						flowVersion: isPostback ? '2' : '1',
+						flowTtlSeconds: 3600
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+
+		try {
+			const startRequest = await buildSignedLineRequest([{
+				type: 'message', replyToken: 'reply-contract-code', webhookEventId: 'evt-contract-code', timestamp: Date.now(),
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-contract-code', text: '#MM920' }
+			}]);
+			const mockEnv = {
+				...env,
+				LINE_CHANNEL_SECRET: 'line-secret',
+				LINE_ACCESS_TOKEN: 'line-token',
+				CONFIRMBOOKING_URL: reservationUrl,
+				WORKER_SECRET: 'worker-secret',
+				N8N_CHAT_LOG_URL: ''
+			};
+			let ctx = createExecutionContext();
+			expect((await worker.fetch(startRequest, mockEnv, ctx)).status).toBe(200);
+			await waitOnExecutionContext(ctx);
+
+			const postbackRequest = await buildSignedLineRequest([{
+				type: 'postback', replyToken: 'reply-contract-confirm', webhookEventId: 'evt-contract-confirm', timestamp: Date.now() + 1,
+				source: { type: 'user', userId },
+				postback: { data: `act=confirm&code=MM920&flowId=${encodeURIComponent(flowId)}&version=1` }
+			}]);
+			ctx = createExecutionContext();
+			expect((await worker.fetch(postbackRequest, mockEnv, ctx)).status).toBe(200);
+			await waitOnExecutionContext(ctx);
+
+			const current = await __testables.getActiveFlow(mockEnv, userId, { source: { type: 'user', userId } });
+			expect(current).toMatchObject({ flowId, version: '2', phase: 'await_slip', code: '#MM920' });
+			expect(gasBodies[0].events[0].reservationFlow).toMatchObject({
+				flowId,
+				flowVersion: '1',
+				bookingCode: '#MM920'
+			});
+			expect(gasBodies[1].events[0].reservationFlow).toMatchObject({
+				flowId,
+				flowVersion: '1',
+				phase: 'await_confirm'
+			});
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('retains confirm_id after a nonterminal id_yes result and clears only an accepted terminal result', async () => {
+		const reservationUrl = 'https://example.com/reservation-id-terminal';
+		const userId = 'U-id-terminal';
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			WORKER_SECRET: 'worker-secret',
+			N8N_CHAT_LOG_URL: ''
+		};
+		const original = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'reservation', kind: 'reservation', phase: 'confirm_id', code: '#MM921',
+			event: { timestamp: Date.now(), webhookEventId: 'evt-id-owner', source: { type: 'user', userId } },
+			scopeType: 'user'
+		}) as Record<string, any>;
+		let gasCall = 0;
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			if (String(input) === reservationUrl) {
+				gasCall += 1;
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: gasCall === 1 ? {
+						reservationId: '#MM921', flowPhase: 'confirm_id', flowId: original.flowId, flowVersion: '2', outcome: 'retryable_failure'
+					} : {
+						reservationId: '#MM921', flowPhase: 'done', flowId: original.flowId, flowVersion: '3', outcome: 'accepted'
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+
+		try {
+			const sendIdYes = async (version: string, eventId: string) => {
+				const request = await buildSignedLineRequest([{
+					type: 'postback', replyToken: `reply-${eventId}`, webhookEventId: eventId, timestamp: Date.now(),
+					source: { type: 'user', userId },
+					postback: { data: `act=id_yes&code=MM921&flowId=${encodeURIComponent(original.flowId)}&version=${version}` }
+				}]);
+				const ctx = createExecutionContext();
+				expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
+				await waitOnExecutionContext(ctx);
+			};
+			await sendIdYes('1', 'evt-id-retry');
+			expect(await __testables.getActiveFlow(mockEnv, userId, original)).toMatchObject({ phase: 'confirm_id', version: '2' });
+			await sendIdYes('2', 'evt-id-done');
+			expect(await __testables.getActiveFlow(mockEnv, userId, original)).toBeNull();
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('CAS-clears the exact booking owner when GAS explicitly returns clearActiveFlow', async () => {
+		const reservationUrl = 'https://example.com/reservation-expired-clear';
+		const userId = 'U-expired-clear';
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			WORKER_SECRET: 'worker-secret',
+			N8N_CHAT_LOG_URL: ''
+		};
+		const original = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'reservation', kind: 'reservation', phase: 'confirm_id', code: '#MM922',
+			event: { timestamp: Date.now(), webhookEventId: 'evt-expired-owner', source: { type: 'user', userId } },
+			scopeType: 'user'
+		}) as Record<string, any>;
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			if (String(input) === reservationUrl) {
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM922',
+						flowId: original.flowId,
+						flowVersion: '2',
+						clearActiveFlow: true,
+						outcome: 'expired'
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'postback', replyToken: 'reply-expired-clear', webhookEventId: 'evt-expired-clear', timestamp: Date.now(),
+				source: { type: 'user', userId },
+				postback: { data: `act=id_yes&code=MM922&flowId=${encodeURIComponent(original.flowId)}&version=1` }
+			}]);
+			const ctx = createExecutionContext();
+			expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
+			await waitOnExecutionContext(ctx);
+			expect(await __testables.getActiveFlow(mockEnv, userId, original)).toBeNull();
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('keeps await_slip alive for the 24-hour payment window so a slip after three hours still routes', async () => {
+		expect(__testables.BOOKING_PAYMENT_FLOW_TTL_SECONDS).toBe(24 * 60 * 60);
+		expect(__testables.getReservationFlowTtlSecondsByPhase('await_slip')).toBe(24 * 60 * 60);
+
+		const reservationUrl = 'https://example.com/reservation-three-hours';
+		const userId = 'U-three-hour-slip';
+		const values = new Map<string, string>();
+		const mockEnv = {
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			CONFIRMBOOKING_URL: reservationUrl,
+			WORKER_SECRET: 'worker-secret',
+			N8N_CHAT_LOG_URL: '',
+			KV: {
+				get: async (key: string) => {
+					const raw = values.get(key);
+					return raw ? JSON.parse(raw) : null;
+				},
+				put: async (key: string, value: string) => values.set(key, value),
+				delete: async (key: string) => values.delete(key)
+			}
+		};
+		const startedAt = Date.now();
+		const original = await __testables.setActiveFlow(mockEnv, userId, {
+			flowType: 'reservation', kind: 'reservation', phase: 'await_slip', code: '#MM923',
+			event: { timestamp: startedAt, webhookEventId: 'evt-three-hour-owner', source: { type: 'user', userId } },
+			scopeType: 'user'
+		}) as Record<string, any>;
+		expect(original.expiresAt - original.ts).toBe(24 * 60 * 60 * 1000);
+
+		const calls: string[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			calls.push(url);
+			if (url === reservationUrl) {
+				const body = JSON.parse(String(init?.body || '{}'));
+				return new Response(JSON.stringify({
+					ok: true,
+					reservationFlow: {
+						reservationId: '#MM923',
+						flowPhase: 'confirm_slip',
+						flowId: body.flowId,
+						flowVersion: body.flowVersion,
+						flowTtlSeconds: 3600
+					}
+				}), { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		const dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(startedAt + (3 * 60 * 60 * 1000));
+
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message', replyToken: 'reply-three-hour-slip', webhookEventId: 'evt-three-hour-slip', timestamp: Date.now(),
+				source: { type: 'user', userId },
+				message: { type: 'image', id: 'msg-three-hour-slip' }
+			}]);
+			const ctx = createExecutionContext();
+			expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
+			await waitOnExecutionContext(ctx);
+			expect(calls.filter((url) => url === reservationUrl)).toHaveLength(1);
+		} finally {
+			dateNowSpy.mockRestore();
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('never forwards an unclaimed image to reservation GAS', async () => {
+		const reservationUrl = 'https://example.com/reservation-must-not-run';
+		const autoImgUrl = 'https://example.com/auto-only';
+		const calls: string[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			calls.push(String(input));
+			return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const userId = 'U-unclaimed-image';
+			const request = await buildSignedLineRequest([{
+				type: 'message', replyToken: 'reply-unclaimed', webhookEventId: 'evt-unclaimed', timestamp: Date.now(),
+				source: { type: 'user', userId }, message: { type: 'image', id: 'msg-unclaimed' }
+			}]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, {
+				...env,
+				LINE_CHANNEL_SECRET: 'line-secret', LINE_ACCESS_TOKEN: 'line-token',
+				CONFIRMBOOKING_URL: reservationUrl, AUTO_IMG_URL: autoImgUrl,
+				WORKER_SECRET: 'worker-secret'
+			}, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(calls.filter((url) => url === autoImgUrl)).toHaveLength(1);
+			expect(calls.some((url) => url === reservationUrl)).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('exposes the deployed active-flow contract through read-only health', async () => {
+		const response = await worker.fetch(
+			new Request<unknown, IncomingRequestCfProperties>('http://example.com/health'),
+			env,
+			createExecutionContext()
+		);
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({
+			ok: true,
+			bookingFlowContract: 'latest-command-v2',
+			activeFlowVersioned: true,
+			claimedImageSingleRoute: true
+		});
 	});
 
 	it('integration: default non-POST path still returns OK', async () => {

@@ -43,7 +43,6 @@
     "N8N_CLEANING_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm",
     "N8N_BILL_MANUAL_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received",
     "N8N_PREBOOK_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/prebook",
-    "MM_WORKER_SECRET": "test123",
     // Dedicated expense group (Option 2)
     "EXPENSE_GROUP_ID": "C2190a9a8cbde42b097a9d2fd0c1599bc",
     "N8N_EXPENSE_WEBHOOK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/record-expense",
@@ -64,6 +63,20 @@
     {
       "binding": "KV",
       "id": "a3650d699e944f65944cf935c869aaa3"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "ACTIVE_FLOW_OWNER",
+        "class_name": "ActiveFlowOwner"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "active-flow-owner-v1",
+      "new_sqlite_classes": ["ActiveFlowOwner"]
     }
   ]
 }

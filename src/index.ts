@@ -244,6 +244,7 @@ const CHECKIN_KEYCARD_PHOTO_TTL_MS = CHECKIN_KEYCARD_PHOTO_TTL_SECONDS * 1000;
 
 const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
 const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
+const BOOKING_PAYMENT_FLOW_TTL_SECONDS = 24 * 60 * 60; // GAS payment window
 const BOOKING_ID_TTL_SECONDS = 6 * 60 * 60;     // 6 hours to send ID after slip
 const BOOKING_ID_TTL_MS = BOOKING_ID_TTL_SECONDS * 1000;
 const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
@@ -402,6 +403,10 @@ async function getCheckinKeycardWaitingPhotoState(env, userKey, groupKey, userOn
   let result = await readState();
   if (result.state) return result;
 
+  // The keycard-photo workflow is group-only. Private images must never pay
+  // the 2.9 second KV consistency retry cost before reaching their owner flow.
+  if (!String(groupId || '').trim()) return result;
+
   // Workers KV is eventually consistent. A manager often sends the photo
   // immediately after pressing the postback button, so retry briefly before
   // falling through to the generic image handlers.
@@ -537,13 +542,13 @@ async function replyOrPushText(env, replyToken, chatId, text, logLabel = 'line_r
 function detectPresetOtherPaymentReason(text, checkoutPaymentShortcut = null) {
   if (checkoutPaymentShortcut?.reason) return checkoutPaymentShortcut.reason;
 
-  const raw = String(text || '').trim();
-  if (/^\s*(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)\s*$/i.test(raw)) return 'CLEANING_PAYMENT';
-  if (/^\s*(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)\s*$/i.test(raw)) return 'CAR';
-  if (/^\s*(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ|เช่ากุญแจเพิ่ม|เช่าคีย์การ์ดเพิ่ม|เช่าชุดกุญแจเพิ่ม)\s*$/i.test(raw)) {
+  const compact = normalizeCommandText(text).replace(/\s+/g, '');
+  if (/^(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)$/i.test(compact)) return 'CLEANING_PAYMENT';
+  if (/^(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)$/i.test(compact)) return 'CAR';
+  if (/^(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ|เช่ากุญแจเพิ่ม|เช่าคีย์การ์ดเพิ่ม|เช่าชุดกุญแจเพิ่ม)$/i.test(compact)) {
     return 'KEY_RENT';
   }
-  if (/^\s*(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย|ลืม\/ทำกุญแจหาย|ลืมทำกุญแจหาย|กุญแจหาย|คีย์การ์ดหาย)\s*$/i.test(raw)) {
+  if (/^(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย|ลืม\/ทำกุญแจหาย|ลืมทำกุญแจหาย|กุญแจหาย|คีย์การ์ดหาย)$/i.test(compact)) {
     return 'KEY_FORGOT';
   }
   return null;
@@ -719,7 +724,8 @@ async function handlePenaltyPaymentImage(env, ctx, options = {}) {
     replyToken,
     chatId,
     penaltyFlow,
-    penaltyStateKeys = []
+    penaltyStateKeys = [],
+    activeFlow = null
   } = options;
   const stateKeys = Array.from(new Set((penaltyStateKeys || []).filter(Boolean)));
 
@@ -759,6 +765,11 @@ async function handlePenaltyPaymentImage(env, ctx, options = {}) {
     categories: penaltyFlow?.categories || penaltyFlow?.reason || '',
     roomId: penaltyFlow?.roomId || penaltyFlow?.room || '',
     room: penaltyFlow?.roomId || penaltyFlow?.room || '',
+    building: penaltyFlow?.building || '',
+    amount: penaltyFlow?.amount ?? null,
+    flowId: activeFlow?.flowId || penaltyFlow?.flowId || '',
+    flowVersion: activeFlow?.version || activeFlow?.flowVersion || penaltyFlow?.version || '',
+    version: activeFlow?.version || activeFlow?.flowVersion || penaltyFlow?.version || '',
     receivedAt: new Date().toISOString()
   };
 
@@ -788,14 +799,60 @@ async function handlePenaltyPaymentImage(env, ctx, options = {}) {
       console.error('Penalty_webhook failed', err);
     }
 
-    if (ok) {
-      await Promise.all(stateKeys.map((key) => kvDel(env, key)));
+    const activeFlowStillOwnsImage = async () => {
+      if (!activeFlow) return true;
+      const current = await getActiveFlow(
+        env,
+        activeFlow.userId || event?.source?.userId || '',
+        activeFlow
+      );
+      return isSameActiveFlow(current, activeFlow);
+    };
+
+    if (!(await activeFlowStillOwnsImage())) {
+      console.log('penalty_slip_stale_callback_ignored', {
+        flowId: activeFlow?.flowId || '',
+        version: activeFlow?.version || ''
+      });
       return;
     }
 
-    await Promise.all(
-      stateKeys.map((key) => kvPut(env, key, { ...penaltyFlow, ts: Date.now() }, PENALTY_FLOW_TTL_SECONDS))
-    );
+    if (ok) {
+      for (const key of stateKeys) {
+        if (!(await activeFlowStillOwnsImage())) return;
+        const stored = await kvGet(env, key);
+        if (activeFlow && !isSameActiveFlow(
+            { flowId: stored?.flowId, version: stored?.version || stored?.flowVersion },
+            activeFlow
+          )) continue;
+        await kvDel(env, key);
+      }
+      if (activeFlow) {
+        await clearActiveFlowIfCurrent(env, activeFlow.userId || event?.source?.userId || '', activeFlow);
+      }
+      return;
+    }
+
+    let retryActiveFlow = activeFlow;
+    if (activeFlow) {
+      retryActiveFlow = await updateActiveFlowIfCurrent(
+        env,
+        activeFlow.userId || event?.source?.userId || '',
+        activeFlow,
+        { phase: 'await_slip', ttlSeconds: PENALTY_FLOW_TTL_SECONDS }
+      );
+      if (!retryActiveFlow) return;
+      // The Durable Object remains the authoritative retry state. Rewriting a
+      // legacy KV mirror here could resurrect this old flow after a newer
+      // command has already replaced it.
+    } else {
+      await Promise.all(
+        stateKeys.map((key) => kvPut(env, key, {
+          ...penaltyFlow,
+          ts: Date.now()
+        }, PENALTY_FLOW_TTL_SECONDS))
+      );
+    }
     if (chatId) {
       await safeLinePushText(
         env.LINE_ACCESS_TOKEN,
@@ -827,7 +884,7 @@ function isCheckinFlowStateActive(state, now = Date.now()) {
   );
 }
 
-async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command') {
+async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command', options = {}) {
   const userId = String(event?.source?.userId || '').trim();
   const chatId = getChatId(event);
   if (!userId) return [];
@@ -837,7 +894,7 @@ async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command
   const clearablePaymentKeys = await getClearablePaymentStateKeys(env, event);
   const keys = new Set([
     ...clearablePaymentKeys,
-    buildActiveFlowKey(userId),
+    options?.preserveActiveFlow ? '' : buildActiveFlowKey(userId),
     buildBookingFlowKey(userId, chatId),
     buildCheckinFlowKey(userId, chatId),
     `reg_id:${userId}`,
@@ -873,7 +930,28 @@ async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command
   }
 
   const clearedKeys = [...keys];
-  await Promise.all(clearedKeys.map((key) => kvDel(env, key)));
+  if (!options?.preserveActiveFlow) {
+    await clearActiveFlow(env, userId, event);
+  }
+  const deleteResults = await Promise.allSettled(clearedKeys.map(async (key) => {
+    if (!hasKV(env)) return;
+    // Do not use the best-effort kvDel wrapper here: cleanup needs to expose
+    // individual failures for observability while never blocking the command.
+    await env.KV.delete(key);
+  }));
+  const failedDeletes = deleteResults.flatMap((result, index) => (
+    result.status === 'rejected'
+      ? [{ key: clearedKeys[index], error: String(result.reason?.message || result.reason) }]
+      : []
+  ));
+  if (failedDeletes.length) {
+    console.warn('user_workflow_state_cleanup_partial_failure', {
+      reason,
+      userId,
+      chatId,
+      failedDeletes
+    });
+  }
   console.log('user_workflow_states_cleared', {
     reason,
     userId,
@@ -887,10 +965,25 @@ async function clearUserWorkflowStatesForCheckin(env, event) {
   return clearUserWorkflowStatesForEvent(env, event, 'checkin');
 }
 
-async function startCheckinFlow(env, ctx, event, replyToken, text, roomId) {
+async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activeFlowExpected = null) {
   const userId = String(event?.source?.userId || '').trim();
   const chatId = getChatId(event);
-  await clearUserWorkflowStatesForCheckin(env, event);
+  await clearUserWorkflowStatesForEvent(
+    env,
+    event,
+    'checkin',
+    { preserveActiveFlow: !!activeFlowExpected }
+  );
+  if (activeFlowExpected && userId) {
+    await updateActiveFlowIfCurrent(env, userId, activeFlowExpected, {
+      flowType: 'checkin',
+      kind: 'checkin',
+      phase: 'await_slip',
+      context: { roomId },
+      preserveVersion: true,
+      ttlSeconds: CHECKIN_FLOW_TTL_SECONDS
+    });
+  }
 
   const payload = {
     source: 'line_message',
@@ -1208,16 +1301,99 @@ function buildBookingFlowKey(userId, chatId) {
 }
 
 const ACTIVE_FLOW_KEY_PREFIX = 'active_flow:';
-const RESERVATION_ACTIVE_FLOW_PHASES = new Set(['await_slip', 'confirm_slip', 'await_id', 'confirm_id']);
+const ACTIVE_FLOW_CONTRACT_VERSION = 'latest-command-v2';
+const RESERVATION_ACTIVE_FLOW_PHASES = new Set(['await_confirm', 'await_slip', 'confirm_slip', 'await_id', 'confirm_id']);
+const RESERVATION_TERMINAL_FLOW_PHASES = new Set(['done', 'completed']);
+const ACTIVE_FLOW_OWNER_BINDING = 'ACTIVE_FLOW_OWNER';
+
+function buildActiveFlowOwnerKey(userId, scopeHint = null) {
+  const uid = String(userId || '').trim();
+  if (!uid) return '';
+  const explicitOwnerKey = String(scopeHint?.ownerKey || '').trim();
+  if (explicitOwnerKey) return explicitOwnerKey;
+
+  const source = scopeHint?.source || scopeHint?.event?.source || {};
+  const scopeType = String(scopeHint?.scopeType || source?.type || 'user').trim().toLowerCase();
+  const scopeId = String(
+    scopeHint?.scopeId ||
+    (scopeType === 'group' ? source?.groupId : (scopeType === 'room' ? source?.roomId : '')) ||
+    ''
+  ).trim();
+  if ((scopeType === 'group' || scopeType === 'room') && scopeId) {
+    return `${scopeType}:${scopeId}:user:${uid}`;
+  }
+  return `user:${uid}`;
+}
+
+function hasActiveFlowOwner(env) {
+  const namespace = env?.[ACTIVE_FLOW_OWNER_BINDING];
+  return !!(
+    namespace &&
+    typeof namespace.idFromName === 'function' &&
+    typeof namespace.get === 'function'
+  );
+}
+
+async function callActiveFlowOwner(env, ownerKey, action, payload = {}) {
+  if (!hasActiveFlowOwner(env) || !ownerKey) return null;
+  const namespace = env[ACTIVE_FLOW_OWNER_BINDING];
+  const stub = namespace.get(namespace.idFromName(ownerKey));
+  const response = await stub.fetch('https://active-flow-owner.internal/state', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ownerKey, ...payload })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result?.ok === false) {
+    throw new Error(`active_flow_owner_${action}_failed:${result?.error || response.status}`);
+  }
+  return result;
+}
 
 function buildActiveFlowKey(userId) {
   return `${ACTIVE_FLOW_KEY_PREFIX}${String(userId || '').trim()}`;
 }
 
+function createActiveFlowIdentity(event, flowType = 'reservation') {
+  const commandTs = Number(event?.timestamp || Date.now());
+  const eventId = String(event?.webhookEventId || event?.message?.id || event?.replyToken || '').trim();
+  const randomId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const suffix = eventId || randomId;
+  return {
+    flowId: `${String(flowType || 'flow').trim().toLowerCase()}:${suffix}`,
+    // GAS uses an incrementing numeric generation for booking buttons. Keep
+    // the command identity in flowId and start every new command at version 1.
+    version: '1',
+    commandTs
+  };
+}
+
+function isSameActiveFlow(current, expected) {
+  if (!current || !expected) return false;
+  const expectedFlowId = String(expected.flowId || '').trim();
+  const expectedVersion = String(expected.version || expected.flowVersion || '').trim();
+  if (expectedFlowId && String(current.flowId || '').trim() !== expectedFlowId) return false;
+  if (expectedVersion && String(current.version || current.flowVersion || '').trim() !== expectedVersion) return false;
+  return !!(expectedFlowId || expectedVersion);
+}
+
 function getReservationFlowTtlSecondsByPhase(phase) {
   const p = String(phase || '').trim().toLowerCase();
   if (p === 'await_id' || p === 'confirm_id') return BOOKING_ID_TTL_SECONDS;
-  return BOOKING_SLIP_TTL_SECONDS;
+  return BOOKING_PAYMENT_FLOW_TTL_SECONDS;
+}
+
+function parseFlowExpiresAt(value) {
+  if (value === null || value === undefined || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric) && numeric > 0) {
+    // Accept both epoch seconds and epoch milliseconds at the boundary.
+    return numeric < 1e12 ? Math.trunc(numeric * 1000) : Math.trunc(numeric);
+  }
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function isReservationActiveFlowPhase(phase) {
@@ -1242,24 +1418,59 @@ function isReservationFlowScopeMatchEvent(flow, ev) {
 
 async function setActiveFlow(env, userId, flow) {
   const uid = String(userId || '').trim();
-  if (!uid || !flow || typeof flow !== 'object') return;
+  if (!uid || !flow || typeof flow !== 'object') return null;
   const now = Date.now();
   const phase = String(flow.phase || '').trim().toLowerCase() || 'await_slip';
-  const ttl = Math.max(60, Number(flow.ttlSeconds) || getReservationFlowTtlSecondsByPhase(phase));
+  const ttl = Math.max(1, Number(flow.ttlSeconds) || getReservationFlowTtlSecondsByPhase(phase));
+  const requestedExpiresAt = parseFlowExpiresAt(flow.expiresAt);
+  const expiresAt = requestedExpiresAt || (now + (ttl * 1000));
+  const identity = (flow.flowId && (flow.version || flow.flowVersion))
+    ? {
+      flowId: String(flow.flowId),
+      version: String(flow.version || flow.flowVersion),
+      commandTs: Number(flow.commandTs || now)
+    }
+    : createActiveFlowIdentity(flow.event, flow.flowType || flow.kind || 'reservation');
+  const ownerKey = buildActiveFlowOwnerKey(uid, flow);
   const state = {
     flowType: String(flow.flowType || 'reservation').trim().toLowerCase(),
+    kind: String(flow.kind || flow.flowType || 'reservation').trim().toLowerCase(),
     phase,
     code: flow.code ? String(flow.code).trim().toUpperCase() : '',
     scopeType: String(flow.scopeType || 'user').trim(),
     scopeId: String(flow.scopeId || '').trim(),
     userId: uid,
+    ownerKey,
+    flowId: identity.flowId,
+    version: identity.version,
+    flowVersion: identity.version,
+    commandTs: identity.commandTs,
+    commandEventId: String(flow.commandEventId || flow.event?.webhookEventId || '').trim(),
+    context: flow.context && typeof flow.context === 'object' ? flow.context : {},
     ts: now,
-    expiresAt: now + (ttl * 1000)
+    expiresAt
   };
-  await kvPut(env, buildActiveFlowKey(uid), state, ttl);
+  if (hasActiveFlowOwner(env)) {
+    const result = await callActiveFlowOwner(env, ownerKey, 'replace', { flow: state });
+    return result?.accepted === false ? null : (result?.flow || state);
+  }
+
+  // Local/unit-test fallback. Production is configured with the Durable
+  // Object above; KV remains only a backwards-compatible development path.
+  const current = await kvGet(env, buildActiveFlowKey(uid));
+  if (
+    current &&
+    String(current.commandEventId || '') !== String(state.commandEventId || '') &&
+    Number(current.commandTs || 0) > Number(state.commandTs || 0)
+  ) return null;
+  // KV requires a minimum 60-second storage TTL; expiresAt remains exact and
+  // is enforced on every read. Production ownership uses the Durable Object.
+  const storageTtl = Math.max(60, Math.ceil((expiresAt - now) / 1000));
+  await kvPutStrict(env, buildActiveFlowKey(uid), state, storageTtl);
+  return state;
 }
 
-async function replaceWithReservationFlow(env, event, flow) {
+async function replaceWithReservationFlow(env, event, flow, options = {}) {
   const userId = String(event?.source?.userId || '').trim();
   if (!userId) return null;
 
@@ -1268,20 +1479,37 @@ async function replaceWithReservationFlow(env, event, flow) {
     ? String(event?.source?.groupId || '').trim()
     : (scopeType === 'room' ? String(event?.source?.roomId || '').trim() : '');
 
-  await clearUserWorkflowStatesForEvent(env, event, 'reservation');
-  await setActiveFlow(env, userId, {
+  const activeFlow = await setActiveFlow(env, userId, {
     ...flow,
     flowType: 'reservation',
+    kind: 'reservation',
+    event,
     scopeType,
     scopeId
   });
+  if (!activeFlow) return null;
 
-  return getActiveFlow(env, userId);
+  const cleanupPromise = clearUserWorkflowStatesForEvent(
+    env,
+    event,
+    'reservation',
+    { preserveActiveFlow: true }
+  );
+  if (options?.deferLegacyCleanup) {
+    return { ...activeFlow, cleanupPromise };
+  }
+  await cleanupPromise;
+  return getActiveFlow(env, userId, activeFlow);
 }
 
-async function getActiveFlow(env, userId) {
+async function getActiveFlow(env, userId, scopeHint = null) {
   const uid = String(userId || '').trim();
   if (!uid) return null;
+  const ownerKey = buildActiveFlowOwnerKey(uid, scopeHint);
+  if (hasActiveFlowOwner(env)) {
+    const result = await callActiveFlowOwner(env, ownerKey, 'get');
+    return result?.flow || null;
+  }
   const key = buildActiveFlowKey(uid);
   const flow = await kvGet(env, key);
   if (!flow) return null;
@@ -1293,10 +1521,186 @@ async function getActiveFlow(env, userId) {
   return flow;
 }
 
-async function clearActiveFlow(env, userId) {
+async function clearActiveFlow(env, userId, scopeHint = null) {
   const uid = String(userId || '').trim();
   if (!uid) return;
+  const ownerKey = buildActiveFlowOwnerKey(uid, scopeHint);
+  if (hasActiveFlowOwner(env)) {
+    await callActiveFlowOwner(env, ownerKey, 'clear');
+    return;
+  }
   await kvDel(env, buildActiveFlowKey(uid));
+}
+
+async function updateActiveFlowIfCurrent(env, userId, expected, patch = {}) {
+  const uid = String(userId || '').trim();
+  const ownerKey = buildActiveFlowOwnerKey(uid, expected);
+  if (hasActiveFlowOwner(env)) {
+    const now = Date.now();
+    const ttl = Math.max(
+      1,
+      Number(patch.ttlSeconds) || getReservationFlowTtlSecondsByPhase(patch.phase || expected?.phase)
+    );
+    const requestedExpiresAt = parseFlowExpiresAt(patch.expiresAt);
+    const expiresAt = requestedExpiresAt || (now + (ttl * 1000));
+    const result = await callActiveFlowOwner(env, ownerKey, 'updateIfCurrent', {
+      expected: {
+        flowId: String(expected?.flowId || ''),
+        version: String(expected?.version || expected?.flowVersion || '')
+      },
+      patch: {
+        ...patch,
+        version: String(patch.version || patch.flowVersion || (
+          patch.preserveVersion
+            ? expected?.version
+            : String(Math.max(1, Number(expected?.version || 1)) + 1)
+        )),
+        flowVersion: String(patch.version || patch.flowVersion || (
+          patch.preserveVersion
+            ? expected?.version
+            : String(Math.max(1, Number(expected?.version || 1)) + 1)
+        )),
+        ts: now,
+        expiresAt
+      }
+    });
+    return result?.updated ? (result.flow || null) : null;
+  }
+
+  const current = await getActiveFlow(env, uid, expected);
+  if (!isSameActiveFlow(current, expected)) return null;
+  return setActiveFlow(env, userId, {
+    ...current,
+    ...patch,
+    flowId: current.flowId,
+    version: String(patch.version || patch.flowVersion || (
+      patch.preserveVersion
+        ? current.version
+        : String(Math.max(1, Number(current.version || 1)) + 1)
+    )),
+    commandTs: current.commandTs,
+    ttlSeconds: patch.ttlSeconds || getReservationFlowTtlSecondsByPhase(patch.phase || current.phase)
+  });
+}
+
+async function clearActiveFlowIfCurrent(env, userId, expected) {
+  const uid = String(userId || '').trim();
+  const ownerKey = buildActiveFlowOwnerKey(uid, expected);
+  if (hasActiveFlowOwner(env)) {
+    const result = await callActiveFlowOwner(env, ownerKey, 'clearIfCurrent', {
+      expected: {
+        flowId: String(expected?.flowId || ''),
+        version: String(expected?.version || expected?.flowVersion || '')
+      }
+    });
+    return !!result?.cleared;
+  }
+  const current = await getActiveFlow(env, userId, expected);
+  if (!isSameActiveFlow(current, expected)) return false;
+  await clearActiveFlow(env, userId, expected);
+  return true;
+}
+
+function buildReservationForwardPayload(event, flow) {
+  const version = String(flow?.version || flow?.flowVersion || '').trim();
+  const code = String(flow?.code || '').trim().toUpperCase();
+  const phase = String(flow?.phase || '').trim().toLowerCase();
+  const lineUserId = String(event?.source?.userId || flow?.userId || '').trim();
+  const metadata = {
+    contract: ACTIVE_FLOW_CONTRACT_VERSION,
+    flowType: 'reservation',
+    kind: 'reservation',
+    flowId: String(flow?.flowId || '').trim(),
+    flowVersion: version,
+    version,
+    phase,
+    flowPhase: phase,
+    lineUserId,
+    bookingCode: code,
+    reservationId: code,
+    webhookEventId: String(event?.webhookEventId || '').trim(),
+    messageId: String(event?.message?.id || '').trim()
+  };
+  const forwardedEvent = {
+    ...event,
+    // GAS forwarded-event handlers consume event-local metadata. Keeping the
+    // same fields at the request root preserves compatibility with admin APIs.
+    reservationFlow: metadata,
+    workerFlow: metadata,
+    flowId: metadata.flowId,
+    flowVersion: metadata.flowVersion,
+    version: metadata.version,
+    phase: metadata.phase,
+    bookingCode: metadata.bookingCode,
+    reservationId: metadata.reservationId
+  };
+  return {
+    events: [forwardedEvent],
+    reservationFlow: metadata,
+    flowId: metadata.flowId,
+    flowVersion: version,
+    version,
+    phase,
+    lineUserId,
+    bookingCode: code,
+    reservationId: code,
+    webhookEventId: metadata.webhookEventId,
+    messageId: metadata.messageId
+  };
+}
+
+function getReservationFlowAck(data) {
+  const ack = data?.reservationFlow && typeof data.reservationFlow === 'object'
+    ? data.reservationFlow
+    : data;
+  if (!ack || typeof ack !== 'object') return null;
+  const phase = String(ack.flowPhase || ack.phase || '').trim().toLowerCase();
+  const flowExpiresAt = parseFlowExpiresAt(ack.flowExpiresAtMs || ack.flowExpiresAt || ack.expiresAt);
+  const expiredByAbsoluteDeadline = flowExpiresAt > 0 && flowExpiresAt <= Date.now();
+  const clearActiveFlow = ack.clearActiveFlow === true ||
+    String(ack.clearActiveFlow || '').trim().toLowerCase() === 'true' ||
+    expiredByAbsoluteDeadline;
+  const terminal = RESERVATION_TERMINAL_FLOW_PHASES.has(phase) || clearActiveFlow;
+  if (!isReservationActiveFlowPhase(phase) && !terminal) return null;
+  const ttlHint = Number(ack.flowTtlSeconds);
+  const ttlSeconds = flowExpiresAt > Date.now()
+    ? Math.max(1, Math.ceil((flowExpiresAt - Date.now()) / 1000))
+    : (Number.isFinite(ttlHint) && ttlHint > 0
+      ? ttlHint
+      : getReservationFlowTtlSecondsByPhase(phase));
+  return {
+    phase,
+    terminal,
+    clearActiveFlow,
+    outcome: String(ack.outcome || ack.result || ack.status || '').trim().toLowerCase(),
+    flowId: String(ack.flowId || '').trim(),
+    version: String(ack.flowVersion || ack.version || '').trim(),
+    code: String(ack.reservationId || ack.bookingCode || ack.code || '').trim().toUpperCase(),
+    ttlSeconds,
+    expiresAt: flowExpiresAt || 0
+  };
+}
+
+async function syncReservationFlowFromGasAck(env, userId, expected, data, fallbackPhase = '') {
+  if (!userId || !expected) return null;
+  const ack = getReservationFlowAck(data);
+  // Phase inference from HTTP success was the source of state loss. A booking
+  // transition is accepted only when GAS returns its structured flow result.
+  if (!ack) return null;
+  const phase = ack.phase || String(fallbackPhase || '').trim().toLowerCase();
+  if (ack.terminal) return null;
+  if (!isReservationActiveFlowPhase(phase)) return null;
+  if (ack?.flowId && ack.flowId !== String(expected.flowId || '')) return null;
+  if (!ack?.flowId || !ack?.version) return null;
+  if (ack?.code && expected?.code && ack.code !== String(expected.code).trim().toUpperCase()) return null;
+  return updateActiveFlowIfCurrent(env, userId, expected, {
+    phase,
+    code: ack?.code || expected.code || '',
+    version: ack?.version || expected.version,
+    preserveVersion: !ack?.version,
+    ttlSeconds: ack?.ttlSeconds || getReservationFlowTtlSecondsByPhase(phase),
+    expiresAt: ack?.expiresAt || undefined
+  });
 }
 
 const COMMAND_INVISIBLE_CHAR_RE = /[\u200B-\u200D\u2060\uFEFF\u202A-\u202E\u2066-\u2069]/g;
@@ -1304,6 +1708,9 @@ const COMMAND_INVISIBLE_CHAR_RE = /[\u200B-\u200D\u2060\uFEFF\u202A-\u202E\u2066
 function normalizeCommandText(text) {
   return String(text || '')
     .normalize('NFKC')
+    // NFKC decomposes Thai SARA AM (ำ) into NIKHAHIT + SARA AA. Recompose it
+    // so normalized input still matches the Thai command literals below.
+    .replace(/\u0E4D\u0E32/g, '\u0E33')
     .replace(COMMAND_INVISIBLE_CHAR_RE, '')
     .replace(/\u00A0/g, ' ')
     .trim();
@@ -1975,7 +2382,7 @@ function parseKeyRent(textRaw) {
 
 // Legacy "key A101 20" parser for forgot-key flow
 function parseKeyKeyword(text) {
-  const raw = (text || '').trim();
+  const raw = normalizeCommandText(text);
   if (!raw) return null;
   if (!/^(คีย์|key)/i.test(raw)) return null;
 
@@ -2147,6 +2554,10 @@ function shouldTextStateConsumeInput(stateType, text, commandRoute = null) {
  * ========================= */
 function hasKV(env) { return !!(env && env.KV && typeof env.KV.get === 'function'); }
 async function kvGet(env, k) { try { if (!hasKV(env)) return null; return await env.KV.get(k, 'json'); } catch (_) { return null; } }
+async function kvPutStrict(env, k, v, ttlSeconds) {
+  if (!hasKV(env)) throw new Error('missing_kv_binding');
+  await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 });
+}
 async function kvPut(env, k, v, ttlSeconds) { try { if (!hasKV(env)) return; await env.KV.put(k, JSON.stringify(v), { expirationTtl: ttlSeconds || 7200 }); } catch (_) { /* no-op */ } }
 async function kvDel(env, k) { try { if (!hasKV(env)) return; await env.KV.delete(k); } catch (_) { /* no-op */ } }
 
@@ -2302,7 +2713,7 @@ function getReservationGas(env) {
 }
 
 function getReservationAdminKey(env) {
-  return env.ADMIN_API_KEY || '';
+  return String(env?.ADMIN_API_KEY || '').trim();
 }
 
 function getWorkerForwardSecret(env) {
@@ -2515,16 +2926,16 @@ async function reservationAdminCallWithAuthGuard(env, action, payload) {
   return res;
 }
 
-async function forwardToSpecificGas(env, gasUrl, body) {
+async function forwardToSpecificGasResult(env, gasUrl, body) {
   const secret = getWorkerForwardSecret(env);
   const payload = { ...body, workerSecret: secret };
 
   if (!gasUrl || !secret) {
     console.error('forwardToSpecificGas: missing config', { hasUrl: !!gasUrl, hasSecret: !!secret });
-    return false;
+    return { ok: false, status: 0, data: {}, text: '', error: 'missing_config' };
   }
 
-  let ok = false, status = 0, text = '';
+  let ok = false, status = 0, text = '', data = {};
   try {
     const bodyString = JSON.stringify(payload);
     const res = await fetchWithRedirect(gasUrl, {
@@ -2539,7 +2950,8 @@ async function forwardToSpecificGas(env, gasUrl, body) {
     const ct = (res.headers.get('content-type') || '').toLowerCase();
     if (ct.includes('application/json')) {
       const j = await res.json().catch(() => ({}));
-      ok = Object.prototype.hasOwnProperty.call(j, 'ok') ? !!j.ok : res.ok;
+      data = j;
+      ok = res.ok && (Object.prototype.hasOwnProperty.call(j, 'ok') ? !!j.ok : true);
       text = JSON.stringify(j);
     } else {
       text = await res.text();
@@ -2549,7 +2961,12 @@ async function forwardToSpecificGas(env, gasUrl, body) {
     console.error('forwardToSpecificGas error', String(e));
   }
   console.log('forwardToSpecificGas result', { url: (new URL(gasUrl)).host, status, ok, text: ('' + text).slice(0, 200) });
-  return ok;
+  return { ok, status, data, text };
+}
+
+async function forwardToSpecificGas(env, gasUrl, body) {
+  const result = await forwardToSpecificGasResult(env, gasUrl, body);
+  return !!result.ok;
 }
 
 /** Forward any payload to GAS with header+body secret. Returns boolean ok. */
@@ -2646,6 +3063,140 @@ async function handleMoveoutPostback(env, event, data) {
   return false;
 }
 
+/**
+ * Strongly-consistent owner for the latest command in one conversation scope.
+ * Every mutation is serialized in one Durable Object, so an async callback
+ * from an older command cannot clear or overwrite the latest flow.
+ */
+export class ActiveFlowOwner {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
+
+  json(body, status = 200) {
+    return new Response(JSON.stringify(body), {
+      status,
+      headers: { 'Content-Type': 'application/json; charset=utf-8' }
+    });
+  }
+
+  async readCurrent(storage = this.state.storage) {
+    const current = await storage.get('flow');
+    if (!current) return null;
+    const expiresAt = Number(current.expiresAt || 0);
+    if (expiresAt && expiresAt <= Date.now()) {
+      await storage.delete('flow');
+      return null;
+    }
+    return current;
+  }
+
+  async fetch(request) {
+    if (request.method !== 'POST') return this.json({ ok: false, error: 'method_not_allowed' }, 405);
+    let body = {};
+    try {
+      body = await request.json();
+    } catch (_) {
+      return this.json({ ok: false, error: 'invalid_json' }, 400);
+    }
+
+    const action = String(body?.action || '').trim();
+    try {
+      if (action === 'get') {
+        return this.json({ ok: true, flow: await this.readCurrent() });
+      }
+
+      if (action === 'replace') {
+        const incoming = body?.flow;
+        if (!incoming?.flowId || !incoming?.version) {
+          return this.json({ ok: false, error: 'invalid_flow' }, 400);
+        }
+        const result = await this.state.storage.transaction(async (txn) => {
+          const current = await this.readCurrent(txn);
+          const sameEvent = !!(
+            current?.commandEventId && incoming?.commandEventId &&
+            String(current.commandEventId) === String(incoming.commandEventId)
+          );
+          const sameIdentity = isSameActiveFlow(current, incoming);
+          if (sameEvent || sameIdentity) {
+            return { accepted: true, idempotent: true, flow: current };
+          }
+          if (current && Number(current.commandTs || 0) > Number(incoming.commandTs || 0)) {
+            return { accepted: false, stale: true, flow: current };
+          }
+          await txn.put('flow', incoming);
+          return { accepted: true, idempotent: false, flow: incoming };
+        });
+        const expiresAt = Number(result?.flow?.expiresAt || 0);
+        if (result?.accepted && expiresAt > Date.now()) {
+          await this.state.storage.setAlarm(expiresAt).catch(() => {});
+        }
+        return this.json({ ok: true, ...result });
+      }
+
+      if (action === 'updateIfCurrent') {
+        const expected = body?.expected || {};
+        const patch = body?.patch || {};
+        const result = await this.state.storage.transaction(async (txn) => {
+          const current = await this.readCurrent(txn);
+          if (!isSameActiveFlow(current, expected)) {
+            return { updated: false, flow: current };
+          }
+          const next = {
+            ...current,
+            ...patch,
+            ownerKey: current.ownerKey,
+            userId: current.userId,
+            flowId: current.flowId,
+            commandTs: current.commandTs,
+            commandEventId: current.commandEventId
+          };
+          await txn.put('flow', next);
+          return { updated: true, flow: next };
+        });
+        const expiresAt = Number(result?.flow?.expiresAt || 0);
+        if (result?.updated && expiresAt > Date.now()) {
+          await this.state.storage.setAlarm(expiresAt).catch(() => {});
+        }
+        return this.json({ ok: true, ...result });
+      }
+
+      if (action === 'clearIfCurrent') {
+        const expected = body?.expected || {};
+        const result = await this.state.storage.transaction(async (txn) => {
+          const current = await this.readCurrent(txn);
+          if (!isSameActiveFlow(current, expected)) {
+            return { cleared: false, flow: current };
+          }
+          await txn.delete('flow');
+          return { cleared: true, flow: null };
+        });
+        if (result.cleared) await this.state.storage.deleteAlarm().catch(() => {});
+        return this.json({ ok: true, ...result });
+      }
+
+      if (action === 'clear') {
+        await this.state.storage.delete('flow');
+        await this.state.storage.deleteAlarm().catch(() => {});
+        return this.json({ ok: true, cleared: true, flow: null });
+      }
+
+      return this.json({ ok: false, error: 'unknown_action' }, 400);
+    } catch (err) {
+      console.error('active_flow_owner_error', { action, error: String(err?.message || err) });
+      return this.json({ ok: false, error: 'storage_failure' }, 500);
+    }
+  }
+
+  async alarm() {
+    const current = await this.readCurrent();
+    if (current?.expiresAt && Number(current.expiresAt) > Date.now()) {
+      await this.state.storage.setAlarm(Number(current.expiresAt));
+    }
+  }
+}
+
 /* =========================
  * 4) Main Worker Entrypoint
  * ========================= */
@@ -2693,6 +3244,25 @@ export default {
       return new Response(bodyText, {
         status: res.status,
         headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
+      });
+    }
+
+    if (request.method === 'GET' && url.pathname === '/health') {
+      const durableOwnerConfigured = hasActiveFlowOwner(env);
+      const reservationGasConfigured = !!getReservationGas(env);
+      return new Response(JSON.stringify({
+        ok: durableOwnerConfigured && reservationGasConfigured,
+        service: 'fragrant-term-4318',
+        bookingFlowContract: ACTIVE_FLOW_CONTRACT_VERSION,
+        activeFlowVersioned: durableOwnerConfigured,
+        activeFlowStorage: durableOwnerConfigured ? 'durable-object' : 'missing',
+        reservationGasConfigured,
+        claimedImageSingleRoute: true,
+        healthSignatureRequired: false,
+        lineWebhookSignatureRequired: true
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json; charset=utf-8' }
       });
     }
 
@@ -3326,23 +3896,53 @@ export default {
             const chatId = getChatId(ev);
             const codeHint = String(data.code || data.bookingCode || '').trim();
             const flowUserId = String(ev?.source?.userId || '').trim();
-            const currentFlow = flowUserId ? await getActiveFlow(env, flowUserId) : null;
+            let currentFlow = flowUserId ? await getActiveFlow(env, flowUserId, ev) : null;
+            const buttonFlowId = String(data.flowId || data.flowID || data.flowid || '').trim();
+            const buttonVersion = String(data.flowVersion || data.version || '').trim();
+            const currentKind = String(currentFlow?.kind || currentFlow?.flowType || '').trim().toLowerCase();
+
+            if (
+              (buttonFlowId || buttonVersion) &&
+              !isSameActiveFlow(currentFlow, { flowId: buttonFlowId, version: buttonVersion })
+            ) {
+              await errorReplyOrPush(env, replyToken, chatId, 'ปุ่มนี้เป็นขั้นตอนเก่า กรุณาพิมพ์รหัสจองอีกครั้งค่ะ');
+              continue;
+            }
+            if (currentFlow && currentKind !== 'reservation') {
+              await errorReplyOrPush(env, replyToken, chatId, 'ตอนนี้กำลังทำรายการอื่นอยู่ หากต้องการกลับมาจอง กรุณาพิมพ์รหัส #MM อีกครั้งค่ะ');
+              continue;
+            }
+
             const normalizedCode = codeHint
               ? extractBookingCode(codeHint) || String(codeHint).trim().toUpperCase()
               : String(currentFlow?.code || '').trim().toUpperCase();
-            if (flowUserId) {
-              if (act === 'id_yes') {
-                await clearActiveFlow(env, flowUserId);
-              } else {
-                const nextPhase = (act === 'confirm' || act === 'booking_confirm')
-                  ? 'await_slip'
-                  : (act === 'slip_yes' ? 'await_id' : (act === 'slip_no' ? 'await_slip' : 'await_id'));
-                await replaceWithReservationFlow(env, ev, {
-                  phase: nextPhase,
-                  code: normalizedCode || ''
-                });
-              }
+            if (
+              currentFlow?.code && normalizedCode &&
+              String(currentFlow.code).toUpperCase() !== normalizedCode
+            ) {
+              await errorReplyOrPush(env, replyToken, chatId, 'ปุ่มนี้ไม่ตรงกับรหัสจองล่าสุด กรุณาพิมพ์รหัสจองอีกครั้งค่ะ');
+              continue;
             }
+
+            const expectedFlow = currentFlow;
+            const resumePhase = (act === 'confirm' || act === 'booking_confirm')
+              ? 'await_confirm'
+              : (act === 'slip_yes' || act === 'slip_no' ? 'confirm_slip' : 'confirm_id');
+            if (
+              expectedFlow &&
+              String(expectedFlow.phase || '').trim().toLowerCase() !== resumePhase
+            ) {
+              await errorReplyOrPush(env, replyToken, chatId, 'ปุ่มนี้ไม่ตรงกับขั้นตอนล่าสุด กรุณาทำตามปุ่มล่าสุดในแชตค่ะ');
+              continue;
+            }
+            const forwardFlow = expectedFlow || {
+              flowId: buttonFlowId,
+              version: buttonVersion,
+              flowVersion: buttonVersion,
+              phase: resumePhase,
+              code: normalizedCode,
+              userId: flowUserId
+            };
             const ackMsg = (act === 'id_yes' || act === 'id_no')
               ? 'กำลังประมวลผลค่ะ โปรดรอสักครู่'
               : (codeHint
@@ -3355,7 +3955,98 @@ export default {
             } else if (chatId) {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
             }
-            ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
+            ctx.waitUntil((async () => {
+              const gasResult = await forwardToSpecificGasResult(
+                env,
+                resvUrl,
+                buildReservationForwardPayload(ev, forwardFlow)
+              );
+              if (!gasResult.ok) {
+                if (chatId) {
+                  await safeLinePushText(
+                    env.LINE_ACCESS_TOKEN,
+                    chatId,
+                    'ระบบการจองยังไม่ตอบรับ กรุณากดปุ่มอีกครั้งค่ะ',
+                    'reservation_postback_failure_push_failed'
+                  );
+                }
+                return;
+              }
+              if (!flowUserId) return;
+              const gasAck = getReservationFlowAck(gasResult.data);
+              if (expectedFlow) {
+                const sameAckIdentity = !!(
+                  gasAck?.flowId && gasAck?.version &&
+                  gasAck.flowId === String(expectedFlow.flowId || '') &&
+                  (!gasAck.code || !expectedFlow.code || gasAck.code === String(expectedFlow.code).trim().toUpperCase())
+                );
+                if (!sameAckIdentity) {
+                  if (chatId) {
+                    await safeLinePushText(
+                      env.LINE_ACCESS_TOKEN,
+                      chatId,
+                      'ระบบการจองยังไม่ยืนยันขั้นตอนนี้ กรุณากดปุ่มอีกครั้งค่ะ',
+                      'reservation_postback_missing_ack_push_failed'
+                    );
+                  }
+                  return;
+                }
+
+                if (gasAck.clearActiveFlow) {
+                  await clearActiveFlowIfCurrent(env, flowUserId, expectedFlow);
+                  return;
+                }
+
+                if (gasAck.terminal) {
+                  const acceptedOutcomes = new Set(['accepted', 'completed', 'done', 'success', 'succeeded']);
+                  if (act === 'id_yes' && acceptedOutcomes.has(gasAck.outcome)) {
+                    await clearActiveFlowIfCurrent(env, flowUserId, expectedFlow);
+                  } else if (chatId) {
+                    await safeLinePushText(
+                      env.LINE_ACCESS_TOKEN,
+                      chatId,
+                      'ระบบยังไม่ยืนยันว่าขั้นตอนเสร็จสมบูรณ์ กรุณากดปุ่มอีกครั้งค่ะ',
+                      'reservation_terminal_unconfirmed_push_failed'
+                    );
+                  }
+                  return;
+                }
+
+                const synced = await syncReservationFlowFromGasAck(
+                  env,
+                  flowUserId,
+                  expectedFlow,
+                  gasResult.data
+                );
+                if (!synced && chatId) {
+                  await safeLinePushText(
+                    env.LINE_ACCESS_TOKEN,
+                    chatId,
+                    'ขั้นตอนถูกเปลี่ยนแล้ว กรุณาทำตามข้อความล่าสุดในแชตค่ะ',
+                    'reservation_postback_stale_sync_push_failed'
+                  );
+                }
+                return;
+              }
+
+              // Legacy buttons may not carry flow identity. Only recreate a
+              // reservation owner after GAS accepts the action and only while
+              // no newer command has claimed this user.
+              if (await getActiveFlow(env, flowUserId, ev)) return;
+              if (!gasAck?.flowId || !gasAck?.version || gasAck.terminal) return;
+              await setActiveFlow(env, flowUserId, {
+                flowType: 'reservation',
+                kind: 'reservation',
+                phase: gasAck.phase,
+                code: gasAck?.code || normalizedCode || '',
+                event: ev,
+                ...(gasAck?.flowId && gasAck?.version ? {
+                  flowId: gasAck.flowId,
+                  version: gasAck.version
+                } : {}),
+                ttlSeconds: gasAck.ttlSeconds || getReservationFlowTtlSecondsByPhase(gasAck.phase)
+              });
+            })());
             continue;
           }
         }
@@ -4296,11 +4987,27 @@ export default {
       if (ev.type === 'message') {
         const m = ev.message || {};
         const chatId = getChatId(ev);
+        const messageUserId = String(ev?.source?.userId || '').trim();
+        const earlyCanonicalActiveFlow = (m.type === 'image' && messageUserId)
+          ? await getActiveFlow(env, messageUserId, ev)
+          : null;
+        const earlyCanonicalKind = String(
+          earlyCanonicalActiveFlow?.kind || earlyCanonicalActiveFlow?.flowType || ''
+        ).trim().toLowerCase();
+        const canonicalImageOwner = !!(
+          earlyCanonicalActiveFlow &&
+          isReservationFlowScopeMatchEvent(earlyCanonicalActiveFlow, ev) &&
+          (
+            (earlyCanonicalKind === 'reservation' && isReservationActiveFlowPhase(earlyCanonicalActiveFlow.phase)) ||
+            (earlyCanonicalKind === 'key_forgot' && earlyCanonicalActiveFlow.phase === 'await_slip')
+          )
+        );
 
         if (
           m.type === 'image' &&
           ev?.source?.type === 'group' &&
-          chatId
+          chatId &&
+          !canonicalImageOwner
         ) {
           const waitingPhotoKey = getKeyRentWaitingPhotoKey(chatId);
           const waitingPhotoState = await kvGet(env, waitingPhotoKey);
@@ -4356,7 +5063,7 @@ export default {
           }
         }
 
-        if (m.type === 'image' && env.IMAGE_GROUP_ID && chatId === env.IMAGE_GROUP_ID) {
+        if (m.type === 'image' && !canonicalImageOwner && env.IMAGE_GROUP_ID && chatId === env.IMAGE_GROUP_ID) {
           const imagePayload = {
             source: 'line_group_image',
             intent: 'group_image',
@@ -4385,7 +5092,7 @@ export default {
         }
 
         // Dedicated expense group catch-all
-        if (env.EXPENSE_GROUP_ID && chatId === env.EXPENSE_GROUP_ID) {
+        if (env.EXPENSE_GROUP_ID && chatId === env.EXPENSE_GROUP_ID && !(m.type === 'image' && canonicalImageOwner)) {
           const expensePayload = {
             source: 'expense_group',
             intent: 'record_expense',
@@ -4454,6 +5161,23 @@ export default {
               continue;
             }
 
+            const canonicalEvent = withCanonicalTextEvent(ev, bookingCode);
+            const reservationFlow = userId
+              ? await replaceWithReservationFlow(env, canonicalEvent, {
+                phase: 'await_confirm',
+                code: bookingCode,
+                ttlSeconds: BOOKING_PAYMENT_FLOW_TTL_SECONDS
+              }, { deferLegacyCleanup: true })
+              : null;
+            if (userId && !reservationFlow) {
+              console.log('booking_code_stale_redelivery_ignored', {
+                bookingCode,
+                userId,
+                webhookEventId: ev?.webhookEventId || ''
+              });
+              continue;
+            }
+
             const ackMsg = bookingCode
               ? `รับรหัสจอง ${bookingCode} แล้วค่ะ กำลังตรวจสอบให้ทันที`
               : 'รับรหัสจองแล้วค่ะ กำลังตรวจสอบให้ทันที';
@@ -4465,22 +5189,6 @@ export default {
               webhookEventId: ev?.webhookEventId || ''
             });
 
-            const canonicalEvent = withCanonicalTextEvent(ev, bookingCode);
-            const stateSyncPromise = userId
-              ? replaceWithReservationFlow(env, canonicalEvent, {
-                phase: 'await_confirm',
-                code: bookingCode,
-                ttlSeconds: BOOKING_SLIP_TTL_SECONDS
-              }).catch((err) => {
-                console.error('booking_code_state_sync_failed', {
-                  bookingCode,
-                  userId,
-                  chatId,
-                  error: String(err?.message || err)
-                });
-              })
-              : Promise.resolve();
-
             const reservationForwardPromise = (async () => {
               try {
                 console.log('reservation_text_forward_to_gas', {
@@ -4489,13 +5197,51 @@ export default {
                   userId,
                   resvUrl
                 });
-                const forwarded = await forwardToSpecificGas(env, resvUrl, { events: [canonicalEvent] });
-                if (!forwarded) {
+                const gasResult = await forwardToSpecificGasResult(
+                  env,
+                  resvUrl,
+                  buildReservationForwardPayload(canonicalEvent, reservationFlow)
+                );
+                if (gasResult.ok) {
+                  const gasAck = getReservationFlowAck(gasResult.data);
+                  const validAck = !!(
+                    gasAck && !gasAck.terminal &&
+                    gasAck.flowId && gasAck.version &&
+                    gasAck.flowId === String(reservationFlow?.flowId || '') &&
+                    (!gasAck.code || gasAck.code === bookingCode)
+                  );
+                  if (!validAck) {
+                    if (reservationFlow) {
+                      await clearActiveFlowIfCurrent(env, userId, reservationFlow);
+                    }
+                    if (chatId) {
+                      await safeLinePushText(
+                        env.LINE_ACCESS_TOKEN,
+                        chatId,
+                        `ระบบยังไม่ยืนยันรหัสจอง ${bookingCode} กรุณาตรวจสอบรหัสหรือติดต่อแอดมินค่ะ`,
+                        'booking_code_invalid_ack_push_failed'
+                      );
+                    }
+                    return;
+                  }
+                  const synced = await syncReservationFlowFromGasAck(
+                    env,
+                    userId,
+                    reservationFlow,
+                    gasResult.data
+                  );
+                  if (!synced) {
+                    console.log('booking_code_ack_stale_ignored', { bookingCode, userId });
+                  }
+                } else {
                   console.error('booking_code_forward_rejected', {
                     bookingCode,
                     userId,
                     chatId
                   });
+                  if (reservationFlow) {
+                    await clearActiveFlowIfCurrent(env, userId, reservationFlow);
+                  }
                   if (chatId) {
                     await linePushText(
                       env.LINE_ACCESS_TOKEN,
@@ -4514,11 +5260,12 @@ export default {
               }
             })();
 
-            // Preserve the proven booking ownership model: acknowledge at the
-            // edge, then let reservation GAS process immediately while local
-            // user state is replaced independently. Neither task blocks the
-            // other or any older workflow state.
-            ctx.waitUntil(Promise.all([stateSyncPromise, reservationForwardPromise]));
+            // State ownership is durable before acknowledgement. GAS remains
+            // asynchronous so LINE receives its edge acknowledgement quickly.
+            ctx.waitUntil(Promise.allSettled([
+              reservationFlow?.cleanupPromise || Promise.resolve(),
+              reservationForwardPromise
+            ]));
             continue;
           }
 
@@ -4528,11 +5275,30 @@ export default {
             isOwnerGroup: isOwnerGroupChat(env, chatId)
           });
           let clearedForCommand = [];
+          let commandOwner = null;
           if (commandRoute?.statePolicy === TEXT_COMMAND_REPLACE_FLOW) {
+            commandOwner = userId ? await setActiveFlow(env, userId, {
+              flowType: commandRoute.kind,
+              kind: commandRoute.kind,
+              phase: 'starting',
+              event: ev,
+              scopeType: String(ev?.source?.type || '').trim() || 'user',
+              scopeId: String(ev?.source?.groupId || ev?.source?.roomId || '').trim(),
+              ttlSeconds: PENALTY_FLOW_TTL_SECONDS
+            }) : null;
+            if (userId && !commandOwner) {
+              console.log('stale_text_command_ignored', {
+                kind: commandRoute.kind,
+                userId,
+                webhookEventId: ev?.webhookEventId || ''
+              });
+              continue;
+            }
             clearedForCommand = await clearUserWorkflowStatesForEvent(
               env,
               ev,
-              `text_command:${commandRoute.kind}`
+              `text_command:${commandRoute.kind}`,
+              { preserveActiveFlow: true }
             );
           }
           if (commandRoute) {
@@ -4595,7 +5361,7 @@ export default {
 
           const checkinRoomCode = parseCheckinCommand(textIn);
           if (checkinRoomCode) {
-            await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRoomCode);
+            await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRoomCode, commandOwner);
             continue;
           }
 
@@ -4803,10 +5569,10 @@ export default {
               notifyN8nTenantIdChange(env, payload).catch((err) => console.error('tenant change notify failed', err))
             );
           };
-          const armOtherPaymentSlipFlow = (reasonText, options = {}) => {
+          const armOtherPaymentSlipFlow = async (reasonText, options = {}) => {
             const normalizedReason = normalizePenaltyReason(reasonText || '');
             const roomId = String(options?.roomId || '').trim().toUpperCase();
-            const flow = {
+            const penaltyContext = {
               ts: Date.now(),
               chatId,
               userId,
@@ -4815,17 +5581,66 @@ export default {
               ...((normalizedReason === 'CHECKOUT' || normalizedReason === 'CHECKOUT2')
                 ? { categories: normalizedReason }
                 : {}),
-              ...(roomId ? { roomId, room: roomId } : {})
+              ...(roomId ? { roomId, room: roomId } : {}),
+              ...(options?.building ? { building: String(options.building).trim().toUpperCase() } : {}),
+              ...(options?.amount != null ? { amount: Number(options.amount) } : {})
+            };
+            const activeFlow = (normalizedReason === 'KEY_FORGOT' && userId)
+              ? (commandOwner
+                ? await updateActiveFlowIfCurrent(env, userId, commandOwner, {
+                  flowType: 'key_forgot',
+                  kind: 'key_forgot',
+                  phase: 'await_slip',
+                  context: { penaltyFlow: penaltyContext },
+                  preserveVersion: true,
+                  ttlSeconds: PENALTY_FLOW_TTL_SECONDS
+                })
+                : await setActiveFlow(env, userId, {
+                  flowType: 'key_forgot',
+                  kind: 'key_forgot',
+                  phase: 'await_slip',
+                  event: ev,
+                  scopeType: String(ev?.source?.type || '').trim() || 'user',
+                  scopeId: String(ev?.source?.groupId || ev?.source?.roomId || '').trim(),
+                  ttlSeconds: PENALTY_FLOW_TTL_SECONDS,
+                  context: { penaltyFlow: penaltyContext }
+                }))
+              : null;
+            const flow = {
+              ...penaltyContext,
+              ...(activeFlow ? {
+                flowId: activeFlow.flowId,
+                version: activeFlow.version,
+                flowVersion: activeFlow.version
+              } : {})
             };
             const checkout2GroupKey = (normalizedReason === 'CHECKOUT' || normalizedReason === 'CHECKOUT2')
               ? getCheckout2GroupWaitingSlipKey(ev)
               : '';
-            return Promise.all([
-              kvPut(env, penaltyKey, flow, PENALTY_FLOW_TTL_SECONDS),
-              checkout2GroupKey
-                ? kvPut(env, checkout2GroupKey, flow, PENALTY_FLOW_TTL_SECONDS)
-                : Promise.resolve()
-            ]);
+            const mirrorKeys = [penaltyKey, checkout2GroupKey].filter(Boolean);
+            if (normalizedReason === 'KEY_FORGOT' && activeFlow) {
+              const mirrorResults = await Promise.allSettled(
+                mirrorKeys.map((key) => kvPutStrict(env, key, flow, PENALTY_FLOW_TTL_SECONDS))
+              );
+              const failedMirrors = mirrorResults.flatMap((result, index) => (
+                result.status === 'rejected'
+                  ? [{ key: mirrorKeys[index], error: String(result.reason?.message || result.reason) }]
+                  : []
+              ));
+              if (failedMirrors.length) {
+                console.warn('key_forgot_kv_mirror_partial_failure', {
+                  userId,
+                  chatId,
+                  flowId: activeFlow.flowId,
+                  failedMirrors
+                });
+              }
+            } else {
+              await Promise.all(
+                mirrorKeys.map((key) => kvPut(env, key, flow, PENALTY_FLOW_TTL_SECONDS))
+              );
+            }
+            return { flow, activeFlow, penaltyKey, checkout2GroupKey };
           };
           const startKeyRentPayment = async (keyRent, rawTextOverride) => {
             const keyRentFlowKey = stateKey + ':keyrent_flow';
@@ -4849,6 +5664,11 @@ export default {
           };
           const submitKeyForgot = async (keyForgotPayload, rawTextOverride, penaltyReasonOverride) => {
             const timestamp = new Date().toISOString();
+            const armed = await armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT', {
+              roomId: `${keyForgotPayload.building || ''}${keyForgotPayload.room || ''}`,
+              building: keyForgotPayload.building,
+              amount: keyForgotPayload.amount
+            });
             const payload = {
               ...keyForgotPayload,
               text: rawTextOverride || textIn,
@@ -4856,16 +5676,30 @@ export default {
               chatId: chatId || null,
               sourceType: ev?.source?.type || null,
               messageId: m?.id || null,
+              flowId: armed?.activeFlow?.flowId || '',
+              flowVersion: armed?.activeFlow?.version || '',
+              version: armed?.activeFlow?.version || '',
               receivedAt: timestamp
             };
             ctx.waitUntil(
-              notifyN8nKeyForgotWebhook(env, payload).catch((err) => console.error('key forgot webhook failed', err))
+              (async () => {
+                const ok = await notifyN8nKeyForgotWebhook(env, payload);
+                if (!ok && chatId) {
+                  const current = userId ? await getActiveFlow(env, userId, armed?.activeFlow || ev) : null;
+                  if (!armed?.activeFlow || isSameActiveFlow(current, armed.activeFlow)) {
+                    await safeLinePushText(
+                      env.LINE_ACCESS_TOKEN,
+                      chatId,
+                      'รับข้อมูลลืมกุญแจแล้ว แต่ระบบแจ้งเจ้าหน้าที่ยังไม่ตอบ กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
+                      'key_forgot_webhook_failure_push_failed'
+                    );
+                  }
+                }
+              })().catch((err) => console.error('key forgot webhook failed', err))
             );
-            await clearUserWorkflowStatesForEvent(env, ev, 'key_forgot');
-            await armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT');
 
             const ackText = [
-              `ส่งข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} ให้เจ้าหน้าที่แล้วค่ะ`,
+              `รับข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} แล้วค่ะ กำลังส่งให้เจ้าหน้าที่`,
               'หากชำระแล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ'
             ].join('\n');
             await replyOrPushText(env, replyToken, chatId, ackText, 'key_forgot_ack_failed');
@@ -4930,9 +5764,7 @@ export default {
           }
 
           if (presetOtherPaymentReason) {
-            if (presetOtherPaymentReason === 'KEY_FORGOT') {
-              await clearUserWorkflowStatesForEvent(env, ev, 'key_forgot');
-            } else {
+            if (presetOtherPaymentReason !== 'KEY_FORGOT') {
               await clearPaymentStatesForEvent(env, ev);
             }
             await armOtherPaymentSlipFlow(presetOtherPaymentReason, {
@@ -5640,6 +6472,104 @@ export default {
         if (m.type === 'image') {
           const chatId = getChatId(ev);
           const imageUserId = String(ev?.source?.userId || '').trim();
+          const canonicalActiveFlow = earlyCanonicalActiveFlow || (imageUserId ? await getActiveFlow(env, imageUserId, ev) : null);
+
+          // A recognized latest command is authoritative. Claimed images go to
+          // exactly one backend and never reach AUTO_IMG or a stale legacy flow.
+          if (
+            canonicalActiveFlow &&
+            isReservationFlowScopeMatchEvent(canonicalActiveFlow, ev)
+          ) {
+            const activeKind = String(
+              canonicalActiveFlow.kind || canonicalActiveFlow.flowType || ''
+            ).trim().toLowerCase();
+
+            if (activeKind === 'reservation' && isReservationActiveFlowPhase(canonicalActiveFlow.phase)) {
+              const resvUrl = getReservationGas(env);
+              if (!resvUrl) {
+                await errorReplyOrPush(env, replyToken, chatId, 'Reservation image receiver is not configured. Please contact admin.');
+                continue;
+              }
+
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'รับไฟล์แล้ว กำลังตรวจสอบ…',
+                'reservation_image_ack_failed'
+              );
+              ctx.waitUntil((async () => {
+                const gasResult = await forwardToSpecificGasResult(
+                  env,
+                  resvUrl,
+                  buildReservationForwardPayload(ev, canonicalActiveFlow)
+                );
+                if (gasResult.ok) {
+                  const gasAck = getReservationFlowAck(gasResult.data);
+                  const sameAckIdentity = !!(
+                    gasAck?.flowId && gasAck?.version &&
+                    gasAck.flowId === String(canonicalActiveFlow.flowId || '') &&
+                    (!gasAck.code || !canonicalActiveFlow.code || gasAck.code === String(canonicalActiveFlow.code).trim().toUpperCase())
+                  );
+                  if (gasAck?.clearActiveFlow && sameAckIdentity) {
+                    await clearActiveFlowIfCurrent(env, imageUserId, canonicalActiveFlow);
+                    return;
+                  }
+                  const validAck = !!(
+                    gasAck && !gasAck.terminal && sameAckIdentity
+                  );
+                  const synced = validAck ? await syncReservationFlowFromGasAck(
+                    env,
+                    imageUserId,
+                    canonicalActiveFlow,
+                    gasResult.data
+                  ) : null;
+                  if (!synced && chatId) {
+                    await safeLinePushText(
+                      env.LINE_ACCESS_TOKEN,
+                      chatId,
+                      'รับไฟล์แล้ว แต่ระบบยังไม่ยืนยันขั้นตอน กรุณาส่งไฟล์อีกครั้งค่ะ',
+                      'reservation_image_invalid_ack_push_failed'
+                    );
+                  }
+                } else if (chatId) {
+                  await safeLinePushText(
+                    env.LINE_ACCESS_TOKEN,
+                    chatId,
+                    'รับไฟล์แล้ว แต่ระบบการจองยังไม่ตอบ กรุณาส่งไฟล์อีกครั้งค่ะ',
+                    'reservation_image_forward_failure_push_failed'
+                  );
+                }
+              })());
+              continue;
+            }
+
+            if (activeKind === 'key_forgot' && canonicalActiveFlow.phase === 'await_slip') {
+              const penaltyKey = `${getStateKey(ev)}:penalty_flow`;
+              const contextPenaltyFlow = canonicalActiveFlow?.context?.penaltyFlow || {};
+              const penaltyFlow = {
+                ts: Date.now(),
+                chatId,
+                userId: imageUserId,
+                type: 'Others_payment',
+                reason: 'KEY_FORGOT',
+                ...contextPenaltyFlow,
+                flowId: canonicalActiveFlow.flowId,
+                version: canonicalActiveFlow.version,
+                flowVersion: canonicalActiveFlow.version
+              };
+              await handlePenaltyPaymentImage(env, ctx, {
+                event: ev,
+                replyToken,
+                chatId,
+                penaltyFlow,
+                penaltyStateKeys: [penaltyKey],
+                activeFlow: canonicalActiveFlow
+              });
+              continue;
+            }
+          }
+
           const checkoutCashFlowKey = getCheckoutCashFlowKey(ev);
           const checkoutCashFlow = await kvGet(env, checkoutCashFlowKey);
           if (isCheckoutCashFlowActive(checkoutCashFlow, CHECKOUT_CASH_WAIT_IMAGE)) {
@@ -5787,14 +6717,22 @@ export default {
           const checkinKeycardStateUserOnlyKey = managerUserId
             ? getCheckinKeycardWaitingPhotoUserKey(managerUserId)
             : '';
-          const checkinKeycardStateResult = await getCheckinKeycardWaitingPhotoState(
-            env,
-            checkinKeycardStateUserKey,
-            checkinKeycardStateGroupKey,
-            checkinKeycardStateUserOnlyKey,
-            groupId,
-            managerUserId
-          );
+          const checkinKeycardStateResult = sourceType === 'group'
+            ? await getCheckinKeycardWaitingPhotoState(
+              env,
+              checkinKeycardStateUserKey,
+              checkinKeycardStateGroupKey,
+              checkinKeycardStateUserOnlyKey,
+              groupId,
+              managerUserId
+            )
+            : {
+              stateFromUser: null,
+              stateFromGroup: null,
+              stateFromUserOnly: null,
+              stateFromMemory: null,
+              state: null
+            };
           const checkinKeycardStateFromUser = checkinKeycardStateResult.stateFromUser;
           const checkinKeycardStateFromGroup = checkinKeycardStateResult.stateFromGroup;
           const checkinKeycardState = checkinKeycardStateResult.state || null;
@@ -5916,264 +6854,42 @@ export default {
             continue;
           }
 
-          // Reservation and generic image handlers are fallbacks. Payment
-          // commands above must get the image without also forwarding it to
-          // reservation automation.
-          const reservationActiveFlow = imageUserId ? await getActiveFlow(env, imageUserId) : null;
-          ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [
-            { type: 'text', text: 'รับไฟล์แล้ว กำลังตรวจสอบ…' }
-          ]).catch(console.error));
+          // No legacy handler claimed the image. A canonical command in a
+          // different phase must block generic OCR; it must never leak a slip
+          // or ID card to AUTO_IMG or Reservation GAS.
+          if (canonicalActiveFlow) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'รูปนี้ไม่ตรงกับขั้นตอนล่าสุด กรุณาทำตามข้อความล่าสุดในแชตค่ะ',
+              'active_flow_unexpected_image_reply_failed'
+            );
+            continue;
+          }
 
           const autoImgUrl = getAutoImgGas(env);
           if (autoImgUrl) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'รับไฟล์แล้ว กำลังตรวจสอบ…',
+              'generic_image_ack_failed'
+            );
             ctx.waitUntil(forwardToSpecificGas(env, autoImgUrl, { events: [ev] }));
+            continue;
           }
 
-          if (
-            reservationActiveFlow &&
-            String(reservationActiveFlow.flowType || '') === 'reservation' &&
-            isReservationActiveFlowPhase(reservationActiveFlow.phase) &&
-            isReservationFlowScopeMatchEvent(reservationActiveFlow, ev)
-          ) {
-            const resvUrl = getReservationGas(env);
-            if (resvUrl) {
-              console.log('reservation_image_forward_by_active_flow', {
-                chatId,
-                userId: imageUserId,
-                phase: reservationActiveFlow.phase,
-                code: reservationActiveFlow.code || '',
-                scopeType: reservationActiveFlow.scopeType || '',
-                scopeId: reservationActiveFlow.scopeId || '',
-                resvUrl
-              });
-              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
-              continue;
-            }
-          }
-
-          // Booking flow: forward booking images directly to reservation GAS (GAS owns slip/ID flow)
-          {
-            const resvUrl = getReservationGas(env);
-            if (resvUrl) {
-              console.log('reservation_image_forward_to_gas', {
-                chatId,
-                userId: ev?.source?.userId || '',
-                messageId: ev?.message?.id || null,
-                resvUrl
-              });
-              ctx.waitUntil(forwardToSpecificGas(env, resvUrl, { events: [ev] }));
-              continue;
-            }
-          }
-
-          console.warn('reservation_image_forward_missing_gas', {
+          await replyOrPushText(
+            env,
+            replyToken,
             chatId,
-            userId: ev?.source?.userId || '',
-            messageId: ev?.message?.id || null
-          });
-          await errorReplyOrPush(env, replyToken, chatId, 'Reservation image receiver is not configured. Please contact admin.');
+            'ตอนนี้ยังไม่ได้อยู่ในขั้นตอนรับรูป หากเป็นการจองกรุณาพิมพ์รหัส เช่น #MM123 ก่อนค่ะ',
+            'unclaimed_image_prompt_failed'
+          );
           continue;
 
-          // Booking flow gates (slip -> ID)
-          const bookingFlowKey = buildBookingFlowKey(ev?.source?.userId, chatId);
-          const bookingFlow = await kvGet(env, bookingFlowKey);
-
-          if (bookingFlow && bookingFlow.phase) {
-            const phase = bookingFlow.phase || 'await_slip';
-            const age = Date.now() - (bookingFlow.ts || 0);
-            const ttlMs = (phase === 'await_id' || phase === 'confirm_id') ? BOOKING_ID_TTL_MS : BOOKING_SLIP_TTL_MS;
-            const expired = age > ttlMs;
-
-            const bookingCode = bookingFlow.code || '#MMxxx';
-            const codeHint = bookingCode.toUpperCase();
-            const retryText = 'หมดเวลาส่งไฟล์แล้ว โปรดติดต่อเจ้าหน้าที่เพื่อดำเนินการต่อ';
-
-            if (expired) {
-              ctx.waitUntil(kvDel(env, bookingFlowKey));
-              const message = phase === 'await_id'
-                ? 'หมดเวลาส่งบัตรแล้ว โปรดติดต่อเจ้าหน้าที่เพื่อดำเนินการต่อ'
-                : retryText;
-              if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: message }]).catch(console.error);
-              } else if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, message).catch(console.error));
-              }
-              continue;
-            }
-
-            if (phase === 'await_slip' || phase === 'confirm_slip') {
-              let handled = false;
-              let uploadError = '';
-              try {
-                const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
-                const resId = bookingCode.replace(/^#/, '');
-                const upload = await reservationAdminCallWithAuthGuard(env, 'reservation_upload_slip', {
-                  reservation_id: resId,
-                  dataUrl
-                });
-                if (upload?.ok) {
-                  handled = true;
-                  const expiresAt = Date.now() + BOOKING_SLIP_TTL_MS;
-                  const nextFlow = { phase: 'confirm_slip', code: bookingCode, ts: Date.now(), expiresAt };
-                  ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_SLIP_TTL_SECONDS));
-
-                  const expireText = formatTimeBangkok(new Date(expiresAt));
-                  const previewLine = upload?.data?.previewUrl ? `ตัวอย่าง: ${upload.data.previewUrl}` : null;
-                  const msg = [
-                    `รับไฟล์สลิปสำหรับ ${bookingCode} แล้ว`,
-                    `ยืนยันว่าเป็นสลิปนี้หรือไม่? (หมดอายุ ${expireText})`,
-                    previewLine,
-                    `ตอบ "ใช่" หรือ "ไม่ใช่" หากต้องการเปลี่ยนไฟล์ ส่งสลิปใหม่แล้วตอบอีกครั้ง`
-                  ].filter(Boolean).join('\n');
-
-                  const confirmMsg = {
-                    type: 'text',
-                    text: msg,
-                    quickReply: {
-                      items: [
-                        { type: 'action', action: { type: 'message', label: 'ใช่', text: 'ใช่' } },
-                        { type: 'action', action: { type: 'message', label: 'ไม่ใช่', text: 'ไม่ใช่' } }
-                      ]
-                    }
-                  };
-
-                  if (chatId) {
-                    ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmMsg]).catch(console.error));
-                  } else if (replyToken) {
-                    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmMsg]).catch(console.error);
-                  }
-                } else {
-                  uploadError = JSON.stringify(upload?.data || {});
-                }
-              } catch (err) {
-                uploadError = String(err);
-                console.error('reservation slip upload failed', err);
-              }
-
-              if (!handled) {
-                const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
-                const isNotFound = uploadError.includes('not_found');
-                const msg = isAuth
-                  ? 'ไม่สามารถบันทึกสลิปได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
-                  : isNotFound
-                    ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
-                    : 'รับไฟล์ไม่สำเร็จ โปรดลองส่งสลิปอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
-                console.log('reservation slip failed', { code: bookingCode, error: uploadError || '(empty)' });
-                await errorReplyOrPush(env, replyToken, chatId, msg);
-                continue;
-              }
-
-              const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
-              const nextFlow = { phase: 'await_id', code: bookingCode, ts: Date.now(), expiresAt };
-              ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
-
-              const expireText = formatTimeBangkok(new Date(expiresAt));
-              const msg = [
-                `รับสลิปจอง ${bookingCode} แล้ว`,
-                `โปรดส่งรูปบัตรภายใน 6 ชม. (หมดอายุ ${expireText})`,
-                `หากสลิปไม่ถูกต้อง ส่งสลิปใหม่ได้ทันทีแล้วพิมพ์รหัสอีกครั้ง`
-              ].join('\n');
-              if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
-              } else if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
-              }
-              continue;
-            }
-
-            if (phase === 'await_id' || phase === 'confirm_id') {
-              let handled = false;
-              let uploadError = '';
-              try {
-                const dataUrl = await fetchLineImageAsDataUrl(env.LINE_ACCESS_TOKEN, m.id);
-                const resId = bookingCode.replace(/^#/, '');
-                const upload = await reservationAdminCallWithAuthGuard(env, 'reservation_upload_id', {
-                  reservation_id: resId,
-                  dataUrl
-                });
-                if (upload?.ok) {
-                  handled = true;
-                  const expiresAt = Date.now() + BOOKING_ID_TTL_MS;
-                  const nextFlow = { phase: 'confirm_id', code: bookingCode, ts: Date.now(), expiresAt };
-                  ctx.waitUntil(kvPut(env, bookingFlowKey, nextFlow, BOOKING_ID_TTL_SECONDS));
-
-                  const expireText = formatTimeBangkok(new Date(expiresAt));
-                  const previewLine = upload?.data?.previewUrl ? `ตัวอย่าง: ${upload.data.previewUrl}` : null;
-                  const msg = [
-                    `รับไฟล์บัตรสำหรับ ${codeHint} แล้ว`,
-                    `ยืนยันว่าเป็นไฟล์นี้หรือไม่? (หมดอายุ ${expireText})`,
-                    previewLine,
-                    `ตอบ "ใช่" หรือ "ไม่ใช่" หากต้องการเปลี่ยนไฟล์ ส่งบัตรใหม่แล้วตอบอีกครั้ง`
-                  ].filter(Boolean).join('\n');
-
-                  const confirmMsg = {
-                    type: 'text',
-                    text: msg,
-                    quickReply: {
-                      items: [
-                        { type: 'action', action: { type: 'message', label: 'ใช่', text: 'ใช่' } },
-                        { type: 'action', action: { type: 'message', label: 'ไม่ใช่', text: 'ไม่ใช่' } }
-                      ]
-                    }
-                  };
-
-                  if (chatId) {
-                    ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, [confirmMsg]).catch(console.error));
-                  } else if (replyToken) {
-                    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [confirmMsg]).catch(console.error);
-                  }
-                } else {
-                  uploadError = JSON.stringify(upload?.data || {});
-                }
-              } catch (err) {
-                uploadError = String(err);
-                console.error('reservation id upload failed', err);
-              }
-
-              if (!handled) {
-                const isAuth = uploadError.includes('unauthorized') || uploadError.includes('reservation_admin_unauthorized');
-                const isNotFound = uploadError.includes('not_found');
-                const msg = isAuth
-                  ? 'ไม่สามารถบันทึกไฟล์บัตรได้ (สิทธิ์ไม่ผ่าน) แจ้งเจ้าหน้าที่ตั้งค่า ADMIN_API_KEY ให้ตรงกันแล้วลองอีกครั้งค่ะ'
-                  : isNotFound
-                    ? `ไม่พบรหัสนี้ในระบบ (#${bookingCode.replace(/^#/, '')}) โปรดตรวจสอบรหัสหรือแจ้งเจ้าหน้าที่`
-                    : 'รับไฟล์บัตรไม่สำเร็จ โปรดลองส่งอีกครั้ง หรือแจ้งเจ้าหน้าที่ช่วยตรวจสอบค่ะ';
-                console.log('reservation id failed', { code: bookingCode, error: uploadError || '(empty)' });
-                await errorReplyOrPush(env, replyToken, chatId, msg);
-                continue;
-              }
-
-              ctx.waitUntil(kvDel(env, bookingFlowKey));
-              const msg = [
-                `รับรูปบัตรสำหรับ ${codeHint} แล้ว กำลังตรวจสอบค่ะ`,
-                `หากต้องการเปลี่ยนไฟล์ ส่งบัตรใหม่ได้ทันทีแล้วพิมพ์รหัสอีกครั้ง`
-              ].join('\n');
-              if (chatId) {
-                ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, msg).catch(console.error));
-              } else if (replyToken) {
-                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: msg }]).catch(console.error);
-              }
-              continue;
-            }
-          }
-
-          // No booking flow active -> prompt user to resend code
-          const noBookingMsg = 'ยังไม่พบรหัสจองสำหรับไฟล์นี้ โปรดพิมพ์รหัส เช่น #MM123 แล้วส่งสลิปอีกครั้ง';
-          if (chatId) {
-            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, noBookingMsg).catch(console.error));
-          } else if (replyToken) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: noBookingMsg }]).catch(console.error);
-          }
-          continue;
-
-          // Not in any known flow
-          const noFlowMsg = 'ตอนนี้ยังไม่ได้อยู่ในสเต็ปใดเลย ต้องการทำขั้นตอนใดครับ? หากเป็นการจองให้พิมพ์รหัส เช่น #MM123';
-          if (replyToken) {
-            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: noFlowMsg }]).catch(console.error);
-          } else if (chatId) {
-            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, noFlowMsg).catch(console.error));
-          }
-          continue;
         }
 
       }
@@ -8737,11 +9453,11 @@ async function notifyN8nKeyForgotWebhook(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
+  const secret = getWorkerForwardSecret(env);
   if (secret) {
     headers['x-worker-secret'] = secret;
   } else {
-    console.warn('notifyN8nKeyForgotWebhook: missing WORKER_SECRET');
+    console.warn('notifyN8nKeyForgotWebhook: missing worker forward secret');
   }
 
   try {
@@ -8829,7 +9545,7 @@ async function Penalty_webhook(env, payload, options = {}) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
+  const secret = getWorkerForwardSecret(env);
   if (secret) {
     headers['x-worker-secret'] = secret;
   }
@@ -8954,10 +9670,12 @@ async function notifyN8nCleaning(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = String(env.WORKER_SECRET || env.MM_WORKER_SECRET || 'test123').trim();
-  if (secret) {
-    headers['x-worker-secret'] = secret;
+  const secret = String(env.WORKER_SECRET || '').trim();
+  if (!secret) {
+    console.warn('notifyN8nCleaning: missing WORKER_SECRET');
+    return false;
   }
+  headers['x-worker-secret'] = secret;
 
   try {
     const res = await fetch(url, {
@@ -9105,6 +9823,17 @@ export const __testables = {
   TEXT_STATE_PAYMENT_IMAGE,
   parseCheckinCommand,
   isCheckinFlowStateActive,
+  ACTIVE_FLOW_CONTRACT_VERSION,
+  BOOKING_PAYMENT_FLOW_TTL_SECONDS,
+  getReservationFlowTtlSecondsByPhase,
+  setActiveFlow,
+  getActiveFlow,
+  updateActiveFlowIfCurrent,
+  clearActiveFlowIfCurrent,
+  isSameActiveFlow,
+  buildReservationForwardPayload,
+  getReservationFlowAck,
+  syncReservationFlowFromGasAck,
   replaceWithReservationFlow,
   clearUserWorkflowStatesForEvent,
   clearUserWorkflowStatesForCheckin,
@@ -9150,6 +9879,8 @@ export const __testables = {
   normalizeLeadAnswer,
   isKeyRentWaitingPhotoStateForUser,
   isCheckinKeycardWaitingPhotoStateForEvent,
+  getCheckinKeycardWaitingPhotoState,
+  handlePenaltyPaymentImage,
   normalizePenaltyReason,
   paymentReasonLabel,
   penaltyFlowPaymentLabel,
