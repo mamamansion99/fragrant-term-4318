@@ -2535,6 +2535,8 @@ async function handleKeyForgotTextCommand(
     }
     onStateReady(true);
 
+    // Legacy n8n contract from 8da308e. Keep this as the unwrapped request
+    // body and preserve the field names; the receiver reads them directly.
     const payload = {
       ...keyForgotPayload,
       text: rawText,

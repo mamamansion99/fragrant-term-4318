@@ -1109,12 +1109,22 @@ describe('Worker routes', () => {
 			expect(returnTiming).toBe('returned');
 			expect(response.status).toBe(200);
 			const keyForgotCall = calls.find((call) => call.url === keyForgotUrl);
-			expect(keyForgotCall?.body).toMatchObject({
+			expect(keyForgotCall?.body).toEqual({
 				building: 'B',
 				room: '410',
 				amount: 20,
-				text: 'key b410 20'
+				text: 'key b410 20',
+				userId,
+				chatId: userId,
+				sourceType: 'user',
+				messageId: 'msg-key-forgot-slow-line',
+				flowId: expect.any(String),
+				flowVersion: expect.any(String),
+				version: expect.any(String),
+				receivedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)
 			});
+			expect(keyForgotCall?.body.flowId).toBeTruthy();
+			expect(keyForgotCall?.body.flowVersion).toBe(keyForgotCall?.body.version);
 			expect(calls.some((call) => call.url.includes('/v2/bot/message/reply'))).toBe(true);
 		} finally {
 			releaseLineReply();
