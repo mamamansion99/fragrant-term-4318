@@ -735,7 +735,7 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckinFlowStateActive(null, now)).toBe(false);
 	});
 
-	it('uses MM_WORKER_SECRET to authenticate checkin webhook requests', () => {
+	it('uses MM_WORKER_SECRET to authenticate checkin keycard webhook requests', () => {
 		expect(__testables.getWorkerForwardSecret({
 			MM_WORKER_SECRET: 'checkin-secret'
 		} as any)).toBe('checkin-secret');
@@ -745,7 +745,7 @@ describe('Worker routes', () => {
 		} as any)).toBe('primary-secret');
 	});
 
-	it('embeds LINE image data in checkin slip payloads', async () => {
+	it('embeds LINE image data in checkin keycard photo payloads', async () => {
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = vi.fn(async () => new Response(
 			new Uint8Array([1, 2, 3]),
@@ -753,10 +753,10 @@ describe('Worker routes', () => {
 		)) as typeof fetch;
 
 		try {
-			const payload = await __testables.enrichLineImagePayload(
+			const payload = await __testables.enrichCheckinKeycardPhotoPayload(
 				{ LINE_ACCESS_TOKEN: 'line-token' } as any,
 				{
-					intent: 'checkin_slip',
+					intent: 'checkin_keycard_photo',
 					imageMessageId: 'image-message-id'
 				}
 			) as Record<string, any>;

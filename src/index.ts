@@ -5726,14 +5726,6 @@ export default {
                   key: checkinFlowKey,
                   roomId: checkinFlowState.roomId
                 });
-                if (chatId) {
-                  await safeLinePushText(
-                    env.LINE_ACCESS_TOKEN,
-                    chatId,
-                    `ส่งสลิปเช็คอินห้อง ${checkinFlowState.roomId} เข้าระบบไม่สำเร็จ กรุณาส่งรูปสลิปอีกครั้งค่ะ`,
-                    'checkin_slip_failure_push_failed'
-                  );
-                }
               })().catch((err) => console.error('checkin slip notify failed', err))
             );
 
@@ -5848,6 +5840,14 @@ export default {
               imageMessageId: ev?.message?.id || null,
               receivedAt: new Date().toISOString()
             };
+
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'รับไฟล์แล้ว กำลังตรวจสอบ…',
+              'checkin_keycard_received_ack_failed'
+            );
 
             ctx.waitUntil(
               handleCheckinKeycardPhotoForward(env, {
@@ -8252,7 +8252,7 @@ function getN8nCheckinKeycardPhotoWebhook(env) {
   return env.N8N_CHECKIN_KEYCARD_PHOTO_URL || DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL;
 }
 
-async function enrichLineImagePayload(env, payload) {
+async function enrichCheckinKeycardPhotoPayload(env, payload) {
   const messageId = String(payload?.imageMessageId || payload?.event?.message?.id || '').trim();
   if (!messageId) {
     return payload;
@@ -8275,11 +8275,7 @@ async function enrichLineImagePayload(env, payload) {
     };
   } catch (err) {
     const error = String(err?.message || err);
-    console.error('LINE image content fetch failed', {
-      intent: payload?.intent || '',
-      messageId,
-      error
-    });
+    console.error('checkin keycard image content fetch failed', { messageId, error });
     return {
       ...payload,
       imageMessageId: messageId,
@@ -8382,7 +8378,7 @@ async function notifyN8nCheckinFlow(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = getWorkerForwardSecret(env);
+  const secret = env.WORKER_SECRET || '';
   if (secret) {
     headers['x-worker-secret'] = secret;
   } else {
@@ -8390,18 +8386,13 @@ async function notifyN8nCheckinFlow(env, payload) {
   }
 
   try {
-    const enrichedPayload = payload?.intent === 'checkin_slip'
-      ? await enrichLineImagePayload(env, payload)
-      : payload;
-    const body = JSON.stringify(enrichedPayload);
+    const body = JSON.stringify(payload);
     console.log('notifyN8nCheckinFlow send', {
       url,
-      intent: enrichedPayload?.intent || '',
-      roomId: enrichedPayload?.roomId || '',
-      hasEvent: !!enrichedPayload?.event,
-      hasImage: !!enrichedPayload?.imageMessageId,
-      hasImageData: !!enrichedPayload?.imageDataUrl,
-      imageFetchError: enrichedPayload?.imageFetchError || ''
+      intent: payload?.intent || '',
+      roomId: payload?.roomId || '',
+      hasEvent: !!payload?.event,
+      hasImage: !!payload?.imageMessageId
     });
     const res = await fetch(url, {
       method: 'POST',
@@ -8437,7 +8428,7 @@ async function notifyN8nCheckinKeycardPhoto(env, payload) {
   }
 
   try {
-    const enrichedPayload = await enrichLineImagePayload(env, payload);
+    const enrichedPayload = await enrichCheckinKeycardPhotoPayload(env, payload);
     const body = JSON.stringify(enrichedPayload);
     console.log('notifyN8nCheckinKeycardPhoto send', {
       url,
@@ -9155,7 +9146,7 @@ export const __testables = {
   getRenewalPostbackWebhookUrl,
   buildMarkPaidForwardPayload,
   getWorkerForwardSecret,
-  enrichLineImagePayload,
+  enrichCheckinKeycardPhotoPayload,
   getPayReviewAcceptWebhookUrl,
   buildPayReviewAcceptForwardPayload,
   getN8nPayRentUrl,
