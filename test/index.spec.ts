@@ -743,6 +743,77 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckinKeycardWaitingPhotoStateForEvent(state, 'C-manager-group', 'U-manager')).toBe(true);
 	});
 
+	it('registers keycard photo work before waiting for the LINE acknowledgement', async () => {
+		const groupId = 'C-keycard-background';
+		const userId = 'U-keycard-background';
+		const n8nUrl = 'https://example.com/checkin-keycard';
+		const state = {
+			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
+			groupId,
+			managerUserId: userId,
+			roomId: 'B308',
+			flowId: 'checkin-B308',
+			ts: Date.now()
+		};
+		let releaseLineReply!: () => void;
+		const pendingLineReply = new Promise<Response>((resolve) => {
+			releaseLineReply = () => resolve(new Response('{}', { status: 200 }));
+		});
+		const calls: string[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			const url = String(input);
+			calls.push(url);
+			if (url.includes('/v2/bot/message/reply')) return pendingLineReply;
+			if (url.includes('/v2/bot/message/') && url.endsWith('/content')) {
+				return new Response(new Uint8Array([1, 2, 3]), {
+					status: 200,
+					headers: { 'content-type': 'image/jpeg' }
+				});
+			}
+			return new Response('{"ok":true}', { status: 200 });
+		});
+		const mockKv = {
+			get: async (key: string) => key.startsWith('checkin:keycard:waiting-photo:') ? state : null,
+			put: async () => undefined,
+			delete: async () => undefined
+		};
+
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message',
+				replyToken: 'reply-keycard-background',
+				webhookEventId: 'evt-keycard-background',
+				timestamp: Date.now(),
+				source: { type: 'group', groupId, userId },
+				message: { type: 'image', id: 'msg-keycard-background' }
+			}]);
+			const ctx = createExecutionContext();
+			const responsePromise = worker.fetch(request, {
+				...env,
+				KV: mockKv,
+				LINE_CHANNEL_SECRET: 'line-secret',
+				LINE_ACCESS_TOKEN: 'line-token',
+				N8N_CHECKIN_KEYCARD_PHOTO_URL: n8nUrl,
+				WORKER_SECRET: 'worker-secret'
+			} as any, ctx);
+			const returnTiming = await Promise.race([
+				responsePromise.then(() => 'returned'),
+				new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 250))
+			]);
+
+			releaseLineReply();
+			const response = await responsePromise;
+			await waitOnExecutionContext(ctx);
+
+			expect(returnTiming).toBe('returned');
+			expect(response.status).toBe(200);
+			expect(calls).toContain(n8nUrl);
+		} finally {
+			releaseLineReply();
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('does not let another user key-rent photo state capture a checkin slip', () => {
 		const state = {
 			mode: 'WAITING_KEY_PHOTO',

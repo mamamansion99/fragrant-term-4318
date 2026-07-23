@@ -6779,25 +6779,27 @@ export default {
               receivedAt: new Date().toISOString()
             };
 
-            await replyOrPushText(
-              env,
-              replyToken,
-              chatId,
-              'รับไฟล์แล้ว กำลังตรวจสอบ…',
-              'checkin_keycard_received_ack_failed'
-            );
-
             ctx.waitUntil(
-              handleCheckinKeycardPhotoForward(env, {
-                state: checkinKeycardState,
-                payload: keycardPayload,
-                chatId,
-                groupId,
-                managerUserId,
-                userKey: checkinKeycardStateUserKey,
-                groupKey: checkinKeycardStateGroupKey,
-                userOnlyKey: checkinKeycardStateUserOnlyKey
-              }).catch((err) => {
+              (async () => {
+                await replyOrPushText(
+                  env,
+                  replyToken,
+                  chatId,
+                  'รับไฟล์แล้ว กำลังตรวจสอบ…',
+                  'checkin_keycard_received_ack_failed'
+                );
+
+                await handleCheckinKeycardPhotoForward(env, {
+                  state: checkinKeycardState,
+                  payload: keycardPayload,
+                  chatId,
+                  groupId,
+                  managerUserId,
+                  userKey: checkinKeycardStateUserKey,
+                  groupKey: checkinKeycardStateGroupKey,
+                  userOnlyKey: checkinKeycardStateUserOnlyKey
+                });
+              })().catch((err) => {
                 console.error('checkin keycard photo forward failed', err);
                 return notifyCheckinKeycardPhotoStatus(env, chatId, {
                   ok: false,
