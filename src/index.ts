@@ -6779,6 +6779,14 @@ export default {
               receivedAt: new Date().toISOString()
             };
 
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'รับไฟล์แล้ว กำลังตรวจสอบ…',
+              'checkin_keycard_received_ack_failed'
+            );
+
             ctx.waitUntil(
               handleCheckinKeycardPhotoForward(env, {
                 state: checkinKeycardState,
@@ -9128,7 +9136,7 @@ async function notifyN8nCheckinKeycardPhoto(env, payload) {
   }
 
   const headers = { 'Content-Type': 'application/json' };
-  const secret = env.WORKER_SECRET || '';
+  const secret = getWorkerForwardSecret(env);
   if (secret) {
     headers['x-worker-secret'] = secret;
   } else {
