@@ -1045,6 +1045,83 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('keeps key b410 20 alive when the LINE acknowledgement is slow', async () => {
+		const userId = 'U-key-forgot-slow-line';
+		const keyForgotUrl = 'https://example.com/key-forgot-slow-line';
+		const calls: Array<{ url: string; body: any }> = [];
+		const values = new Map<string, string>();
+		let releaseLineReply!: () => void;
+		const pendingLineReply = new Promise<Response>((resolve) => {
+			releaseLineReply = () => resolve(new Response('{}', { status: 200 }));
+		});
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			let body: any = {};
+			try { body = JSON.parse(String(init?.body || '{}')); } catch { }
+			calls.push({ url, body });
+			if (url.includes('/v2/bot/message/reply')) return pendingLineReply;
+			return new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			});
+		});
+		const mockEnv = {
+			...env,
+			LINE_CHANNEL_SECRET: 'line-secret',
+			LINE_ACCESS_TOKEN: 'line-token',
+			N8N_KEY_FORGOT_WEBHOOK_URL: keyForgotUrl,
+			N8N_CHAT_LOG_URL: '',
+			WORKER_SECRET: 'worker-secret',
+			KV: {
+				get: async (key: string) => {
+					const raw = values.get(key);
+					return raw ? JSON.parse(raw) : null;
+				},
+				put: async (key: string, value: string) => {
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			}
+		};
+
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message',
+				replyToken: 'reply-key-forgot-slow-line',
+				webhookEventId: 'evt-key-forgot-slow-line',
+				timestamp: Date.now(),
+				source: { type: 'user', userId },
+				message: { type: 'text', id: 'msg-key-forgot-slow-line', text: 'key b410 20' }
+			}]);
+			const ctx = createExecutionContext();
+			const responsePromise = worker.fetch(request, mockEnv, ctx);
+			const returnTiming = await Promise.race([
+				responsePromise.then(() => 'returned'),
+				new Promise<string>((resolve) => setTimeout(() => resolve('blocked'), 500))
+			]);
+
+			releaseLineReply();
+			const response = await responsePromise;
+			await waitOnExecutionContext(ctx);
+
+			expect(returnTiming).toBe('returned');
+			expect(response.status).toBe(200);
+			const keyForgotCall = calls.find((call) => call.url === keyForgotUrl);
+			expect(keyForgotCall?.body).toMatchObject({
+				building: 'B',
+				room: '410',
+				amount: 20,
+				text: 'key b410 20'
+			});
+			expect(calls.some((call) => call.url.includes('/v2/bot/message/reply'))).toBe(true);
+		} finally {
+			releaseLineReply();
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('makes reservation confirmation replace stale payment image commands', async () => {
 		const userId = 'U-booking';
 		const stateKey = `${userId}:${userId}`;

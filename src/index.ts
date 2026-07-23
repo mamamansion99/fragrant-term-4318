@@ -2416,6 +2416,157 @@ function parseKeyKeyword(text) {
   return { building, room, amount };
 }
 
+async function handleKeyForgotTextCommand(
+  env,
+  ev,
+  replyToken,
+  rawText,
+  keyForgotPayload,
+  onStateReady = () => {}
+) {
+  const chatId = getChatId(ev);
+  const userId = String(ev?.source?.userId || '').trim();
+  const stateKey = getStateKey(ev);
+  const penaltyKey = `${stateKey}:penalty_flow`;
+  const timestamp = new Date().toISOString();
+  const commandOwner = userId ? await setActiveFlow(env, userId, {
+    flowType: 'key_forgot',
+    kind: 'key_forgot',
+    phase: 'starting',
+    event: ev,
+    scopeType: String(ev?.source?.type || '').trim() || 'user',
+    scopeId: String(ev?.source?.groupId || ev?.source?.roomId || '').trim(),
+    ttlSeconds: PENALTY_FLOW_TTL_SECONDS
+  }) : null;
+
+  if (userId && !commandOwner) {
+    onStateReady(false);
+    console.log('stale_text_command_ignored', {
+      kind: 'key_forgot',
+      userId,
+      webhookEventId: ev?.webhookEventId || ''
+    });
+    return false;
+  }
+
+  const ackText = [
+    `รับข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} แล้วค่ะ กำลังส่งให้เจ้าหน้าที่`,
+    'หากชำระแล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ'
+  ].join('\n');
+  const ackPromise = replyOrPushText(
+    env,
+    replyToken,
+    chatId,
+    ackText,
+    'key_forgot_ack_failed'
+  );
+
+  const workflowPromise = (async () => {
+    const clearedKeys = await clearUserWorkflowStatesForEvent(
+      env,
+      ev,
+      'text_command:key_forgot',
+      { preserveActiveFlow: true }
+    );
+    console.log('text_command_classified', {
+      kind: 'key_forgot',
+      statePolicy: TEXT_COMMAND_REPLACE_FLOW,
+      userId,
+      chatId,
+      clearedStateCount: clearedKeys.length,
+      webhookEventId: ev?.webhookEventId || ''
+    });
+
+    const roomId = `${keyForgotPayload.building || ''}${keyForgotPayload.room || ''}`.trim().toUpperCase();
+    const penaltyContext = {
+      ts: Date.now(),
+      chatId,
+      userId,
+      type: 'Others_payment',
+      reason: 'KEY_FORGOT',
+      ...(roomId ? { roomId, room: roomId } : {}),
+      ...(keyForgotPayload.building
+        ? { building: String(keyForgotPayload.building).trim().toUpperCase() }
+        : {}),
+      amount: Number(keyForgotPayload.amount)
+    };
+    const activeFlow = userId
+      ? await updateActiveFlowIfCurrent(env, userId, commandOwner, {
+        flowType: 'key_forgot',
+        kind: 'key_forgot',
+        phase: 'await_slip',
+        context: { penaltyFlow: penaltyContext },
+        preserveVersion: true,
+        ttlSeconds: PENALTY_FLOW_TTL_SECONDS
+      })
+      : null;
+
+    if (userId && !activeFlow) {
+      onStateReady(false);
+      console.log('key_forgot_state_update_stale_ignored', {
+        userId,
+        chatId,
+        flowId: commandOwner?.flowId || ''
+      });
+      return false;
+    }
+
+    const flow = {
+      ...penaltyContext,
+      ...(activeFlow ? {
+        flowId: activeFlow.flowId,
+        version: activeFlow.version,
+        flowVersion: activeFlow.version
+      } : {})
+    };
+    const mirrorResult = await Promise.allSettled([
+      kvPutStrict(env, penaltyKey, flow, PENALTY_FLOW_TTL_SECONDS)
+    ]);
+    if (mirrorResult[0]?.status === 'rejected') {
+      console.warn('key_forgot_kv_mirror_partial_failure', {
+        userId,
+        chatId,
+        flowId: activeFlow?.flowId || '',
+        failedMirrors: [{
+          key: penaltyKey,
+          error: String(mirrorResult[0].reason?.message || mirrorResult[0].reason)
+        }]
+      });
+    }
+    onStateReady(true);
+
+    const payload = {
+      ...keyForgotPayload,
+      text: rawText,
+      userId: userId || null,
+      chatId: chatId || null,
+      sourceType: ev?.source?.type || null,
+      messageId: ev?.message?.id || null,
+      flowId: activeFlow?.flowId || '',
+      flowVersion: activeFlow?.version || '',
+      version: activeFlow?.version || '',
+      receivedAt: timestamp
+    };
+    const ok = await notifyN8nKeyForgotWebhook(env, payload);
+    if (!ok && chatId) {
+      const current = userId ? await getActiveFlow(env, userId, activeFlow || ev) : null;
+      if (!activeFlow || isSameActiveFlow(current, activeFlow)) {
+        await safeLinePushText(
+          env.LINE_ACCESS_TOKEN,
+          chatId,
+          'รับข้อมูลลืมกุญแจแล้ว แต่ระบบแจ้งเจ้าหน้าที่ยังไม่ตอบ กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
+          'key_forgot_webhook_failure_push_failed'
+        );
+      }
+    }
+    return ok;
+  })();
+
+  const [, workflowResult] = await Promise.allSettled([ackPromise, workflowPromise]);
+  if (workflowResult.status === 'rejected') throw workflowResult.reason;
+  return workflowResult.value;
+}
+
 const TEXT_COMMAND_REPLACE_FLOW = 'replace_flow';
 const TEXT_COMMAND_BYPASS_FLOW = 'bypass_flow';
 const TEXT_STATE_CHECKOUT_AMOUNT = 'checkout_cash_amount';
@@ -5269,6 +5420,41 @@ export default {
             continue;
           }
 
+          const priorityKeyForgot = parseKeyKeyword(textIn);
+          if (priorityKeyForgot) {
+            let resolveKeyForgotStateReady = () => {};
+            const keyForgotStateReady = new Promise((resolve) => {
+              resolveKeyForgotStateReady = resolve;
+            });
+            const keyForgotTask = handleKeyForgotTextCommand(
+              env,
+              ev,
+              replyToken,
+              textIn,
+              priorityKeyForgot,
+              resolveKeyForgotStateReady
+            ).catch(async (err) => {
+              resolveKeyForgotStateReady(false);
+              console.error('key forgot text command failed', {
+                userId,
+                chatId,
+                text: textIn,
+                error: String(err?.message || err)
+              });
+              if (chatId) {
+                await safeLinePushText(
+                  env.LINE_ACCESS_TOKEN,
+                  chatId,
+                  'รับคำสั่งลืมกุญแจแล้ว แต่ระบบขัดข้อง กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
+                  'key_forgot_command_failure_push_failed'
+                );
+              }
+            });
+            ctx.waitUntil(keyForgotTask);
+            await keyForgotStateReady;
+            continue;
+          }
+
           const precomputedFastReply = await quickKeywordReply(textIn, env, userId);
           const commandRoute = classifyTextCommand(textIn, {
             fastReply: precomputedFastReply,
@@ -5662,49 +5848,6 @@ export default {
             const paymentMsg = buildKeyRentPaymentMessage(flow.keyRent);
             await replyOrPushMessages(env, replyToken, chatId, [paymentMsg], 'key_rent_payment_prompt_failed');
           };
-          const submitKeyForgot = async (keyForgotPayload, rawTextOverride, penaltyReasonOverride) => {
-            const timestamp = new Date().toISOString();
-            const armed = await armOtherPaymentSlipFlow(penaltyReasonOverride || 'KEY_FORGOT', {
-              roomId: `${keyForgotPayload.building || ''}${keyForgotPayload.room || ''}`,
-              building: keyForgotPayload.building,
-              amount: keyForgotPayload.amount
-            });
-            const payload = {
-              ...keyForgotPayload,
-              text: rawTextOverride || textIn,
-              userId: userId || null,
-              chatId: chatId || null,
-              sourceType: ev?.source?.type || null,
-              messageId: m?.id || null,
-              flowId: armed?.activeFlow?.flowId || '',
-              flowVersion: armed?.activeFlow?.version || '',
-              version: armed?.activeFlow?.version || '',
-              receivedAt: timestamp
-            };
-            ctx.waitUntil(
-              (async () => {
-                const ok = await notifyN8nKeyForgotWebhook(env, payload);
-                if (!ok && chatId) {
-                  const current = userId ? await getActiveFlow(env, userId, armed?.activeFlow || ev) : null;
-                  if (!armed?.activeFlow || isSameActiveFlow(current, armed.activeFlow)) {
-                    await safeLinePushText(
-                      env.LINE_ACCESS_TOKEN,
-                      chatId,
-                      'รับข้อมูลลืมกุญแจแล้ว แต่ระบบแจ้งเจ้าหน้าที่ยังไม่ตอบ กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
-                      'key_forgot_webhook_failure_push_failed'
-                    );
-                  }
-                }
-              })().catch((err) => console.error('key forgot webhook failed', err))
-            );
-
-            const ackText = [
-              `รับข้อมูลคีย์ตึก ${keyForgotPayload.building} ห้อง ${keyForgotPayload.room} จำนวน ${keyForgotPayload.amount} แล้วค่ะ กำลังส่งให้เจ้าหน้าที่`,
-              'หากชำระแล้ว กรุณาส่งสลิปในแชตนี้ได้เลยค่ะ'
-            ].join('\n');
-            await replyOrPushText(env, replyToken, chatId, ackText, 'key_forgot_ack_failed');
-          };
-
           // Payment menu entry point should bypass any stale payment state.
           if (isPaymentMenu) {
             const flex = buildPaymentOptionsFlex();
@@ -5787,7 +5930,6 @@ export default {
           }
 
           const keyRent = parseKeyRent(textIn);
-          const keyForgot = parseKeyKeyword(textIn); // simple "key A101 20" legacy path
 
           if (keyRent) {
             if (keyRent.error === 'MISSING_ROOM') {
@@ -5857,11 +5999,6 @@ export default {
             }
 
             await startKeyRentPayment(keyRent, textIn);
-            continue;
-          }
-
-          if (keyForgot) {
-            await submitKeyForgot(keyForgot, textIn);
             continue;
           }
 
