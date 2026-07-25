@@ -1611,6 +1611,176 @@ describe('Worker routes', () => {
 		});
 	});
 
+	it('lets a fresh checkout keyword replace a poisoned newer-looking command and replies', async () => {
+		const values = new Map<string, string>();
+		const ownerCalls: Array<Record<string, any>> = [];
+		let currentFlow: Record<string, any> | null = {
+			flowId: 'reservation:poisoned-future-command',
+			version: '1',
+			flowVersion: '1',
+			commandTs: Date.now() + (24 * 60 * 60 * 1000),
+			commandEventId: 'poisoned-future-command',
+			expiresAt: Date.now() + (24 * 60 * 60 * 1000)
+		};
+		const activeFlowOwner = {
+			idFromName: (name: string) => name,
+			get: () => ({
+				fetch: async (_url: string, init: RequestInit) => {
+					const body = JSON.parse(String(init.body || '{}'));
+					ownerCalls.push(body);
+					if (body.action === 'replace') {
+						if (!body.force && Number(currentFlow?.commandTs || 0) > Number(body.flow?.commandTs || 0)) {
+							return Response.json({
+								ok: true,
+								accepted: false,
+								stale: true,
+								flow: currentFlow
+							});
+						}
+						currentFlow = body.flow;
+						return Response.json({
+							ok: true,
+							accepted: true,
+							idempotent: false,
+							flow: currentFlow
+						});
+					}
+					if (body.action === 'get') {
+						return Response.json({ ok: true, flow: currentFlow });
+					}
+					return Response.json({ ok: true });
+				}
+			})
+		};
+		const mockEnv = {
+			...env,
+			ACTIVE_FLOW_OWNER: activeFlowOwner,
+			KV: {
+				get: async (key: string, type?: string) => {
+					const value = values.get(key) ?? null;
+					return type === 'json' && value ? JSON.parse(value) : value;
+				},
+				put: async (key: string, value: string) => {
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			},
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			N8N_CHAT_LOG_URL: ''
+		};
+		const event = {
+			type: 'message',
+			replyToken: 'reply-token-checkout-b311',
+			webhookEventId: 'event-checkout-b311',
+			timestamp: Date.now(),
+			deliveryContext: { isRedelivery: false },
+			source: {
+				type: 'group',
+				groupId: 'C-manager-group',
+				userId: 'U-manager'
+			},
+			message: {
+				type: 'text',
+				id: 'message-checkout-b311',
+				text: 'ชำระค่าเช็คเอาท์ B311'
+			}
+		};
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		try {
+			const request = await buildSignedLineRequest([event]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			expect(ownerCalls.find((call) => call.action === 'replace')).toMatchObject({
+				force: true
+			});
+			expect(JSON.parse(values.get('C-manager-group:U-manager:penalty_flow') || '{}')).toMatchObject({
+				reason: 'CHECKOUT',
+				roomId: 'B311'
+			});
+			const replyCall = fetchMock.mock.calls.find(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			);
+			expect(replyCall).toBeTruthy();
+			const replyBody = JSON.parse(String(replyCall?.[1]?.body));
+			expect(replyBody.replyToken).toBe('reply-token-checkout-b311');
+			expect(replyBody.messages[0].text).toContain('ค่าเช็คเอาท์');
+			expect(replyBody.messages[0].text).toContain('B311');
+			expect(replyBody.messages[0].text).toContain('ส่งสลิป');
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('never leaves a recognized keyword silent when command ownership is unavailable', async () => {
+		const mockEnv = {
+			...env,
+			ACTIVE_FLOW_OWNER: {
+				idFromName: (name: string) => name,
+				get: () => ({
+					fetch: async () => {
+						throw new Error('durable owner unavailable');
+					}
+				})
+			},
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			N8N_CHAT_LOG_URL: ''
+		};
+		const event = {
+			type: 'message',
+			replyToken: 'reply-token-owner-failure',
+			webhookEventId: 'event-owner-failure',
+			timestamp: Date.now(),
+			deliveryContext: { isRedelivery: false },
+			source: {
+				type: 'user',
+				userId: 'U-owner-failure'
+			},
+			message: {
+				type: 'text',
+				id: 'message-owner-failure',
+				text: 'เช่าคีย์การ์ด B513'
+			}
+		};
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		try {
+			const request = await buildSignedLineRequest([event]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const replyCall = fetchMock.mock.calls.find(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			);
+			expect(replyCall).toBeTruthy();
+			const replyBody = JSON.parse(String(replyCall?.[1]?.body));
+			expect(replyBody.replyToken).toBe('reply-token-owner-failure');
+			expect(replyBody.messages[0].text).toContain('รับคำสั่งแล้ว');
+			expect(replyBody.messages[0].text).toContain('พิมพ์คำสั่งเดิมอีกครั้ง');
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('arms checkout cash flow from postback button data and captures amount/image payload', () => {
 		const postbackData = 'act=CHECKOUT_CASH&roomId=A101&lineUserId=Utenant';
 		const data = __testables.parseQueryString(postbackData);

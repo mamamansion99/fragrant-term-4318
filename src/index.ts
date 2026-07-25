@@ -1451,7 +1451,11 @@ async function setActiveFlow(env, userId, flow) {
     expiresAt
   };
   if (hasActiveFlowOwner(env)) {
-    const result = await callActiveFlowOwner(env, ownerKey, 'replace', { flow: state });
+    // A newly delivered LINE event is the user's latest explicit command and
+    // must be allowed to replace poisoned/future-dated state left by an older
+    // deployment. Only redeliveries retain timestamp-based stale protection.
+    const force = flow.event?.deliveryContext?.isRedelivery !== true;
+    const result = await callActiveFlowOwner(env, ownerKey, 'replace', { flow: state, force });
     return result?.accepted === false ? null : (result?.flow || state);
   }
 
@@ -3262,6 +3266,7 @@ export class ActiveFlowOwner {
 
       if (action === 'replace') {
         const incoming = body?.flow;
+        const force = body?.force === true;
         if (!incoming?.flowId || !incoming?.version) {
           return this.json({ ok: false, error: 'invalid_flow' }, 400);
         }
@@ -3275,7 +3280,7 @@ export class ActiveFlowOwner {
           if (sameEvent || sameIdentity) {
             return { accepted: true, idempotent: true, flow: current };
           }
-          if (current && Number(current.commandTs || 0) > Number(incoming.commandTs || 0)) {
+          if (!force && current && Number(current.commandTs || 0) > Number(incoming.commandTs || 0)) {
             return { accepted: false, stale: true, flow: current };
           }
           await txn.put('flow', incoming);
@@ -5315,19 +5320,47 @@ export default {
             }
 
             const canonicalEvent = withCanonicalTextEvent(ev, bookingCode);
-            const reservationFlow = userId
-              ? await replaceWithReservationFlow(env, canonicalEvent, {
-                phase: 'await_confirm',
-                code: bookingCode,
-                ttlSeconds: BOOKING_PAYMENT_FLOW_TTL_SECONDS
-              }, { deferLegacyCleanup: true })
-              : null;
+            let reservationFlow = null;
+            try {
+              reservationFlow = userId
+                ? await replaceWithReservationFlow(env, canonicalEvent, {
+                  phase: 'await_confirm',
+                  code: bookingCode,
+                  ttlSeconds: BOOKING_PAYMENT_FLOW_TTL_SECONDS
+                }, { deferLegacyCleanup: true })
+                : null;
+            } catch (err) {
+              console.error('booking_code_owner_failed', {
+                bookingCode,
+                userId,
+                chatId,
+                webhookEventId: ev?.webhookEventId || '',
+                error: String(err?.message || err)
+              });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `รับรหัสจอง ${bookingCode} แล้ว แต่ระบบเริ่มขั้นตอนไม่สำเร็จ กรุณาส่งรหัสอีกครั้งค่ะ`,
+                'booking_code_owner_failure_reply_failed'
+              );
+              continue;
+            }
             if (userId && !reservationFlow) {
               console.log('booking_code_stale_redelivery_ignored', {
                 bookingCode,
                 userId,
                 webhookEventId: ev?.webhookEventId || ''
               });
+              if (ev?.deliveryContext?.isRedelivery !== true) {
+                await replyOrPushText(
+                  env,
+                  replyToken,
+                  chatId,
+                  `รับรหัสจอง ${bookingCode} แล้ว แต่มีขั้นตอนใหม่กว่ากำลังทำงานอยู่ กรุณาส่งรหัสอีกครั้งค่ะ`,
+                  'booking_code_stale_reply_failed'
+                );
+              }
               continue;
             }
 
@@ -5465,21 +5498,48 @@ export default {
           let clearedForCommand = [];
           let commandOwner = null;
           if (commandRoute?.statePolicy === TEXT_COMMAND_REPLACE_FLOW) {
-            commandOwner = userId ? await setActiveFlow(env, userId, {
-              flowType: commandRoute.kind,
-              kind: commandRoute.kind,
-              phase: 'starting',
-              event: ev,
-              scopeType: String(ev?.source?.type || '').trim() || 'user',
-              scopeId: String(ev?.source?.groupId || ev?.source?.roomId || '').trim(),
-              ttlSeconds: PENALTY_FLOW_TTL_SECONDS
-            }) : null;
+            try {
+              commandOwner = userId ? await setActiveFlow(env, userId, {
+                flowType: commandRoute.kind,
+                kind: commandRoute.kind,
+                phase: 'starting',
+                event: ev,
+                scopeType: String(ev?.source?.type || '').trim() || 'user',
+                scopeId: String(ev?.source?.groupId || ev?.source?.roomId || '').trim(),
+                ttlSeconds: PENALTY_FLOW_TTL_SECONDS
+              }) : null;
+            } catch (err) {
+              console.error('text_command_owner_failed', {
+                kind: commandRoute.kind,
+                userId,
+                chatId,
+                webhookEventId: ev?.webhookEventId || '',
+                error: String(err?.message || err)
+              });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'รับคำสั่งแล้ว แต่ระบบเริ่มขั้นตอนไม่สำเร็จ กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
+                'text_command_owner_failure_reply_failed'
+              );
+              continue;
+            }
             if (userId && !commandOwner) {
               console.log('stale_text_command_ignored', {
                 kind: commandRoute.kind,
                 userId,
                 webhookEventId: ev?.webhookEventId || ''
               });
+              if (ev?.deliveryContext?.isRedelivery !== true) {
+                await replyOrPushText(
+                  env,
+                  replyToken,
+                  chatId,
+                  'รับคำสั่งแล้ว แต่มีขั้นตอนใหม่กว่ากำลังทำงานอยู่ กรุณาพิมพ์คำสั่งเดิมอีกครั้งค่ะ',
+                  'stale_text_command_reply_failed'
+                );
+              }
               continue;
             }
             clearedForCommand = await clearUserWorkflowStatesForEvent(
