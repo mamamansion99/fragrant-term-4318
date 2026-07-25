@@ -1723,6 +1723,113 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('acknowledges LINE before slow command state work and finishes the keyword in the background', async () => {
+		const values = new Map<string, string>();
+		let releaseOwner: (response: Response) => void = () => {};
+		const ownerResponse = new Promise<Response>((resolve) => {
+			releaseOwner = resolve;
+		});
+		let ownerStartedResolve: () => void = () => {};
+		const ownerStarted = new Promise<void>((resolve) => {
+			ownerStartedResolve = resolve;
+		});
+		const mockEnv = {
+			...env,
+			ACTIVE_FLOW_OWNER: {
+				idFromName: (name: string) => name,
+				get: () => ({
+					fetch: async (_url: string, init: RequestInit) => {
+						const body = JSON.parse(String(init.body || '{}'));
+						if (body.action === 'replace') {
+							ownerStartedResolve();
+							return ownerResponse;
+						}
+						return Response.json({ ok: true, flow: null });
+					}
+				})
+			},
+			KV: {
+				get: async (key: string, type?: string) => {
+					const value = values.get(key) ?? null;
+					return type === 'json' && value ? JSON.parse(value) : value;
+				},
+				put: async (key: string, value: string) => {
+					values.set(key, value);
+				},
+				delete: async (key: string) => {
+					values.delete(key);
+				}
+			},
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			N8N_CHAT_LOG_URL: ''
+		};
+		const event = {
+			type: 'message',
+			replyToken: 'reply-token-fast-webhook',
+			webhookEventId: 'event-fast-webhook',
+			timestamp: Date.now(),
+			deliveryContext: { isRedelivery: false },
+			source: {
+				type: 'group',
+				groupId: 'C-fast-webhook',
+				userId: 'U-fast-webhook'
+			},
+			message: {
+				type: 'text',
+				id: 'message-fast-webhook',
+				text: 'ชำระค่าเช็คเอาท์ B311'
+			}
+		};
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+
+		try {
+			const request = await buildSignedLineRequest([event]);
+			const ctx = createExecutionContext();
+			const response = await Promise.race([
+				worker.fetch(request, mockEnv, ctx),
+				new Promise<never>((_, reject) => {
+					setTimeout(() => reject(new Error('LINE webhook acknowledgement was blocked by state work')), 250);
+				})
+			]);
+
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe('OK');
+			await ownerStarted;
+			expect(fetchMock.mock.calls.some(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			)).toBe(false);
+
+			releaseOwner(Response.json({
+				ok: true,
+				accepted: true,
+				idempotent: false,
+				flow: {
+					flowId: 'checkout_payment:event-fast-webhook',
+					version: '1',
+					flowVersion: '1'
+				}
+			}));
+			await waitOnExecutionContext(ctx);
+
+			expect(JSON.parse(values.get('C-fast-webhook:U-fast-webhook:penalty_flow') || '{}')).toMatchObject({
+				reason: 'CHECKOUT',
+				roomId: 'B311'
+			});
+			expect(fetchMock.mock.calls.some(([url]) =>
+				String(url).includes('/v2/bot/message/reply')
+			)).toBe(true);
+		} finally {
+			releaseOwner(Response.json({ ok: false }));
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('never leaves a recognized keyword silent when command ownership is unavailable', async () => {
 		const mockEnv = {
 			...env,

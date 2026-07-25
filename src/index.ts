@@ -3358,7 +3358,9 @@ export class ActiveFlowOwner {
 /* =========================
  * 4) Main Worker Entrypoint
  * ========================= */
-export default {
+const LINE_BACKGROUND_PROCESSING_HEADER = 'x-mama-line-background';
+
+const worker = {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
 
@@ -3571,11 +3573,41 @@ export default {
     if (request.method !== 'POST') return new Response('OK', { status: 200 });
 
     const bodyText = await request.text();
-    // Verify LINE signature ...
-
     const sig = request.headers.get('x-line-signature') || '';
     if (!(await verifySig(bodyText, sig, env.LINE_CHANNEL_SECRET))) {
       return new Response('Unauthorized', { status: 401 });
+    }
+
+    // LINE closes webhook connections aggressively. Finish signature
+    // verification, acknowledge the delivery immediately, then keep the full
+    // command workflow alive with waitUntil. Without this boundary, a Durable
+    // Object/KV cold start can make LINE disconnect and cancel the command
+    // before the keyword handler stores state or sends its reply.
+    if (request.headers.get(LINE_BACKGROUND_PROCESSING_HEADER) !== '1') {
+      const backgroundHeaders = new Headers(request.headers);
+      backgroundHeaders.set(LINE_BACKGROUND_PROCESSING_HEADER, '1');
+      const backgroundRequest = new Request(request.url, {
+        method: 'POST',
+        headers: backgroundHeaders,
+        body: bodyText
+      });
+      ctx.waitUntil(
+        worker.fetch(backgroundRequest, env, ctx)
+          .then(async (response) => {
+            if (!response.ok) {
+              console.error('line_background_processing_failed', {
+                status: response.status,
+                body: (await response.text()).slice(0, 300)
+              });
+            }
+          })
+          .catch((err) => {
+            console.error('line_background_processing_exception', {
+              error: String(err?.message || err)
+            });
+          })
+      );
+      return new Response('OK', { status: 200 });
     }
 
     const payload = JSON.parse(bodyText || '{}');
@@ -7107,6 +7139,8 @@ export default {
     return new Response('OK', { status: 200 });
   }
 };
+
+export default worker;
 
 /* =======================================================
  * 5) Maps & Predicates
