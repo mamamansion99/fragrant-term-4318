@@ -60,7 +60,7 @@ function pushTextToOwnerGroups(env, text) {
 }
 
 const ROOM_RENT_DRIVE_IMAGE_IDS = [
-  '1j7ss_o3t4RpNLd12mV31T167WjC3m9Ca',
+  '1RV-pLYdoZXCpB_h6oyAryQKRsMcMsiVu',
   '1Os-hVZgZ47l7AJwEpY8UKw7Jd9t624Cz',
   '1WLAPvEo9ZXnELZjQ8smVcOTNbTaw-WtN'
 ];
@@ -69,11 +69,12 @@ const ROOM_RENT_IMG_WIDTH_ORIGINAL = 1600;
 const ROOM_RENT_IMG_WIDTH_PREVIEW = 640;
 const LINE_IMAGE_MAX_ORIGINAL_BYTES = 10 * 1024 * 1024;
 const LINE_IMAGE_MAX_PREVIEW_BYTES = 1 * 1024 * 1024;
+const ROOM_RENT_IMAGE_REVISION = '20260727-1';
 
 function buildRoomRentImageMessages(origin) {
   return ROOM_RENT_DRIVE_IMAGE_IDS.map((_, idx) => {
-    const originalUrl = `${origin}/media/room-rent/${idx + 1}?v=orig`;
-    const previewUrl = `${origin}/media/room-rent/${idx + 1}?v=preview`;
+    const originalUrl = `${origin}/media/room-rent/${idx + 1}?v=orig&rev=${ROOM_RENT_IMAGE_REVISION}`;
+    const previewUrl = `${origin}/media/room-rent/${idx + 1}?v=preview&rev=${ROOM_RENT_IMAGE_REVISION}`;
     return {
       type: 'image',
       originalContentUrl: originalUrl,
