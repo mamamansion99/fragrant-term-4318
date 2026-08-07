@@ -10111,6 +10111,7 @@ export const __testables = {
   getRenewalPostbackWebhookUrl,
   buildMarkPaidForwardPayload,
   getWorkerForwardSecret,
+  enrichCheckinKeycardPhotoPayload,
   getPayReviewAcceptWebhookUrl,
   buildPayReviewAcceptForwardPayload,
   getN8nPayRentUrl,

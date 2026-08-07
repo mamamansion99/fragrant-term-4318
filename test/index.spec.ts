@@ -831,6 +831,50 @@ describe('Worker routes', () => {
 		expect(__testables.isCheckinFlowStateActive(null, now)).toBe(false);
 	});
 
+	it('uses MM_WORKER_SECRET to authenticate checkin keycard webhook requests', () => {
+		expect(__testables.getWorkerForwardSecret({
+			MM_WORKER_SECRET: 'checkin-secret'
+		} as any)).toBe('checkin-secret');
+		expect(__testables.getWorkerForwardSecret({
+			WORKER_SECRET: 'primary-secret',
+			MM_WORKER_SECRET: 'fallback-secret'
+		} as any)).toBe('primary-secret');
+	});
+
+	it('embeds LINE image data in checkin keycard photo payloads', async () => {
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = vi.fn(async () => new Response(
+			new Uint8Array([1, 2, 3]),
+			{ status: 200, headers: { 'content-type': 'image/png' } }
+		)) as typeof fetch;
+
+		try {
+			const payload = await __testables.enrichCheckinKeycardPhotoPayload(
+				{ LINE_ACCESS_TOKEN: 'line-token' } as any,
+				{
+					intent: 'checkin_keycard_photo',
+					imageMessageId: 'image-message-id'
+				}
+			) as Record<string, any>;
+
+			expect(payload.imageDataUrl).toBe('data:image/png;base64,AQID');
+			expect(payload.imageContentType).toBe('image/png');
+			expect(payload.image).toMatchObject({
+				messageId: 'image-message-id',
+				contentType: 'image/png',
+				dataUrlField: 'imageDataUrl'
+			});
+			expect(globalThis.fetch).toHaveBeenCalledWith(
+				'https://api-data.line.me/v2/bot/message/image-message-id/content',
+				expect.objectContaining({
+					headers: { Authorization: 'Bearer line-token' }
+				})
+			);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
+	});
+
 	it('clears only the current user workflow states before starting checkin', async () => {
 		const currentUserId = 'U-current';
 		const otherUserId = 'U-other';
