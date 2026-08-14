@@ -1289,6 +1289,88 @@ function isCoAdminAllowedLineUserId(userId) {
   return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
 }
 
+// --- Car slot / parking sticker staff commands ---
+// Every command below is staff-only. Tenants use the existing parking rich menu.
+const CAR_STICKER_BARE_RE = /^\s*(MM-\d{1,4})\s*$/i;
+const CAR_STICKER_LABELLED_RE = /^\s*สติกเกอร์\s*(MM[-\s]?\d{1,4})\s*$/i;
+const CAR_STICKER_RECEIVE_RE = /^\s*รับสติกเกอร์\s+(\S+)\s*$/i;
+const CAR_STICKER_ISSUE_RE = /^\s*ออกสติกเกอร์\s+(\S+)(?:\s+(เงินสด|โอน|cash|transfer))?\s*$/i;
+const CAR_PAYMENT_METHOD_MAP = {
+  เงินสด: 'CASH',
+  cash: 'CASH',
+  โอน: 'MOBILE_BANKING',
+  transfer: 'MOBILE_BANKING'
+};
+const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)\s*$/i;
+const CAR_PLATE_LOOKUP_RE = /^\s*รถ\s+(.{2,24})$/i;
+
+function isCarAdminAllowedLineUserId(env, userId) {
+  const normalized = String(userId || '').trim();
+  if (!normalized) return false;
+  const configured = String(env?.CAR_ADMIN_LINE_USER_IDS || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (configured.length) return configured.includes(normalized);
+  return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+// Order matters: the specific sticker verbs are checked before the generic
+// "รถ <plate>" lookup so a plate search never swallows an issue command.
+function parseCarCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const labelled = raw.match(CAR_STICKER_LABELLED_RE);
+  if (labelled) {
+    return { kind: 'car_lookup', query: labelled[1].replace(/\s+/g, '').toUpperCase() };
+  }
+
+  // A bare sticker number must carry the dash, otherwise "MM414" collides with
+  // the reservation codes handled by parseBookingCodeCommand.
+  const bare = raw.match(CAR_STICKER_BARE_RE);
+  if (bare) {
+    return { kind: 'car_lookup', query: bare[1].toUpperCase() };
+  }
+
+  const issue = raw.match(CAR_STICKER_ISSUE_RE);
+  if (issue) {
+    const roomId = parseRoomToken(issue[1]);
+    if (roomId) {
+      // Cash changes hands at the counter at the same moment the sticker does,
+      // so the payment method rides along with the issue command instead of
+      // living in a separate flow the staff would have to remember.
+      const methodToken = String(issue[2] || '').toLowerCase();
+      return {
+        kind: 'car_sticker',
+        action: 'issue',
+        roomId,
+        paymentMethod: CAR_PAYMENT_METHOD_MAP[methodToken] || null
+      };
+    }
+  }
+
+  const receive = raw.match(CAR_STICKER_RECEIVE_RE);
+  if (receive) {
+    const roomId = parseRoomToken(receive[1]);
+    if (roomId) return { kind: 'car_sticker', action: 'lookup', roomId };
+  }
+
+  const request = raw.match(CAR_SLOT_REQUEST_RE);
+  if (request) {
+    const roomId = parseRoomToken(request[1]);
+    if (roomId) return { kind: 'car_slot_request', roomId };
+  }
+
+  const plate = raw.match(CAR_PLATE_LOOKUP_RE);
+  if (plate) {
+    const query = plate[1].trim();
+    if (query) return { kind: 'car_lookup', query };
+  }
+
+  return null;
+}
+
 function isReturnKeyAllowedLineUserId(userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
@@ -2613,6 +2695,18 @@ function classifyTextCommand(text, options = {}) {
       statePolicy: isCheckoutStartShortcut(coAdminShortcut)
         ? TEXT_COMMAND_REPLACE_FLOW
         : TEXT_COMMAND_BYPASS_FLOW
+    };
+  }
+
+  // Must be classified before isParkingIntent below, which would otherwise
+  // swallow "ขอที่จอด <room>" as a generic parking enquiry.
+  const carCommand = parseCarCommand(raw);
+  if (carCommand) {
+    return {
+      kind: carCommand.kind,
+      statePolicy: carCommand.kind === 'car_lookup'
+        ? TEXT_COMMAND_BYPASS_FLOW
+        : TEXT_COMMAND_REPLACE_FLOW
     };
   }
 
@@ -5766,6 +5860,60 @@ const worker = {
               : 'Command received, but webhook failed';
 
             await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
+            continue;
+          }
+
+          const carCommand = parseCarCommand(textIn);
+          if (carCommand) {
+            if (!isCarAdminAllowedLineUserId(env, userId)) {
+              console.log('car_command_unauthorized', { userId, text: textIn.slice(0, 80) });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งเรื่องรถใช้ได้เฉพาะเจ้าหน้าที่ค่ะ',
+                'car_unauthorized_reply_failed'
+              );
+              continue;
+            }
+
+            const carPayload = {
+              source: 'line_message',
+              intent: carCommand.kind,
+              action: carCommand.action || null,
+              query: carCommand.query || null,
+              roomId: carCommand.roomId || null,
+              paymentMethod: carCommand.paymentMethod || null,
+              text: textIn,
+              lineUserId: userId || null,
+              actorLineUserId: userId || null,
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            // n8n owns the reply and consumes replyToken, so the worker stays
+            // silent on success and only speaks up when the webhook is down.
+            let carOk = false;
+            if (carCommand.kind === 'car_lookup') {
+              carOk = await notifyN8nCarLookup(env, carPayload);
+            } else if (carCommand.kind === 'car_sticker') {
+              carOk = await notifyN8nCarSticker(env, carPayload);
+            } else {
+              carOk = await notifyN8nCarRequest(env, carPayload);
+            }
+
+            if (!carOk) {
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'ระบบรถไม่ตอบสนอง ลองใหม่อีกครั้งค่ะ',
+                'car_webhook_failed'
+              );
+            }
             continue;
           }
 
@@ -9904,6 +10052,47 @@ async function notifyN8nCoAdminWebhook(env, payload) {
     console.error('notifyN8nCoAdminWebhook error', err);
     return false;
   }
+}
+
+async function postToN8nCarWebhook(env, url, payload, label) {
+  if (!url) {
+    console.warn(label + ': missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error(label + ': non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error(label + ' error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCarLookup(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_LOOKUP_URL || '', payload, 'notifyN8nCarLookup');
+}
+
+async function notifyN8nCarSticker(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_STICKER_URL || '', payload, 'notifyN8nCarSticker');
+}
+
+async function notifyN8nCarRequest(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_REQUEST_URL || '', payload, 'notifyN8nCarRequest');
 }
 
 async function notifyN8nCleaning(env, payload) {
