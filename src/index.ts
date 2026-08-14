@@ -1302,6 +1302,13 @@ const CAR_PAYMENT_METHOD_MAP = {
   transfer: 'MOBILE_BANKING'
 };
 const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)\s*$/i;
+const CAR_HORGANICE_RE = /^\s*horganice\s+(เปิด|ปิด|open|close)\s+(\S+)\s*$/i;
+const CAR_HORGANICE_ACTION_MAP = {
+  เปิด: 'open',
+  open: 'open',
+  ปิด: 'close',
+  close: 'close'
+};
 const CAR_PLATE_LOOKUP_RE = /^\s*รถ\s+(.{2,24})$/i;
 
 function isCarAdminAllowedLineUserId(env, userId) {
@@ -1354,6 +1361,15 @@ function parseCarCommand(text) {
   if (receive) {
     const roomId = parseRoomToken(receive[1]);
     if (roomId) return { kind: 'car_sticker', action: 'lookup', roomId };
+  }
+
+  // ยืนยันว่าไปตั้ง (หรือหยุด) เก็บค่าที่จอดในแอป Horganice แล้ว
+  // Horganice ไม่มี API จึงต้องให้คนกดยืนยันกลับมาเอง ไม่งั้นชีทไม่มีทางรู้
+  const horganice = raw.match(CAR_HORGANICE_RE);
+  if (horganice) {
+    const action = CAR_HORGANICE_ACTION_MAP[String(horganice[1]).toLowerCase()];
+    const vehicleId = String(horganice[2] || '').trim();
+    if (action && vehicleId) return { kind: 'car_horganice', action, vehicleId };
   }
 
   const request = raw.match(CAR_SLOT_REQUEST_RE);
@@ -5883,6 +5899,7 @@ const worker = {
               action: carCommand.action || null,
               query: carCommand.query || null,
               roomId: carCommand.roomId || null,
+              vehicleId: carCommand.vehicleId || null,
               paymentMethod: carCommand.paymentMethod || null,
               text: textIn,
               lineUserId: userId || null,
@@ -5901,6 +5918,8 @@ const worker = {
               carOk = await notifyN8nCarLookup(env, carPayload);
             } else if (carCommand.kind === 'car_sticker') {
               carOk = await notifyN8nCarSticker(env, carPayload);
+            } else if (carCommand.kind === 'car_horganice') {
+              carOk = await notifyN8nCarHorganice(env, carPayload);
             } else {
               carOk = await notifyN8nCarRequest(env, carPayload);
             }
@@ -10093,6 +10112,10 @@ async function notifyN8nCarSticker(env, payload) {
 
 async function notifyN8nCarRequest(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_REQUEST_URL || '', payload, 'notifyN8nCarRequest');
+}
+
+async function notifyN8nCarHorganice(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_HORGANICE_URL || '', payload, 'notifyN8nCarHorganice');
 }
 
 async function notifyN8nCleaning(env, payload) {
