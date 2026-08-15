@@ -1311,6 +1311,20 @@ const CAR_HORGANICE_ACTION_MAP = {
 };
 const CAR_PLATE_LOOKUP_RE = /^\s*รถ\s+(.{2,24})$/i;
 
+// ชื่อผู้รับผิดชอบ ตรงกับแท็บ Manager_Id ใน MM_V2
+// เก็บชื่อลงชีทแทน LINE ID ดิบ เพราะคอลัมน์พวก StickerIssuedBy มีไว้ให้คนอ่าน
+// ส่วน ID ดิบยังถูกเก็บไว้ที่ Vehicle_Events.ActorLineUserId สำหรับตรวจย้อน
+const CAR_STAFF_NAMES = {
+  Ue90558b73d62863e2287ac32e69541a3: 'Ma',
+  U193cae8dd9197f7d4bd6ada8046fd98b: 'KP',
+  U2855d93e108ccebbef7d1b55ec8827e5: "P'Koy",
+  U9293d43980e98649e20c8759a2c2d7f0: "P'Yu"
+};
+
+function carStaffName(userId) {
+  return CAR_STAFF_NAMES[String(userId || '').trim()] || '';
+}
+
 function isCarAdminAllowedLineUserId(env, userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
@@ -5907,6 +5921,7 @@ const worker = {
               text: textIn,
               lineUserId: userId || null,
               actorLineUserId: userId || null,
+              actorName: carStaffName(userId),
               chatId: chatId || null,
               sourceType: ev?.source?.type || null,
               replyToken: replyToken || null,
