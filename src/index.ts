@@ -1301,7 +1301,7 @@ const CAR_PAYMENT_METHOD_MAP = {
   โอน: 'MOBILE_BANKING',
   transfer: 'MOBILE_BANKING'
 };
-const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)\s*$/i;
+const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)(?:\s+(ยืนยัน|confirm))?\s*$/i;
 const CAR_HORGANICE_RE = /^\s*horganice\s+(เปิด|ปิด|open|close)\s+(\S+)\s*$/i;
 const CAR_HORGANICE_ACTION_MAP = {
   เปิด: 'open',
@@ -1375,7 +1375,9 @@ function parseCarCommand(text) {
   const request = raw.match(CAR_SLOT_REQUEST_RE);
   if (request) {
     const roomId = parseRoomToken(request[1]);
-    if (roomId) return { kind: 'car_slot_request', roomId };
+    // A room can legitimately hold two permits, so a second request is a
+    // confirmation prompt rather than a hard block.
+    if (roomId) return { kind: 'car_slot_request', roomId, confirm: !!request[2] };
   }
 
   const plate = raw.match(CAR_PLATE_LOOKUP_RE);
@@ -5901,6 +5903,7 @@ const worker = {
               roomId: carCommand.roomId || null,
               vehicleId: carCommand.vehicleId || null,
               paymentMethod: carCommand.paymentMethod || null,
+              confirm: carCommand.confirm === true,
               text: textIn,
               lineUserId: userId || null,
               actorLineUserId: userId || null,
