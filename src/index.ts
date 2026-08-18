@@ -5922,6 +5922,49 @@ const worker = {
 
           const carCommand = parseCarCommand(textIn);
           if (carCommand) {
+            // "ขอที่จอดคนนอก" is the one car command an outsider is meant to use.
+            // Typed by staff it books a slot on someone's behalf; typed by anyone
+            // else it is the customer asking for themselves, which is the only way
+            // the system ever learns their LINE user id — and without that id no
+            // transfer bill can be sent. So route them into the customer flow
+            // instead of refusing, collecting the phone number the same way the
+            // parking card does.
+            const outsiderSelfRequest =
+              carCommand.kind === 'car_outsider_request' &&
+              !isCarAdminAllowedLineUserId(env, userId);
+
+            if (outsiderSelfRequest && userId) {
+              const segment = PARKING_CUSTOMER_SEGMENTS.outsider;
+              await kvPut(
+                env,
+                parkingOutsiderPhoneFlowKey(userId),
+                buildParkingOutsiderPhoneState({
+                  lineUserId: userId,
+                  chatId: chatId || null,
+                  requestData: {
+                    act: 'parking_rent_request',
+                    type: 'parking',
+                    plan: 'parking',
+                    customerType: segment.key,
+                    customerLabel: segment.label,
+                    pricePerMonth: segment.pricePerMonth,
+                    lineUserId: userId,
+                    chatId: chatId || null
+                  }
+                }),
+                PARKING_OUTSIDER_PHONE_TTL_SECONDS
+              );
+
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `รับคำขอเช่าที่จอดรถ (${segment.label} ${segment.pricePerMonth.toLocaleString('th-TH')} บาท/เดือน) แล้วครับ กรุณาส่งเบอร์โทรศัพท์ภายใน 2 นาที เพื่อให้เจ้าหน้าที่ติดต่อกลับครับ`,
+                'car_outsider_self_request_reply_failed'
+              );
+              continue;
+            }
+
             if (!isCarAdminAllowedLineUserId(env, userId)) {
               console.log('car_command_unauthorized', { userId, text: textIn.slice(0, 80) });
               await replyOrPushText(
