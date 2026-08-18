@@ -28,6 +28,7 @@
     "N8N_CAR_LOOKUP_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-lookup",
     "N8N_CAR_STICKER_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-sticker",
     "N8N_CAR_REQUEST_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-request",
+    "N8N_CAR_OUTSIDER_REQUEST_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-outsider-request",
     "N8N_CAR_HORGANICE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-horganice",
     "CAR_ADMIN_LINE_USER_IDS": "Ue90558b73d62863e2287ac32e69541a3,U193cae8dd9197f7d4bd6ada8046fd98b,U2855d93e108ccebbef7d1b55ec8827e5,U9293d43980e98649e20c8759a2c2d7f0",
     "N8N_POSTBACK_URL": "https://script.google.com/macros/s/AKfycbwRugkr-uUOzmu5HkmRw3W7fwGescjbL2xqsvyKIxLkYKibmJWItb1u_5PTZFatcI_B/exec",

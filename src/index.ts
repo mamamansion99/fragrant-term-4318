@@ -1314,6 +1314,10 @@ const CAR_PAYMENT_METHOD_MAP = {
   transfer: 'MOBILE_BANKING'
 };
 const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)(?:\s+(ยืนยัน|confirm))?\s*$/i;
+// Outsiders have no room number, so this one takes no argument at all.
+// Must be tested before CAR_SLOT_REQUEST_RE, which would otherwise capture
+// "คนนอก" as a room token and then quietly fail to parse it.
+const CAR_OUTSIDER_REQUEST_RE = /^\s*ขอที่จอด\s*คนนอก\s*$/i;
 const CAR_HORGANICE_RE = /^\s*horganice\s+(เปิด|ปิด|open|close)\s+(\S+)\s*$/i;
 const CAR_HORGANICE_ACTION_MAP = {
   เปิด: 'open',
@@ -1401,6 +1405,10 @@ function parseCarCommand(text) {
     const action = CAR_HORGANICE_ACTION_MAP[String(horganice[1]).toLowerCase()];
     const vehicleId = String(horganice[2] || '').trim();
     if (action && vehicleId) return { kind: 'car_horganice', action, vehicleId };
+  }
+
+  if (CAR_OUTSIDER_REQUEST_RE.test(raw)) {
+    return { kind: 'car_outsider_request' };
   }
 
   const request = raw.match(CAR_SLOT_REQUEST_RE);
@@ -5955,6 +5963,8 @@ const worker = {
               carOk = await notifyN8nCarSticker(env, carPayload);
             } else if (carCommand.kind === 'car_horganice') {
               carOk = await notifyN8nCarHorganice(env, carPayload);
+            } else if (carCommand.kind === 'car_outsider_request') {
+              carOk = await notifyN8nCarOutsiderRequest(env, carPayload);
             } else {
               carOk = await notifyN8nCarRequest(env, carPayload);
             }
@@ -10147,6 +10157,10 @@ async function notifyN8nCarSticker(env, payload) {
 
 async function notifyN8nCarRequest(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_REQUEST_URL || '', payload, 'notifyN8nCarRequest');
+}
+
+async function notifyN8nCarOutsiderRequest(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_OUTSIDER_REQUEST_URL || '', payload, 'notifyN8nCarOutsiderRequest');
 }
 
 async function notifyN8nCarHorganice(env, payload) {

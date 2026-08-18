@@ -3042,3 +3042,25 @@ describe('parseCarCommand with a VehicleID', () => {
 		expect(parseCarCommand('ออกสติกเกอร์ ห้องไหนก็ได้')).toBeNull();
 	});
 });
+
+describe('ขอที่จอดคนนอก', () => {
+	const { parseCarCommand } = __testables;
+
+	it('takes no argument and routes to its own intent', () => {
+		expect(parseCarCommand('ขอที่จอดคนนอก')).toEqual({ kind: 'car_outsider_request' });
+		expect(parseCarCommand('ขอที่จอด คนนอก')).toEqual({ kind: 'car_outsider_request' });
+	});
+
+	it('does not shadow the tenant request', () => {
+		expect(parseCarCommand('ขอที่จอด A101')).toEqual({
+			kind: 'car_slot_request',
+			roomId: 'A101',
+			confirm: false
+		});
+		expect(parseCarCommand('ขอที่จอด A101 ยืนยัน')).toEqual({
+			kind: 'car_slot_request',
+			roomId: 'A101',
+			confirm: true
+		});
+	});
+});
