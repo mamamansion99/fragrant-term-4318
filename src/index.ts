@@ -1099,6 +1099,18 @@ function parseRoomToken(token) {
   return room;
 }
 
+// Outsiders rent a parking slot without renting a room, so they have no room
+// number to key a command off. VehicleID is the only identifier they own, and
+// MM_CarSticker's Prepare node already looks a row up by it.
+// Accepts VEH-00041 / VEH41 / veh-41 and normalises to the sheet's own format.
+const CAR_VEHICLE_TOKEN_RE = /^VEH-?(\d{1,5})$/i;
+
+function parseVehicleToken(token) {
+  const match = String(token || '').trim().match(CAR_VEHICLE_TOKEN_RE);
+  if (!match) return null;
+  return `VEH-${match[1].padStart(5, '0')}`;
+}
+
 function parseCleaningCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -1356,8 +1368,11 @@ function parseCarCommand(text) {
 
   const issue = raw.match(CAR_STICKER_ISSUE_RE);
   if (issue) {
+    // Room first: a room number can never look like a VehicleID, so trying it
+    // first keeps the tenant path untouched.
     const roomId = parseRoomToken(issue[1]);
-    if (roomId) {
+    const vehicleId = roomId ? null : parseVehicleToken(issue[1]);
+    if (roomId || vehicleId) {
       // Cash changes hands at the counter at the same moment the sticker does,
       // so the payment method rides along with the issue command instead of
       // living in a separate flow the staff would have to remember.
@@ -1366,6 +1381,7 @@ function parseCarCommand(text) {
         kind: 'car_sticker',
         action: 'issue',
         roomId,
+        vehicleId,
         paymentMethod: CAR_PAYMENT_METHOD_MAP[methodToken] || null
       };
     }
@@ -1374,7 +1390,8 @@ function parseCarCommand(text) {
   const receive = raw.match(CAR_STICKER_RECEIVE_RE);
   if (receive) {
     const roomId = parseRoomToken(receive[1]);
-    if (roomId) return { kind: 'car_sticker', action: 'lookup', roomId };
+    const vehicleId = roomId ? null : parseVehicleToken(receive[1]);
+    if (roomId || vehicleId) return { kind: 'car_sticker', action: 'lookup', roomId, vehicleId };
   }
 
   // ยืนยันว่าไปตั้ง (หรือหยุด) เก็บค่าที่จอดในแอป Horganice แล้ว
@@ -10369,6 +10386,9 @@ export const __testables = {
   normalizeParkingPhone,
   isValidParkingPhone,
   buildParkingOutsiderPhonePayload,
+  parseRoomToken,
+  parseVehicleToken,
+  parseCarCommand,
   normalizePenaltyFlowReason,
   normalizePenaltySlipType,
   normalizePenaltySlipReason

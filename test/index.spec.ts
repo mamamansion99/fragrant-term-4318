@@ -2985,3 +2985,60 @@ describe('Worker routes', () => {
 		expect(await response.text()).toBe('OK');
 	});
 });
+
+describe('parseVehicleToken', () => {
+	it('normalises every VehicleID shape staff might type', () => {
+		const { parseVehicleToken } = __testables;
+		expect(parseVehicleToken('VEH-00041')).toBe('VEH-00041');
+		expect(parseVehicleToken('veh-41')).toBe('VEH-00041');
+		expect(parseVehicleToken('VEH41')).toBe('VEH-00041');
+		expect(parseVehicleToken(' VEH-1 ')).toBe('VEH-00001');
+	});
+
+	it('rejects anything that is not a VehicleID', () => {
+		const { parseVehicleToken } = __testables;
+		expect(parseVehicleToken('A101')).toBeNull();
+		expect(parseVehicleToken('MM-414')).toBeNull();
+		expect(parseVehicleToken('VEH-')).toBeNull();
+		expect(parseVehicleToken('VEHICLE-41')).toBeNull();
+		expect(parseVehicleToken('')).toBeNull();
+	});
+});
+
+describe('parseCarCommand with a VehicleID', () => {
+	const { parseCarCommand } = __testables;
+
+	it('issues a sticker for an outsider by VehicleID', () => {
+		expect(parseCarCommand('ออกสติกเกอร์ VEH-00041 โอน')).toEqual({
+			kind: 'car_sticker',
+			action: 'issue',
+			roomId: null,
+			vehicleId: 'VEH-00041',
+			paymentMethod: 'MOBILE_BANKING'
+		});
+	});
+
+	it('still issues by room number, with no vehicleId attached', () => {
+		expect(parseCarCommand('ออกสติกเกอร์ A101 เงินสด')).toEqual({
+			kind: 'car_sticker',
+			action: 'issue',
+			roomId: 'A101',
+			vehicleId: null,
+			paymentMethod: 'CASH'
+		});
+	});
+
+	it('looks a sticker up by VehicleID', () => {
+		expect(parseCarCommand('รับสติกเกอร์ veh-41')).toEqual({
+			kind: 'car_sticker',
+			action: 'lookup',
+			roomId: null,
+			vehicleId: 'VEH-00041'
+		});
+	});
+
+	it('does not treat a plain word as a VehicleID', () => {
+		// "รถ <plate>" must still win, and an unparseable token must not become a command.
+		expect(parseCarCommand('ออกสติกเกอร์ ห้องไหนก็ได้')).toBeNull();
+	});
+});
