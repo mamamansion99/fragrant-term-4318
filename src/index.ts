@@ -5922,7 +5922,17 @@ const worker = {
 
           const carCommand = parseCarCommand(textIn);
           if (carCommand) {
-            if (!isCarAdminAllowedLineUserId(env, userId)) {
+            const isCarAdmin = isCarAdminAllowedLineUserId(env, userId);
+
+            // Every car command is staff-only except this one. An outsider has no
+            // room number and no tenant record, so their LINE user id only ever
+            // reaches the sheet if they ask for the slot themselves — and without
+            // it MM_CarSticker cannot send them a transfer bill. Staff may still
+            // type it to book for a walk-in who does not use LINE; n8n tells the
+            // two apart from isCarAdmin.
+            const isOutsiderRequest = carCommand.kind === 'car_outsider_request';
+
+            if (!isCarAdmin && !isOutsiderRequest) {
               console.log('car_command_unauthorized', { userId, text: textIn.slice(0, 80) });
               await replyOrPushText(
                 env,
@@ -5937,6 +5947,7 @@ const worker = {
             const carPayload = {
               source: 'line_message',
               intent: carCommand.kind,
+              isCarAdmin,
               action: carCommand.action || null,
               query: carCommand.query || null,
               roomId: carCommand.roomId || null,
