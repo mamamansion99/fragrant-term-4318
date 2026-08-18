@@ -3064,3 +3064,28 @@ describe('ขอที่จอดคนนอก', () => {
 		});
 	});
 });
+
+describe('เลิกจอด', () => {
+	const { parseCarCommand } = __testables;
+
+	it('releases by VehicleID', () => {
+		expect(parseCarCommand('เลิกจอด VEH-00047')).toEqual({
+			kind: 'car_release',
+			roomId: null,
+			vehicleId: 'VEH-00047'
+		});
+	});
+
+	it('releases by room number for a tenant who sold their car', () => {
+		expect(parseCarCommand('เลิกจอด A101')).toEqual({
+			kind: 'car_release',
+			roomId: 'A101',
+			vehicleId: null
+		});
+	});
+
+	it('ignores an unusable target rather than guessing', () => {
+		expect(parseCarCommand('เลิกจอด ทั้งหมด')).toBeNull();
+		expect(parseCarCommand('เลิกจอด')).toBeNull();
+	});
+});

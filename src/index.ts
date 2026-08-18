@@ -1318,6 +1318,11 @@ const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)(?:\s+(ยื�
 // Must be tested before CAR_SLOT_REQUEST_RE, which would otherwise capture
 // "คนนอก" as a room token and then quietly fail to parse it.
 const CAR_OUTSIDER_REQUEST_RE = /^\s*ขอที่จอด\s*คนนอก\s*$/i;
+// Releasing a slot has no trigger of its own today. MM_CarCheckoutWatch only
+// notices people leaving a room, so it can never see the two cases that matter
+// here: an outsider (who has no room to check out of) and a tenant who sold
+// their car but stays. Both leave the permit held forever.
+const CAR_RELEASE_RE = /^\s*เลิกจอด\s+(\S+)\s*$/i;
 const CAR_HORGANICE_RE = /^\s*horganice\s+(เปิด|ปิด|open|close)\s+(\S+)\s*$/i;
 const CAR_HORGANICE_ACTION_MAP = {
   เปิด: 'open',
@@ -1409,6 +1414,13 @@ function parseCarCommand(text) {
 
   if (CAR_OUTSIDER_REQUEST_RE.test(raw)) {
     return { kind: 'car_outsider_request' };
+  }
+
+  const release = raw.match(CAR_RELEASE_RE);
+  if (release) {
+    const roomId = parseRoomToken(release[1]);
+    const vehicleId = roomId ? null : parseVehicleToken(release[1]);
+    if (roomId || vehicleId) return { kind: 'car_release', roomId, vehicleId };
   }
 
   const request = raw.match(CAR_SLOT_REQUEST_RE);
@@ -5976,6 +5988,8 @@ const worker = {
               carOk = await notifyN8nCarHorganice(env, carPayload);
             } else if (carCommand.kind === 'car_outsider_request') {
               carOk = await notifyN8nCarOutsiderRequest(env, carPayload);
+            } else if (carCommand.kind === 'car_release') {
+              carOk = await notifyN8nCarRelease(env, carPayload);
             } else {
               carOk = await notifyN8nCarRequest(env, carPayload);
             }
@@ -10172,6 +10186,10 @@ async function notifyN8nCarRequest(env, payload) {
 
 async function notifyN8nCarOutsiderRequest(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_OUTSIDER_REQUEST_URL || '', payload, 'notifyN8nCarOutsiderRequest');
+}
+
+async function notifyN8nCarRelease(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_RELEASE_URL || '', payload, 'notifyN8nCarRelease');
 }
 
 async function notifyN8nCarHorganice(env, payload) {
