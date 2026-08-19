@@ -3908,15 +3908,33 @@ const worker = {
             + 'กรุณาติดต่อเจ้าหน้าที่ที่ห้องนิติเพื่อชำระค่าที่จอดเดือนแรกและรับสติกเกอร์ในเวลาทำการค่ะ'
           );
 
-          const carAdminId = String(env.CAR_ADMIN_LINE_USER_IDS || '').split(',')[0].trim();
-          if (carAdminId) {
+          // แจ้งเข้ากลุ่มเจ้าหน้าที่ ไม่ใช่คนเดียว — คนที่รับเงินหน้าเคาน์เตอร์กับคนที่ถือสติกเกอร์
+          // อาจเป็นคนละคน และกะคนละกะ
+          //
+          // รายละเอียดรถติดมากับ postback เพราะ worker อ่านชีทไม่ได้
+          // เส้นโอนไม่ต้องแจ้งตรงนี้ เพราะ Manual Bill แจ้งให้เองหลังสลิปผ่าน
+          const parkStaffGroupId = String(env.CAR_STAFF_GROUP_ID || '').trim()
+            || String(env.CAR_ADMIN_LINE_USER_IDS || '').split(',')[0].trim();
+
+          if (parkStaffGroupId) {
+            const parkRoom = String(cleaningPostback.room || '').trim();
+            const parkPlate = String(cleaningPostback.plate || '').trim();
+            const parkBrand = String(cleaningPostback.brand || '').trim();
+            const parkRate = String(cleaningPostback.rate || '').trim();
+
+            const cashNotice = [
+              '🚗 เลือกจ่ายเงินสด รอมาจ่ายที่ออฟฟิศ',
+              `เลขรถ: ${parkVehicleId}`,
+              `ผู้เช่า: ${parkRoom ? 'ห้อง ' + parkRoom : 'บุคคลภายนอก'}`,
+              `ทะเบียน: ${parkPlate || '-'}`,
+              `ยี่ห้อ: ${parkBrand || '-'}`,
+              `ยอดที่ต้องเก็บ: ${parkRate || '-'} บาท`,
+              '',
+              `เก็บเงินแล้วพิมพ์: ออกสติกเกอร์ ${parkVehicleId} เงินสด`
+            ].join('\n');
+
             ctx.waitUntil(
-              linePushText(
-                env.LINE_ACCESS_TOKEN,
-                carAdminId,
-                `${parkVehicleId} เลือกจ่ายเงินสด รอมาจ่ายที่ออฟฟิศ\n`
-                + `เก็บเงินแล้วพิมพ์: ออกสติกเกอร์ ${parkVehicleId} เงินสด`
-              ).catch(console.error)
+              linePushText(env.LINE_ACCESS_TOKEN, parkStaffGroupId, cashNotice).catch(console.error)
             );
           }
           continue;
