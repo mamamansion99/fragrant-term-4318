@@ -3854,6 +3854,74 @@ const worker = {
         }
 
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
+
+        // ผู้เช่า/คนนอกกดเลือกวิธีจ่ายจากการ์ดที่ส่งให้หลังกรอกทะเบียนในฟอร์ม
+        //
+        // โอน  → ยิงเข้า car-sticker เส้นเดียวกับที่เจ้าหน้าที่พิมพ์ "ออกสติกเกอร์ <เลข> โอน"
+        //        ซึ่งตั้งแต่ 2026-08-18 สร้างบิลอย่างเดียว ไม่ออกสติกเกอร์จนกว่าสลิปจะผ่าน
+        //        จึงไม่ต้องมีสาขาใหม่ใน n8n และได้ตัวกันออกบิลซ้ำมาด้วยฟรี ๆ
+        // สด   → ไม่แตะระบบ บอกให้มาที่ออฟฟิศ แล้วบอกเจ้าหน้าที่ว่ารายนี้จะจ่ายสด
+        if (String(cleaningPostback.action || '').trim() === 'PARK_PAY') {
+          const parkChatId = getChatId(ev);
+          const parkUserId = String(ev?.source?.userId || '').trim();
+          const parkVehicleId = String(cleaningPostback.vehicleId || '').trim();
+          const parkMethod = String(cleaningPostback.method || '').trim().toLowerCase();
+
+          const sayToPayer = async (text) => {
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
+            } else if (parkChatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, parkChatId, text).catch(console.error));
+            }
+          };
+
+          if (!parkVehicleId) {
+            await sayToPayer('ไม่พบเลขรถในปุ่มนี้ กรุณาติดต่อเจ้าหน้าที่ค่ะ');
+            continue;
+          }
+
+          if (parkMethod === 'transfer') {
+            const billOk = await notifyN8nCarSticker(env, {
+              source: 'line_postback',
+              intent: 'car_sticker',
+              action: 'issue',
+              vehicleId: parkVehicleId,
+              paymentMethod: 'MOBILE_BANKING',
+              isCarAdmin: false,
+              lineUserId: parkUserId || null,
+              actorLineUserId: parkUserId || null,
+              actorName: '',
+              chatId: parkChatId || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            });
+            // n8n เป็นคนตอบเองเมื่อสำเร็จ worker พูดเฉพาะตอน webhook ล่ม
+            if (!billOk) {
+              await sayToPayer('ระบบขัดข้องชั่วคราว กรุณากดปุ่มอีกครั้งหรือติดต่อเจ้าหน้าที่ค่ะ');
+            }
+            continue;
+          }
+
+          await sayToPayer(
+            'รับทราบค่ะ 🙏\n'
+            + 'กรุณาติดต่อเจ้าหน้าที่ที่ห้องนิติเพื่อชำระค่าที่จอดเดือนแรกและรับสติกเกอร์ในเวลาทำการค่ะ'
+          );
+
+          const carAdminId = String(env.CAR_ADMIN_LINE_USER_IDS || '').split(',')[0].trim();
+          if (carAdminId) {
+            ctx.waitUntil(
+              linePushText(
+                env.LINE_ACCESS_TOKEN,
+                carAdminId,
+                `${parkVehicleId} เลือกจ่ายเงินสด รอมาจ่ายที่ออฟฟิศ\n`
+                + `เก็บเงินแล้วพิมพ์: ออกสติกเกอร์ ${parkVehicleId} เงินสด`
+              ).catch(console.error)
+            );
+          }
+          continue;
+        }
+
         if (isBillManualPayClick(cleaningPostback)) {
           const chatId = getChatId(ev);
           const lineUserId = String(ev?.source?.userId || '').trim();
