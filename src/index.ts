@@ -3520,6 +3520,312 @@ export class ActiveFlowOwner {
 }
 
 /* =========================
+ * Maid task board
+ *
+ * A group chat cannot carry a LINE rich menu, so the board is reached by
+ * typing a command. The reply summarises what is still open and links to
+ * the board itself, which is where the work actually gets done.
+ * ========================= */
+const DEFAULT_MAID_BOARD_URL = 'https://maid-webapp.vercel.app';
+const DEFAULT_MAID_API_URL =
+  'https://script.google.com/macros/s/AKfycbzCexFdfNouI2ru_4Hiia7B8cf0mZNhEVzj8EPOYfcxUykN1zoJ3j2Dlsr75tSZqX2evw/exec';
+const MAID_BOARD_COMMANDS = new Set(['งาน', 'งานค้าง', 'task', 'tasks', 'board']);
+const MAID_BOARD_TIMEOUT_MS = 12 * 1000;
+const MAID_BOARD_MAX_ROOMS = 10;
+
+function isMaidBoardCommand(text) {
+  return MAID_BOARD_COMMANDS.has(String(text || '').trim().toLowerCase());
+}
+
+function getMaidBoardUrl(env) {
+  return env.MAID_BOARD_URL || DEFAULT_MAID_BOARD_URL;
+}
+
+function getMaidApiUrl(env) {
+  return env.MAID_API_URL || DEFAULT_MAID_API_URL;
+}
+
+async function fetchMaidBoard(env) {
+  const url = `${getMaidApiUrl(env)}?action=maidBoard`;
+  const res = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(MAID_BOARD_TIMEOUT_MS)
+  });
+  if (!res.ok) throw new Error(`maid board http ${res.status}`);
+  const data = await res.json();
+  if (!data || data.ok !== true) throw new Error(`maid board error ${data && data.error}`);
+  return Array.isArray(data.rooms) ? data.rooms : [];
+}
+
+function summariseMaidRooms(rooms) {
+  const out = [];
+  let total = 0;
+  for (const room of rooms) {
+    const tasks = Array.isArray(room.tasks) ? room.tasks : [];
+    const open = tasks.filter(t => t && t.state !== 'done');
+    if (open.length === 0) continue;
+    total += open.length;
+    out.push({
+      room: String(room.room || room.id || '-'),
+      process: String(room.process || ''),
+      openCount: open.length,
+      labels: open.map(t => String(t.label || '')).filter(Boolean)
+    });
+  }
+  out.sort((a, b) => b.openCount - a.openCount || a.room.localeCompare(b.room));
+  return { rows: out, total };
+}
+
+async function buildMaidBoardMessage(env) {
+  const boardUrl = getMaidBoardUrl(env);
+
+  let summary;
+  try {
+    summary = summariseMaidRooms(await fetchMaidBoard(env));
+  } catch (err) {
+    console.log('maid_board_fetch_failed', { message: String(err) });
+    return {
+      type: 'text',
+      text: `ดึงรายการงานไม่สำเร็จ ลองใหม่อีกครั้งนะคะ\nหรือเปิดบอร์ดโดยตรง: ${boardUrl}`
+    };
+  }
+
+  if (summary.total === 0) {
+    return { type: 'text', text: '✅ ตอนนี้ไม่มีงานค้างค่ะ' };
+  }
+
+  const shown = summary.rows.slice(0, MAID_BOARD_MAX_ROOMS);
+  const hiddenRooms = summary.rows.length - shown.length;
+
+  const bodyContents = [
+    { type: 'text', text: `ค้างทั้งหมด ${summary.total} งาน · ${summary.rows.length} ห้อง`, size: 'sm', color: '#666666', wrap: true },
+    { type: 'separator', margin: 'md' }
+  ];
+
+  for (const row of shown) {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'md',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: `${row.room} · ค้าง ${row.openCount}`, weight: 'bold', size: 'sm' },
+        { type: 'text', text: row.labels.join(' · ') || '-', size: 'xs', color: '#888888', wrap: true }
+      ]
+    });
+  }
+
+  if (hiddenRooms > 0) {
+    bodyContents.push({
+      type: 'text',
+      text: `และอีก ${hiddenRooms} ห้อง — ดูทั้งหมดในบอร์ด`,
+      size: 'xs',
+      color: '#888888',
+      margin: 'md',
+      wrap: true
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `งานค้าง ${summary.total} งาน`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'text', text: '🧹 งานค้าง', weight: 'bold', size: 'lg' }]
+      },
+      body: { type: 'box', layout: 'vertical', contents: bodyContents },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{
+          type: 'button',
+          style: 'primary',
+          action: { type: 'uri', label: 'เปิดบอร์ดงาน', uri: boardUrl }
+        }]
+      }
+    }
+  };
+}
+
+/* =========================
+ * Checkout form tokens
+ *
+ * n8n cannot mint these itself: its Code node sandbox has no `crypto` global
+ * and blocks require('crypto'), and the bundled Crypto node in this n8n
+ * version only does symmetric/asymmetric encryption, not random generation.
+ * So the worker issues them and n8n stores them on the Checkout_Tasks row.
+ * ========================= */
+const FORM_TOKEN_TTL_DAYS_DEFAULT = 30;
+const FORM_TOKEN_TTL_DAYS_MAX = 365;
+const FORM_TOKEN_MAX_BATCH = 50;
+const INTERNAL_SECRET_HEADER = 'x-internal-secret';
+
+function constantTimeEquals(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i++) {
+    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' }
+  });
+}
+
+async function issueFormTokens(request, env) {
+  const expected = env.INTERNAL_API_SECRET || '';
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) || '';
+
+  if (!expected) {
+    return jsonResponse({ ok: false, error: 'secret_not_configured' }, 503);
+  }
+  if (!constantTimeEquals(expected, provided)) {
+    // Say enough to tell a wrong header name from a wrong value, without
+    // echoing any secret material back to the caller.
+    return jsonResponse({
+      ok: false,
+      error: 'unauthorized',
+      headerPresent: provided.length > 0,
+      headerLength: provided.length,
+      expectedLength: expected.length
+    }, 401);
+  }
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const rawIds = Array.isArray(body.taskIds)
+    ? body.taskIds
+    : (body.taskId ? [body.taskId] : []);
+
+  const taskIds = [];
+  for (const raw of rawIds) {
+    const id = String(raw ?? '').trim();
+    if (id && !taskIds.includes(id)) taskIds.push(id);
+  }
+
+  if (taskIds.length === 0) {
+    return jsonResponse({ ok: false, error: 'missing_taskIds' }, 400);
+  }
+  if (taskIds.length > FORM_TOKEN_MAX_BATCH) {
+    return jsonResponse({ ok: false, error: 'too_many_taskIds', max: FORM_TOKEN_MAX_BATCH }, 400);
+  }
+
+  const requestedTtl = Number(body.ttlDays);
+  const ttlDays = Number.isFinite(requestedTtl) && requestedTtl > 0
+    ? Math.min(Math.floor(requestedTtl), FORM_TOKEN_TTL_DAYS_MAX)
+    : FORM_TOKEN_TTL_DAYS_DEFAULT;
+
+  const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const tokens = {};
+  for (const taskId of taskIds) {
+    tokens[taskId] = crypto.randomUUID().replace(/-/g, '');
+  }
+
+  return jsonResponse({ ok: true, ttlDays, expiresAt, tokens });
+}
+
+/* =========================
+ * Signed action links
+ *
+ * For LINE buttons that mutate state (approve a refund, mark it paid).
+ * Nothing is stored: the token carries its own expiry and is signed with
+ * the same worker secret, so a leaked link stops working on its own and
+ * cannot be forged. Single-use comes from the refund state machine, which
+ * only accepts each step from one specific status.
+ * ========================= */
+const LINK_TOKEN_TTL_MINUTES_DEFAULT = 3 * 24 * 60;
+const LINK_TOKEN_TTL_MINUTES_MAX = 30 * 24 * 60;
+
+async function hmacHex(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function handleLinkToken(request, env) {
+  const expected = env.INTERNAL_API_SECRET || '';
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) || '';
+
+  if (!expected) return jsonResponse({ ok: false, error: 'secret_not_configured' }, 503);
+  if (!constantTimeEquals(expected, provided)) {
+    return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+  }
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const op = String(body.op || '').trim().toLowerCase();
+  const subject = String(body.subject || '').trim();
+  if (!subject) return jsonResponse({ ok: false, error: 'missing_subject' }, 400);
+
+  if (op === 'sign') {
+    const requested = Number(body.ttlMinutes);
+    const ttl = Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.floor(requested), LINK_TOKEN_TTL_MINUTES_MAX)
+      : LINK_TOKEN_TTL_MINUTES_DEFAULT;
+    const expMs = Date.now() + ttl * 60 * 1000;
+    const sig = await hmacHex(expected, `${subject}|${expMs}`);
+    return jsonResponse({
+      ok: true,
+      token: `${expMs}.${sig}`,
+      expiresAt: new Date(expMs).toISOString()
+    });
+  }
+
+  if (op === 'verify') {
+    const token = String(body.token || '').trim();
+    if (!token) return jsonResponse({ ok: true, valid: false, reason: 'missing_token' });
+
+    const dot = token.indexOf('.');
+    if (dot <= 0) return jsonResponse({ ok: true, valid: false, reason: 'malformed_token' });
+
+    const expMs = Number(token.slice(0, dot));
+    const sig = token.slice(dot + 1);
+    if (!Number.isFinite(expMs)) {
+      return jsonResponse({ ok: true, valid: false, reason: 'malformed_token' });
+    }
+    if (Date.now() > expMs) {
+      return jsonResponse({ ok: true, valid: false, reason: 'expired' });
+    }
+
+    const want = await hmacHex(expected, `${subject}|${expMs}`);
+    if (!constantTimeEquals(want, sig)) {
+      return jsonResponse({ ok: true, valid: false, reason: 'bad_signature' });
+    }
+
+    return jsonResponse({ ok: true, valid: true, reason: 'ok', expiresAt: new Date(expMs).toISOString() });
+  }
+
+  return jsonResponse({ ok: false, error: 'unknown_op' }, 400);
+}
+
+/* =========================
  * 4) Main Worker Entrypoint
  * ========================= */
 const LINE_BACKGROUND_PROCESSING_HEADER = 'x-mama-line-background';
@@ -3569,6 +3875,30 @@ const worker = {
         status: res.status,
         headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
       });
+    }
+
+    if (request.method === 'POST' && url.pathname === '/internal/token/issue') {
+      return issueFormTokens(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/internal/link') {
+      return handleLinkToken(request, env);
+    }
+
+    if (request.method === 'GET' && url.pathname === '/internal/diag/n8n-secret') {
+      // Confirms the deployed worker resolved N8N_WEBHOOK_SECRET to the same value
+      // as the n8n Header Auth credential. Returns a digest, never the secret.
+      const expectedDiag = env.INTERNAL_API_SECRET || '';
+      const providedDiag = request.headers.get(INTERNAL_SECRET_HEADER) || '';
+      if (!expectedDiag || !constantTimeEquals(expectedDiag, providedDiag)) {
+        return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+      }
+      const diagValue = n8nWebhookSecret(env);
+      const diagBytes = diagValue
+        ? new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(diagValue)))
+        : new Uint8Array(0);
+      const diagHex = [...diagBytes].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
+      return jsonResponse({ ok: true, hasDedicated: !!env.N8N_WEBHOOK_SECRET, length: diagValue.length, sha256Prefix: diagHex });
     }
 
     if (request.method === 'GET' && url.pathname === '/health') {
@@ -5966,6 +6296,12 @@ const worker = {
               }
             };
             await replyOrPushMessages(env, replyToken, chatId, [msg], 'screening_config_reply_failed');
+            continue;
+          }
+
+          if (isMaidBoardCommand(textIn)) {
+            const boardMsg = await buildMaidBoardMessage(env);
+            await replyOrPushMessages(env, replyToken, chatId, [boardMsg], 'maid_board_reply_failed');
             continue;
           }
 
@@ -9850,12 +10186,24 @@ async function handleReturnKeyStart(env, opts) {
   return true;
 }
 
+/**
+ * Secret for the four n8n webhooks this worker calls directly
+ * (checkout, co-admin, co-admin-cash-receiver, checkout-cash).
+ *
+ * They share one Header Auth credential in n8n keyed on x-mm-secret, so all
+ * four have to send the same value. N8N_WEBHOOK_SECRET is dedicated to them;
+ * WORKER_SECRET is the fallback and is also used by many unrelated endpoints.
+ */
+function n8nWebhookSecret(env) {
+  return env.N8N_WEBHOOK_SECRET || env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+}
+
 async function notifyN8nCheckoutStart(env, payload) {
   const url = getCheckoutWebhook(env);
   if (!url) throw new Error('missing checkout webhook URL');
 
   const headers = { 'Content-Type': 'application/json', 'accept': 'application/json' };
-  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+  const secret = n8nWebhookSecret(env);
   if (secret) headers['x-mm-secret'] = secret;
 
   console.log('checkout_webhook_req', { url, roomId: payload?.roomId || '', hasSecret: !!secret });
@@ -10148,9 +10496,10 @@ async function notifyN8nCheckoutCash(env, payload) {
 
   const headers = { 'Content-Type': 'application/json' };
   const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
-  if (secret) {
-    headers['x-worker-secret'] = secret;
-  }
+  if (secret) headers['x-worker-secret'] = secret;
+  // n8n Header Auth on these webhooks matches x-mm-secret, same as checkout.
+  const n8nSecret = n8nWebhookSecret(env);
+  if (n8nSecret) headers['x-mm-secret'] = n8nSecret;
 
   try {
     const res = await fetch(url, {
@@ -10208,9 +10557,10 @@ async function notifyN8nCoAdminWebhook(env, payload) {
 
   const headers = { 'Content-Type': 'application/json' };
   const secret = env.WORKER_SECRET || '';
-  if (secret) {
-    headers['x-worker-secret'] = secret;
-  }
+  if (secret) headers['x-worker-secret'] = secret;
+  // n8n Header Auth on these webhooks matches x-mm-secret, same as checkout.
+  const n8nSecret = n8nWebhookSecret(env);
+  if (n8nSecret) headers['x-mm-secret'] = n8nSecret;
 
   try {
     const res = await fetch(url, {
