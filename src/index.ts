@@ -3885,21 +3885,6 @@ const worker = {
       return handleLinkToken(request, env);
     }
 
-    if (request.method === 'GET' && url.pathname === '/internal/diag/n8n-secret') {
-      // Confirms the deployed worker resolved N8N_WEBHOOK_SECRET to the same value
-      // as the n8n Header Auth credential. Returns a digest, never the secret.
-      const expectedDiag = env.INTERNAL_API_SECRET || '';
-      const providedDiag = request.headers.get(INTERNAL_SECRET_HEADER) || '';
-      if (!expectedDiag || !constantTimeEquals(expectedDiag, providedDiag)) {
-        return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
-      }
-      const diagValue = n8nWebhookSecret(env);
-      const diagBytes = diagValue
-        ? new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(diagValue)))
-        : new Uint8Array(0);
-      const diagHex = [...diagBytes].map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 16);
-      return jsonResponse({ ok: true, hasDedicated: !!env.N8N_WEBHOOK_SECRET, length: diagValue.length, sha256Prefix: diagHex });
-    }
 
     if (request.method === 'GET' && url.pathname === '/health') {
       const durableOwnerConfigured = hasActiveFlowOwner(env);
