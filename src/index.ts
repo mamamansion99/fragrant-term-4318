@@ -1099,6 +1099,18 @@ function parseRoomToken(token) {
   return room;
 }
 
+// Outsiders rent a parking slot without renting a room, so they have no room
+// number to key a command off. VehicleID is the only identifier they own, and
+// MM_CarSticker's Prepare node already looks a row up by it.
+// Accepts VEH-00041 / VEH41 / veh-41 and normalises to the sheet's own format.
+const CAR_VEHICLE_TOKEN_RE = /^VEH-?(\d{1,5})$/i;
+
+function parseVehicleToken(token) {
+  const match = String(token || '').trim().match(CAR_VEHICLE_TOKEN_RE);
+  if (!match) return null;
+  return `VEH-${match[1].padStart(5, '0')}`;
+}
+
 function parseCleaningCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -1287,6 +1299,145 @@ function isCoAdminAllowedLineUserId(userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
   return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+// --- Car slot / parking sticker staff commands ---
+// Every command below is staff-only. Tenants use the existing parking rich menu.
+const CAR_STICKER_BARE_RE = /^\s*(MM-\d{1,4})\s*$/i;
+const CAR_STICKER_LABELLED_RE = /^\s*สติกเกอร์\s*(MM[-\s]?\d{1,4})\s*$/i;
+const CAR_STICKER_RECEIVE_RE = /^\s*รับสติกเกอร์\s+(\S+)\s*$/i;
+const CAR_STICKER_ISSUE_RE = /^\s*ออกสติกเกอร์\s+(\S+)(?:\s+(เงินสด|โอน|cash|transfer))?\s*$/i;
+const CAR_PAYMENT_METHOD_MAP = {
+  เงินสด: 'CASH',
+  cash: 'CASH',
+  โอน: 'MOBILE_BANKING',
+  transfer: 'MOBILE_BANKING'
+};
+const CAR_SLOT_REQUEST_RE = /^\s*ขอที่จอด\s+(\S+)(?:\s+(ยืนยัน|confirm))?\s*$/i;
+// Outsiders have no room number, so this one takes no argument at all.
+// Must be tested before CAR_SLOT_REQUEST_RE, which would otherwise capture
+// "คนนอก" as a room token and then quietly fail to parse it.
+const CAR_OUTSIDER_REQUEST_RE = /^\s*ขอที่จอด\s*คนนอก\s*$/i;
+// Releasing a slot has no trigger of its own today. MM_CarCheckoutWatch only
+// notices people leaving a room, so it can never see the two cases that matter
+// here: an outsider (who has no room to check out of) and a tenant who sold
+// their car but stays. Both leave the permit held forever.
+const CAR_RELEASE_RE = /^\s*เลิกจอด\s+(\S+)\s*$/i;
+const CAR_HORGANICE_RE = /^\s*horganice\s+(เปิด|ปิด|open|close)\s+(\S+)\s*$/i;
+const CAR_HORGANICE_ACTION_MAP = {
+  เปิด: 'open',
+  open: 'open',
+  ปิด: 'close',
+  close: 'close'
+};
+const CAR_PLATE_LOOKUP_RE = /^\s*รถ\s+(.{2,24})$/i;
+
+// ชื่อผู้รับผิดชอบ ตรงกับแท็บ Manager_Id ใน MM_V2
+// เก็บชื่อลงชีทแทน LINE ID ดิบ เพราะคอลัมน์พวก StickerIssuedBy มีไว้ให้คนอ่าน
+// ส่วน ID ดิบยังถูกเก็บไว้ที่ Vehicle_Events.ActorLineUserId สำหรับตรวจย้อน
+const CAR_STAFF_NAMES = {
+  Ue90558b73d62863e2287ac32e69541a3: 'Ma',
+  U193cae8dd9197f7d4bd6ada8046fd98b: 'KP',
+  U2855d93e108ccebbef7d1b55ec8827e5: "P'Koy",
+  U9293d43980e98649e20c8759a2c2d7f0: "P'Yu"
+};
+
+function carStaffName(userId) {
+  return CAR_STAFF_NAMES[String(userId || '').trim()] || '';
+}
+
+function isCarAdminAllowedLineUserId(env, userId) {
+  const normalized = String(userId || '').trim();
+  if (!normalized) return false;
+  const configured = String(env?.CAR_ADMIN_LINE_USER_IDS || '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+  if (configured.length) return configured.includes(normalized);
+  return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+// Order matters: the specific sticker verbs are checked before the generic
+// "รถ <plate>" lookup so a plate search never swallows an issue command.
+function parseCarCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const labelled = raw.match(CAR_STICKER_LABELLED_RE);
+  if (labelled) {
+    return { kind: 'car_lookup', query: labelled[1].replace(/\s+/g, '').toUpperCase() };
+  }
+
+  // A bare sticker number must carry the dash, otherwise "MM414" collides with
+  // the reservation codes handled by parseBookingCodeCommand.
+  const bare = raw.match(CAR_STICKER_BARE_RE);
+  if (bare) {
+    return { kind: 'car_lookup', query: bare[1].toUpperCase() };
+  }
+
+  const issue = raw.match(CAR_STICKER_ISSUE_RE);
+  if (issue) {
+    // Room first: a room number can never look like a VehicleID, so trying it
+    // first keeps the tenant path untouched.
+    const roomId = parseRoomToken(issue[1]);
+    const vehicleId = roomId ? null : parseVehicleToken(issue[1]);
+    if (roomId || vehicleId) {
+      // Cash changes hands at the counter at the same moment the sticker does,
+      // so the payment method rides along with the issue command instead of
+      // living in a separate flow the staff would have to remember.
+      const methodToken = String(issue[2] || '').toLowerCase();
+      return {
+        kind: 'car_sticker',
+        action: 'issue',
+        roomId,
+        vehicleId,
+        paymentMethod: CAR_PAYMENT_METHOD_MAP[methodToken] || null
+      };
+    }
+  }
+
+  const receive = raw.match(CAR_STICKER_RECEIVE_RE);
+  if (receive) {
+    const roomId = parseRoomToken(receive[1]);
+    const vehicleId = roomId ? null : parseVehicleToken(receive[1]);
+    if (roomId || vehicleId) return { kind: 'car_sticker', action: 'lookup', roomId, vehicleId };
+  }
+
+  // ยืนยันว่าไปตั้ง (หรือหยุด) เก็บค่าที่จอดในแอป Horganice แล้ว
+  // Horganice ไม่มี API จึงต้องให้คนกดยืนยันกลับมาเอง ไม่งั้นชีทไม่มีทางรู้
+  const horganice = raw.match(CAR_HORGANICE_RE);
+  if (horganice) {
+    const action = CAR_HORGANICE_ACTION_MAP[String(horganice[1]).toLowerCase()];
+    const vehicleId = String(horganice[2] || '').trim();
+    if (action && vehicleId) return { kind: 'car_horganice', action, vehicleId };
+  }
+
+  if (CAR_OUTSIDER_REQUEST_RE.test(raw)) {
+    return { kind: 'car_outsider_request' };
+  }
+
+  const release = raw.match(CAR_RELEASE_RE);
+  if (release) {
+    const roomId = parseRoomToken(release[1]);
+    const vehicleId = roomId ? null : parseVehicleToken(release[1]);
+    if (roomId || vehicleId) return { kind: 'car_release', roomId, vehicleId };
+  }
+
+  const request = raw.match(CAR_SLOT_REQUEST_RE);
+  if (request) {
+    const roomId = parseRoomToken(request[1]);
+    // A room can legitimately hold two permits, so a second request is a
+    // confirmation prompt rather than a hard block.
+    if (roomId) return { kind: 'car_slot_request', roomId, confirm: !!request[2] };
+  }
+
+  const plate = raw.match(CAR_PLATE_LOOKUP_RE);
+  if (plate) {
+    const query = plate[1].trim();
+    if (query) return { kind: 'car_lookup', query };
+  }
+
+  return null;
 }
 
 function isReturnKeyAllowedLineUserId(userId) {
@@ -2616,6 +2767,18 @@ function classifyTextCommand(text, options = {}) {
     };
   }
 
+  // Must be classified before isParkingIntent below, which would otherwise
+  // swallow "ขอที่จอด <room>" as a generic parking enquiry.
+  const carCommand = parseCarCommand(raw);
+  if (carCommand) {
+    return {
+      kind: carCommand.kind,
+      statePolicy: carCommand.kind === 'car_lookup'
+        ? TEXT_COMMAND_BYPASS_FLOW
+        : TEXT_COMMAND_REPLACE_FLOW
+    };
+  }
+
   if (/^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(raw)) {
     return { kind: 'payment_menu', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
@@ -3357,6 +3520,312 @@ export class ActiveFlowOwner {
 }
 
 /* =========================
+ * Maid task board
+ *
+ * A group chat cannot carry a LINE rich menu, so the board is reached by
+ * typing a command. The reply summarises what is still open and links to
+ * the board itself, which is where the work actually gets done.
+ * ========================= */
+const DEFAULT_MAID_BOARD_URL = 'https://maid-webapp.vercel.app';
+const DEFAULT_MAID_API_URL =
+  'https://script.google.com/macros/s/AKfycbzCexFdfNouI2ru_4Hiia7B8cf0mZNhEVzj8EPOYfcxUykN1zoJ3j2Dlsr75tSZqX2evw/exec';
+const MAID_BOARD_COMMANDS = new Set(['งาน', 'งานค้าง', 'task', 'tasks', 'board']);
+const MAID_BOARD_TIMEOUT_MS = 12 * 1000;
+const MAID_BOARD_MAX_ROOMS = 10;
+
+function isMaidBoardCommand(text) {
+  return MAID_BOARD_COMMANDS.has(String(text || '').trim().toLowerCase());
+}
+
+function getMaidBoardUrl(env) {
+  return env.MAID_BOARD_URL || DEFAULT_MAID_BOARD_URL;
+}
+
+function getMaidApiUrl(env) {
+  return env.MAID_API_URL || DEFAULT_MAID_API_URL;
+}
+
+async function fetchMaidBoard(env) {
+  const url = `${getMaidApiUrl(env)}?action=maidBoard`;
+  const res = await fetch(url, {
+    redirect: 'follow',
+    signal: AbortSignal.timeout(MAID_BOARD_TIMEOUT_MS)
+  });
+  if (!res.ok) throw new Error(`maid board http ${res.status}`);
+  const data = await res.json();
+  if (!data || data.ok !== true) throw new Error(`maid board error ${data && data.error}`);
+  return Array.isArray(data.rooms) ? data.rooms : [];
+}
+
+function summariseMaidRooms(rooms) {
+  const out = [];
+  let total = 0;
+  for (const room of rooms) {
+    const tasks = Array.isArray(room.tasks) ? room.tasks : [];
+    const open = tasks.filter(t => t && t.state !== 'done');
+    if (open.length === 0) continue;
+    total += open.length;
+    out.push({
+      room: String(room.room || room.id || '-'),
+      process: String(room.process || ''),
+      openCount: open.length,
+      labels: open.map(t => String(t.label || '')).filter(Boolean)
+    });
+  }
+  out.sort((a, b) => b.openCount - a.openCount || a.room.localeCompare(b.room));
+  return { rows: out, total };
+}
+
+async function buildMaidBoardMessage(env) {
+  const boardUrl = getMaidBoardUrl(env);
+
+  let summary;
+  try {
+    summary = summariseMaidRooms(await fetchMaidBoard(env));
+  } catch (err) {
+    console.log('maid_board_fetch_failed', { message: String(err) });
+    return {
+      type: 'text',
+      text: `ดึงรายการงานไม่สำเร็จ ลองใหม่อีกครั้งนะคะ\nหรือเปิดบอร์ดโดยตรง: ${boardUrl}`
+    };
+  }
+
+  if (summary.total === 0) {
+    return { type: 'text', text: '✅ ตอนนี้ไม่มีงานค้างค่ะ' };
+  }
+
+  const shown = summary.rows.slice(0, MAID_BOARD_MAX_ROOMS);
+  const hiddenRooms = summary.rows.length - shown.length;
+
+  const bodyContents = [
+    { type: 'text', text: `ค้างทั้งหมด ${summary.total} งาน · ${summary.rows.length} ห้อง`, size: 'sm', color: '#666666', wrap: true },
+    { type: 'separator', margin: 'md' }
+  ];
+
+  for (const row of shown) {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      margin: 'md',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: `${row.room} · ค้าง ${row.openCount}`, weight: 'bold', size: 'sm' },
+        { type: 'text', text: row.labels.join(' · ') || '-', size: 'xs', color: '#888888', wrap: true }
+      ]
+    });
+  }
+
+  if (hiddenRooms > 0) {
+    bodyContents.push({
+      type: 'text',
+      text: `และอีก ${hiddenRooms} ห้อง — ดูทั้งหมดในบอร์ด`,
+      size: 'xs',
+      color: '#888888',
+      margin: 'md',
+      wrap: true
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `งานค้าง ${summary.total} งาน`,
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{ type: 'text', text: '🧹 งานค้าง', weight: 'bold', size: 'lg' }]
+      },
+      body: { type: 'box', layout: 'vertical', contents: bodyContents },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [{
+          type: 'button',
+          style: 'primary',
+          action: { type: 'uri', label: 'เปิดบอร์ดงาน', uri: boardUrl }
+        }]
+      }
+    }
+  };
+}
+
+/* =========================
+ * Checkout form tokens
+ *
+ * n8n cannot mint these itself: its Code node sandbox has no `crypto` global
+ * and blocks require('crypto'), and the bundled Crypto node in this n8n
+ * version only does symmetric/asymmetric encryption, not random generation.
+ * So the worker issues them and n8n stores them on the Checkout_Tasks row.
+ * ========================= */
+const FORM_TOKEN_TTL_DAYS_DEFAULT = 30;
+const FORM_TOKEN_TTL_DAYS_MAX = 365;
+const FORM_TOKEN_MAX_BATCH = 50;
+const INTERNAL_SECRET_HEADER = 'x-internal-secret';
+
+function constantTimeEquals(a, b) {
+  const left = String(a ?? '');
+  const right = String(b ?? '');
+  if (left.length !== right.length) return false;
+  let diff = 0;
+  for (let i = 0; i < left.length; i++) {
+    diff |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+function jsonResponse(payload, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'Content-Type': 'application/json; charset=utf-8' }
+  });
+}
+
+async function issueFormTokens(request, env) {
+  const expected = env.INTERNAL_API_SECRET || '';
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) || '';
+
+  if (!expected) {
+    return jsonResponse({ ok: false, error: 'secret_not_configured' }, 503);
+  }
+  if (!constantTimeEquals(expected, provided)) {
+    // Say enough to tell a wrong header name from a wrong value, without
+    // echoing any secret material back to the caller.
+    return jsonResponse({
+      ok: false,
+      error: 'unauthorized',
+      headerPresent: provided.length > 0,
+      headerLength: provided.length,
+      expectedLength: expected.length
+    }, 401);
+  }
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const rawIds = Array.isArray(body.taskIds)
+    ? body.taskIds
+    : (body.taskId ? [body.taskId] : []);
+
+  const taskIds = [];
+  for (const raw of rawIds) {
+    const id = String(raw ?? '').trim();
+    if (id && !taskIds.includes(id)) taskIds.push(id);
+  }
+
+  if (taskIds.length === 0) {
+    return jsonResponse({ ok: false, error: 'missing_taskIds' }, 400);
+  }
+  if (taskIds.length > FORM_TOKEN_MAX_BATCH) {
+    return jsonResponse({ ok: false, error: 'too_many_taskIds', max: FORM_TOKEN_MAX_BATCH }, 400);
+  }
+
+  const requestedTtl = Number(body.ttlDays);
+  const ttlDays = Number.isFinite(requestedTtl) && requestedTtl > 0
+    ? Math.min(Math.floor(requestedTtl), FORM_TOKEN_TTL_DAYS_MAX)
+    : FORM_TOKEN_TTL_DAYS_DEFAULT;
+
+  const expiresAt = new Date(Date.now() + ttlDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const tokens = {};
+  for (const taskId of taskIds) {
+    tokens[taskId] = crypto.randomUUID().replace(/-/g, '');
+  }
+
+  return jsonResponse({ ok: true, ttlDays, expiresAt, tokens });
+}
+
+/* =========================
+ * Signed action links
+ *
+ * For LINE buttons that mutate state (approve a refund, mark it paid).
+ * Nothing is stored: the token carries its own expiry and is signed with
+ * the same worker secret, so a leaked link stops working on its own and
+ * cannot be forged. Single-use comes from the refund state machine, which
+ * only accepts each step from one specific status.
+ * ========================= */
+const LINK_TOKEN_TTL_MINUTES_DEFAULT = 3 * 24 * 60;
+const LINK_TOKEN_TTL_MINUTES_MAX = 30 * 24 * 60;
+
+async function hmacHex(secret, message) {
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    'raw',
+    enc.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(message));
+  return [...new Uint8Array(sig)].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function handleLinkToken(request, env) {
+  const expected = env.INTERNAL_API_SECRET || '';
+  const provided = request.headers.get(INTERNAL_SECRET_HEADER) || '';
+
+  if (!expected) return jsonResponse({ ok: false, error: 'secret_not_configured' }, 503);
+  if (!constantTimeEquals(expected, provided)) {
+    return jsonResponse({ ok: false, error: 'unauthorized' }, 401);
+  }
+
+  let body = {};
+  try {
+    body = await request.json();
+  } catch (_) {
+    return jsonResponse({ ok: false, error: 'invalid_json' }, 400);
+  }
+
+  const op = String(body.op || '').trim().toLowerCase();
+  const subject = String(body.subject || '').trim();
+  if (!subject) return jsonResponse({ ok: false, error: 'missing_subject' }, 400);
+
+  if (op === 'sign') {
+    const requested = Number(body.ttlMinutes);
+    const ttl = Number.isFinite(requested) && requested > 0
+      ? Math.min(Math.floor(requested), LINK_TOKEN_TTL_MINUTES_MAX)
+      : LINK_TOKEN_TTL_MINUTES_DEFAULT;
+    const expMs = Date.now() + ttl * 60 * 1000;
+    const sig = await hmacHex(expected, `${subject}|${expMs}`);
+    return jsonResponse({
+      ok: true,
+      token: `${expMs}.${sig}`,
+      expiresAt: new Date(expMs).toISOString()
+    });
+  }
+
+  if (op === 'verify') {
+    const token = String(body.token || '').trim();
+    if (!token) return jsonResponse({ ok: true, valid: false, reason: 'missing_token' });
+
+    const dot = token.indexOf('.');
+    if (dot <= 0) return jsonResponse({ ok: true, valid: false, reason: 'malformed_token' });
+
+    const expMs = Number(token.slice(0, dot));
+    const sig = token.slice(dot + 1);
+    if (!Number.isFinite(expMs)) {
+      return jsonResponse({ ok: true, valid: false, reason: 'malformed_token' });
+    }
+    if (Date.now() > expMs) {
+      return jsonResponse({ ok: true, valid: false, reason: 'expired' });
+    }
+
+    const want = await hmacHex(expected, `${subject}|${expMs}`);
+    if (!constantTimeEquals(want, sig)) {
+      return jsonResponse({ ok: true, valid: false, reason: 'bad_signature' });
+    }
+
+    return jsonResponse({ ok: true, valid: true, reason: 'ok', expiresAt: new Date(expMs).toISOString() });
+  }
+
+  return jsonResponse({ ok: false, error: 'unknown_op' }, 400);
+}
+
+/* =========================
  * 4) Main Worker Entrypoint
  * ========================= */
 const LINE_BACKGROUND_PROCESSING_HEADER = 'x-mama-line-background';
@@ -3407,6 +3876,15 @@ const worker = {
         headers: { ...corsHeaders(env.ALLOWED_ORIGIN), 'Content-Type': ct }
       });
     }
+
+    if (request.method === 'POST' && url.pathname === '/internal/token/issue') {
+      return issueFormTokens(request, env);
+    }
+
+    if (request.method === 'POST' && url.pathname === '/internal/link') {
+      return handleLinkToken(request, env);
+    }
+
 
     if (request.method === 'GET' && url.pathname === '/health') {
       const durableOwnerConfigured = hasActiveFlowOwner(env);
@@ -3691,6 +4169,92 @@ const worker = {
         }
 
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
+
+        // ผู้เช่า/คนนอกกดเลือกวิธีจ่ายจากการ์ดที่ส่งให้หลังกรอกทะเบียนในฟอร์ม
+        //
+        // โอน  → ยิงเข้า car-sticker เส้นเดียวกับที่เจ้าหน้าที่พิมพ์ "ออกสติกเกอร์ <เลข> โอน"
+        //        ซึ่งตั้งแต่ 2026-08-18 สร้างบิลอย่างเดียว ไม่ออกสติกเกอร์จนกว่าสลิปจะผ่าน
+        //        จึงไม่ต้องมีสาขาใหม่ใน n8n และได้ตัวกันออกบิลซ้ำมาด้วยฟรี ๆ
+        // สด   → ไม่แตะระบบ บอกให้มาที่ออฟฟิศ แล้วบอกเจ้าหน้าที่ว่ารายนี้จะจ่ายสด
+        if (String(cleaningPostback.action || '').trim() === 'PARK_PAY') {
+          const parkChatId = getChatId(ev);
+          const parkUserId = String(ev?.source?.userId || '').trim();
+          const parkVehicleId = String(cleaningPostback.vehicleId || '').trim();
+          const parkMethod = String(cleaningPostback.method || '').trim().toLowerCase();
+
+          const sayToPayer = async (text) => {
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
+            } else if (parkChatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, parkChatId, text).catch(console.error));
+            }
+          };
+
+          if (!parkVehicleId) {
+            await sayToPayer('ไม่พบเลขรถในปุ่มนี้ กรุณาติดต่อเจ้าหน้าที่ค่ะ');
+            continue;
+          }
+
+          if (parkMethod === 'transfer') {
+            const billOk = await notifyN8nCarSticker(env, {
+              source: 'line_postback',
+              intent: 'car_sticker',
+              action: 'issue',
+              vehicleId: parkVehicleId,
+              paymentMethod: 'MOBILE_BANKING',
+              isCarAdmin: false,
+              lineUserId: parkUserId || null,
+              actorLineUserId: parkUserId || null,
+              actorName: '',
+              chatId: parkChatId || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            });
+            // n8n เป็นคนตอบเองเมื่อสำเร็จ worker พูดเฉพาะตอน webhook ล่ม
+            if (!billOk) {
+              await sayToPayer('ระบบขัดข้องชั่วคราว กรุณากดปุ่มอีกครั้งหรือติดต่อเจ้าหน้าที่ค่ะ');
+            }
+            continue;
+          }
+
+          await sayToPayer(
+            'รับทราบค่ะ 🙏\n'
+            + 'กรุณาติดต่อเจ้าหน้าที่ที่ห้องนิติเพื่อชำระค่าที่จอดเดือนแรกและรับสติกเกอร์ในเวลาทำการค่ะ'
+          );
+
+          // แจ้งเข้ากลุ่มเจ้าหน้าที่ ไม่ใช่คนเดียว — คนที่รับเงินหน้าเคาน์เตอร์กับคนที่ถือสติกเกอร์
+          // อาจเป็นคนละคน และกะคนละกะ
+          //
+          // รายละเอียดรถติดมากับ postback เพราะ worker อ่านชีทไม่ได้
+          // เส้นโอนไม่ต้องแจ้งตรงนี้ เพราะ Manual Bill แจ้งให้เองหลังสลิปผ่าน
+          const parkStaffGroupId = String(env.CAR_STAFF_GROUP_ID || '').trim()
+            || String(env.CAR_ADMIN_LINE_USER_IDS || '').split(',')[0].trim();
+
+          if (parkStaffGroupId) {
+            const parkRoom = String(cleaningPostback.room || '').trim();
+            const parkPlate = String(cleaningPostback.plate || '').trim();
+            const parkBrand = String(cleaningPostback.brand || '').trim();
+            const parkRate = String(cleaningPostback.rate || '').trim();
+
+            const cashNotice = [
+              '🚗 เลือกจ่ายเงินสด รอมาจ่ายที่ออฟฟิศ',
+              `เลขรถ: ${parkVehicleId}`,
+              `ผู้เช่า: ${parkRoom ? 'ห้อง ' + parkRoom : 'บุคคลภายนอก'}`,
+              `ทะเบียน: ${parkPlate || '-'}`,
+              `ยี่ห้อ: ${parkBrand || '-'}`,
+              `ยอดที่ต้องเก็บ: ${parkRate || '-'} บาท`,
+              '',
+              `เก็บเงินแล้วพิมพ์: ออกสติกเกอร์ ${parkVehicleId} เงินสด`
+            ].join('\n');
+
+            ctx.waitUntil(
+              linePushText(env.LINE_ACCESS_TOKEN, parkStaffGroupId, cashNotice).catch(console.error)
+            );
+          }
+          continue;
+        }
+
         if (isBillManualPayClick(cleaningPostback)) {
           const chatId = getChatId(ev);
           const lineUserId = String(ev?.source?.userId || '').trim();
@@ -5720,6 +6284,12 @@ const worker = {
             continue;
           }
 
+          if (isMaidBoardCommand(textIn)) {
+            const boardMsg = await buildMaidBoardMessage(env);
+            await replyOrPushMessages(env, replyToken, chatId, [boardMsg], 'maid_board_reply_failed');
+            continue;
+          }
+
           const coAdminShortcut = parseCoAdminShortcut(textIn);
           if (coAdminShortcut) {
             if (isCheckoutStartShortcut(coAdminShortcut)) {
@@ -5766,6 +6336,80 @@ const worker = {
               : 'Command received, but webhook failed';
 
             await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
+            continue;
+          }
+
+          const carCommand = parseCarCommand(textIn);
+          if (carCommand) {
+            const isCarAdmin = isCarAdminAllowedLineUserId(env, userId);
+
+            // Every car command is staff-only except this one. An outsider has no
+            // room number and no tenant record, so their LINE user id only ever
+            // reaches the sheet if they ask for the slot themselves — and without
+            // it MM_CarSticker cannot send them a transfer bill. Staff may still
+            // type it to book for a walk-in who does not use LINE; n8n tells the
+            // two apart from isCarAdmin.
+            const isOutsiderRequest = carCommand.kind === 'car_outsider_request';
+
+            if (!isCarAdmin && !isOutsiderRequest) {
+              console.log('car_command_unauthorized', { userId, text: textIn.slice(0, 80) });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งเรื่องรถใช้ได้เฉพาะเจ้าหน้าที่ค่ะ',
+                'car_unauthorized_reply_failed'
+              );
+              continue;
+            }
+
+            const carPayload = {
+              source: 'line_message',
+              intent: carCommand.kind,
+              isCarAdmin,
+              action: carCommand.action || null,
+              query: carCommand.query || null,
+              roomId: carCommand.roomId || null,
+              vehicleId: carCommand.vehicleId || null,
+              paymentMethod: carCommand.paymentMethod || null,
+              confirm: carCommand.confirm === true,
+              text: textIn,
+              lineUserId: userId || null,
+              actorLineUserId: userId || null,
+              actorName: carStaffName(userId),
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            // n8n owns the reply and consumes replyToken, so the worker stays
+            // silent on success and only speaks up when the webhook is down.
+            let carOk = false;
+            if (carCommand.kind === 'car_lookup') {
+              carOk = await notifyN8nCarLookup(env, carPayload);
+            } else if (carCommand.kind === 'car_sticker') {
+              carOk = await notifyN8nCarSticker(env, carPayload);
+            } else if (carCommand.kind === 'car_horganice') {
+              carOk = await notifyN8nCarHorganice(env, carPayload);
+            } else if (carCommand.kind === 'car_outsider_request') {
+              carOk = await notifyN8nCarOutsiderRequest(env, carPayload);
+            } else if (carCommand.kind === 'car_release') {
+              carOk = await notifyN8nCarRelease(env, carPayload);
+            } else {
+              carOk = await notifyN8nCarRequest(env, carPayload);
+            }
+
+            if (!carOk) {
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'ระบบรถไม่ตอบสนอง ลองใหม่อีกครั้งค่ะ',
+                'car_webhook_failed'
+              );
+            }
             continue;
           }
 
@@ -9527,12 +10171,24 @@ async function handleReturnKeyStart(env, opts) {
   return true;
 }
 
+/**
+ * Secret for the four n8n webhooks this worker calls directly
+ * (checkout, co-admin, co-admin-cash-receiver, checkout-cash).
+ *
+ * They share one Header Auth credential in n8n keyed on x-mm-secret, so all
+ * four have to send the same value. N8N_WEBHOOK_SECRET is dedicated to them;
+ * WORKER_SECRET is the fallback and is also used by many unrelated endpoints.
+ */
+function n8nWebhookSecret(env) {
+  return env.N8N_WEBHOOK_SECRET || env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+}
+
 async function notifyN8nCheckoutStart(env, payload) {
   const url = getCheckoutWebhook(env);
   if (!url) throw new Error('missing checkout webhook URL');
 
   const headers = { 'Content-Type': 'application/json', 'accept': 'application/json' };
-  const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
+  const secret = n8nWebhookSecret(env);
   if (secret) headers['x-mm-secret'] = secret;
 
   console.log('checkout_webhook_req', { url, roomId: payload?.roomId || '', hasSecret: !!secret });
@@ -9825,9 +10481,10 @@ async function notifyN8nCheckoutCash(env, payload) {
 
   const headers = { 'Content-Type': 'application/json' };
   const secret = env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
-  if (secret) {
-    headers['x-worker-secret'] = secret;
-  }
+  if (secret) headers['x-worker-secret'] = secret;
+  // n8n Header Auth on these webhooks matches x-mm-secret, same as checkout.
+  const n8nSecret = n8nWebhookSecret(env);
+  if (n8nSecret) headers['x-mm-secret'] = n8nSecret;
 
   try {
     const res = await fetch(url, {
@@ -9885,9 +10542,10 @@ async function notifyN8nCoAdminWebhook(env, payload) {
 
   const headers = { 'Content-Type': 'application/json' };
   const secret = env.WORKER_SECRET || '';
-  if (secret) {
-    headers['x-worker-secret'] = secret;
-  }
+  if (secret) headers['x-worker-secret'] = secret;
+  // n8n Header Auth on these webhooks matches x-mm-secret, same as checkout.
+  const n8nSecret = n8nWebhookSecret(env);
+  if (n8nSecret) headers['x-mm-secret'] = n8nSecret;
 
   try {
     const res = await fetch(url, {
@@ -9904,6 +10562,59 @@ async function notifyN8nCoAdminWebhook(env, payload) {
     console.error('notifyN8nCoAdminWebhook error', err);
     return false;
   }
+}
+
+async function postToN8nCarWebhook(env, url, payload, label) {
+  if (!url) {
+    console.warn(label + ': missing webhook URL');
+    return false;
+  }
+
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = env.WORKER_SECRET || '';
+  if (secret) {
+    headers['x-worker-secret'] = secret;
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error(label + ': non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error(label + ' error', err);
+    return false;
+  }
+}
+
+async function notifyN8nCarLookup(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_LOOKUP_URL || '', payload, 'notifyN8nCarLookup');
+}
+
+async function notifyN8nCarSticker(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_STICKER_URL || '', payload, 'notifyN8nCarSticker');
+}
+
+async function notifyN8nCarRequest(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_REQUEST_URL || '', payload, 'notifyN8nCarRequest');
+}
+
+async function notifyN8nCarOutsiderRequest(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_OUTSIDER_REQUEST_URL || '', payload, 'notifyN8nCarOutsiderRequest');
+}
+
+async function notifyN8nCarRelease(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_RELEASE_URL || '', payload, 'notifyN8nCarRelease');
+}
+
+async function notifyN8nCarHorganice(env, payload) {
+  return postToN8nCarWebhook(env, env.N8N_CAR_HORGANICE_URL || '', payload, 'notifyN8nCarHorganice');
 }
 
 async function notifyN8nCleaning(env, payload) {
@@ -10139,6 +10850,9 @@ export const __testables = {
   normalizeParkingPhone,
   isValidParkingPhone,
   buildParkingOutsiderPhonePayload,
+  parseRoomToken,
+  parseVehicleToken,
+  parseCarCommand,
   normalizePenaltyFlowReason,
   normalizePenaltySlipType,
   normalizePenaltySlipReason
