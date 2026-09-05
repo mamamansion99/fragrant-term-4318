@@ -1087,6 +1087,7 @@ const DEFAULT_N8N_RETURN_KEY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/w
 const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/Return_Key_Desicion';
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
+const DEFAULT_N8N_CHECKIN_HORGANICE_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkin-horganice';
 const DEFAULT_N8N_CLEANING_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm';
 const DEFAULT_N8N_BILL_MANUAL_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received';
 const BILL_MANUAL_PAY_CLICK_ACTION = 'BILL_PAY_CLICK';
@@ -1440,6 +1441,27 @@ function parseCarCommand(text) {
   }
 
   return null;
+}
+
+// ยืนยันว่าไปตั้งเก็บเงินรายเดือนของห้องในแอป Horganice แล้ว — ค่าเช่า + ค่าส่วนกลาง
+// 200 บาท/เดือน (และที่จอด/ตู้เย็นถ้ามี) หลังผู้เช่าจ่ายค่าเช็คอินเข้ามา
+//
+// แยกคำสั่งจาก CAR_HORGANICE_RE ที่รับเฉพาะ VehicleID เพราะคนละของกัน: อันนั้นคือ
+// ค่าที่จอดของรถคันหนึ่ง อันนี้คือบิลประจำเดือนของห้อง คำว่า "ห้อง" คั่นไว้ให้ regex
+// ทั้งสองตัวไม่มีทางกินคำสั่งของกันเอง
+const CHECKIN_HORGANICE_RE = /^\s*horganice\s+(?:ห้อง|room)\s+([A-Za-z]\d{3,4})\s*(.*)$/i;
+
+function parseCheckinHorganiceCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+
+  const match = CHECKIN_HORGANICE_RE.exec(raw);
+  if (!match) return null;
+
+  const roomId = String(match[1] || '').trim().toUpperCase();
+  if (!/^[AB]\d{3,4}$/.test(roomId)) return null;
+
+  return { kind: 'checkin_horganice', roomId, note: String(match[2] || '').trim() };
 }
 
 function isReturnKeyAllowedLineUserId(userId) {
@@ -2767,6 +2789,12 @@ function classifyTextCommand(text, options = {}) {
         ? TEXT_COMMAND_REPLACE_FLOW
         : TEXT_COMMAND_BYPASS_FLOW
     };
+  }
+
+  // Staff confirming a Horganice setup must never disturb whatever flow the
+  // group is in the middle of, so it bypasses instead of replacing.
+  if (parseCheckinHorganiceCommand(raw)) {
+    return { kind: 'checkin_horganice', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
 
   // Must be classified before isParkingIntent below, which would otherwise
@@ -6514,6 +6542,54 @@ const worker = {
               : 'Command received, but webhook failed';
 
             await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
+            continue;
+          }
+
+          // ยืนยันตั้งบิลรายเดือนใน Horganice ให้ห้องที่เพิ่งเช็คอิน
+          // ต้องอยู่ก่อน parseCarCommand เพราะทั้งคู่ขึ้นต้นด้วยคำว่า horganice
+          const checkinHorganice = parseCheckinHorganiceCommand(textIn);
+          if (checkinHorganice) {
+            // ใช้ประตูเดียวกับคำสั่งรถ — เป็นชุดเจ้าหน้าที่ชุดเดียวกัน และ n8n
+            // ต้องได้ชื่อคนกดกลับไปเขียนคอลัมน์ HorganiceSetupBy ให้คนอ่านรู้เรื่อง
+            if (!isCarAdminAllowedLineUserId(env, userId)) {
+              console.log('checkin_horganice_unauthorized', { userId, text: textIn.slice(0, 80) });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งนี้ใช้ได้เฉพาะเจ้าหน้าที่ค่ะ',
+                'checkin_horganice_unauthorized_reply_failed'
+              );
+              continue;
+            }
+
+            const horganicePayload = {
+              source: 'line_message',
+              intent: 'checkin_horganice',
+              roomId: checkinHorganice.roomId,
+              note: checkinHorganice.note || '',
+              text: textIn,
+              lineUserId: userId || null,
+              actorLineUserId: userId || null,
+              actorName: carStaffName(userId),
+              chatId: chatId || null,
+              sourceType: ev?.source?.type || null,
+              replyToken: replyToken || null,
+              eventId: ev?.webhookEventId || null,
+              receivedAt: new Date().toISOString()
+            };
+
+            // n8n เป็นคนตอบกลับเอง worker พูดเฉพาะตอน webhook ล่ม
+            const horganiceOk = await notifyN8nCheckinHorganice(env, horganicePayload);
+            if (!horganiceOk) {
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'ระบบ Horganice ไม่ตอบสนอง ลองใหม่อีกครั้งค่ะ',
+                'checkin_horganice_webhook_failed'
+              );
+            }
             continue;
           }
 
@@ -10815,6 +10891,15 @@ async function notifyN8nCarRelease(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_RELEASE_URL || '', payload, 'notifyN8nCarRelease');
 }
 
+async function notifyN8nCheckinHorganice(env, payload) {
+  return postToN8nCarWebhook(
+    env,
+    env.N8N_CHECKIN_HORGANICE_URL || DEFAULT_N8N_CHECKIN_HORGANICE_WEBHOOK_URL,
+    payload,
+    'notifyN8nCheckinHorganice'
+  );
+}
+
 async function notifyN8nCarHorganice(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_HORGANICE_URL || '', payload, 'notifyN8nCarHorganice');
 }
@@ -11055,6 +11140,7 @@ export const __testables = {
   parseRoomToken,
   parseVehicleToken,
   parseCarCommand,
+  parseCheckinHorganiceCommand,
   normalizePenaltyFlowReason,
   normalizePenaltySlipType,
   normalizePenaltySlipReason

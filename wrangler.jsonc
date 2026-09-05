@@ -32,6 +32,7 @@
     "N8N_CAR_RELEASE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-release",
     "CAR_STAFF_GROUP_ID": "C355d5b5c8a01d88bf61296b4e10f1575",
     "N8N_CAR_HORGANICE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/car-horganice",
+    "N8N_CHECKIN_HORGANICE_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/checkin-horganice",
     "CAR_ADMIN_LINE_USER_IDS": "Ue90558b73d62863e2287ac32e69541a3,U193cae8dd9197f7d4bd6ada8046fd98b,U2855d93e108ccebbef7d1b55ec8827e5,U9293d43980e98649e20c8759a2c2d7f0",
     "N8N_POSTBACK_URL": "https://script.google.com/macros/s/AKfycbwRugkr-uUOzmu5HkmRw3W7fwGescjbL2xqsvyKIxLkYKibmJWItb1u_5PTZFatcI_B/exec",
     "N8N_MMV2_MARK_PAID_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/mmv2-mark-paid",

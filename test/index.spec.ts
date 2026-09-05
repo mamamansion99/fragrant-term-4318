@@ -3043,6 +3043,37 @@ describe('parseCarCommand with a VehicleID', () => {
 	});
 });
 
+describe('horganice ห้อง <RoomID>', () => {
+	const { parseCheckinHorganiceCommand, parseCarCommand } = __testables;
+
+	it('confirms a Horganice setup for a room', () => {
+		expect(parseCheckinHorganiceCommand('horganice ห้อง A101')).toEqual({
+			kind: 'checkin_horganice',
+			roomId: 'A101',
+			note: ''
+		});
+	});
+
+	it('keeps a trailing note and uppercases the room', () => {
+		expect(parseCheckinHorganiceCommand('horganice room b512 ค่าเช่า+ส่วนกลาง+ที่จอด')).toEqual({
+			kind: 'checkin_horganice',
+			roomId: 'B512',
+			note: 'ค่าเช่า+ส่วนกลาง+ที่จอด'
+		});
+	});
+
+	it('rejects a token that is not a room', () => {
+		expect(parseCheckinHorganiceCommand('horganice ห้อง VEH-00041')).toBeNull();
+		expect(parseCheckinHorganiceCommand('horganice ห้อง C101')).toBeNull();
+	});
+
+	it('does not collide with the car sticker Horganice command', () => {
+		// สองคำสั่งขึ้นต้นด้วย horganice เหมือนกัน ต้องไม่กินคำสั่งของกันเอง
+		expect(parseCheckinHorganiceCommand('horganice เปิด VEH-00041')).toBeNull();
+		expect(parseCarCommand('horganice ห้อง A101')).toBeNull();
+	});
+});
+
 describe('ขอที่จอดคนนอก', () => {
 	const { parseCarCommand } = __testables;
 
