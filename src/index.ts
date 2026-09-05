@@ -246,7 +246,9 @@ const CHECKIN_KEYCARD_PHOTO_TTL_MS = CHECKIN_KEYCARD_PHOTO_TTL_SECONDS * 1000;
 const BOOKING_SLIP_TTL_SECONDS = 60 * 60;       // 60 minutes to send slip
 const BOOKING_SLIP_TTL_MS = BOOKING_SLIP_TTL_SECONDS * 1000;
 const BOOKING_PAYMENT_FLOW_TTL_SECONDS = 24 * 60 * 60; // GAS payment window
-const BOOKING_ID_TTL_SECONDS = 6 * 60 * 60;     // 6 hours to send ID after slip
+// The customer opens this window themselves by tapping "ส่งบัตรประชาชนตอนนี้",
+// so it is short on purpose — and reopenable at any time from the same button.
+const BOOKING_ID_TTL_SECONDS = 30 * 60;         // 30 minutes after tapping the button
 const BOOKING_ID_TTL_MS = BOOKING_ID_TTL_SECONDS * 1000;
 const PENALTY_FLOW_TTL_SECONDS = 15 * 60;
 const PENALTY_FLOW_TTL_MS = PENALTY_FLOW_TTL_SECONDS * 1000;
@@ -3247,6 +3249,85 @@ async function reservationAdminCallWithAuthGuard(env, action, payload) {
   return res;
 }
 
+// Does this customer still owe a document on an open booking row, and which
+// one? Answering this lets a late photo be met with the right button instead
+// of vanishing into generic OCR.
+async function getPendingDocReservation(env, userId) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  if (!getReservationGas(env) || !getReservationAdminKey(env)) return null;
+  try {
+    const res = await reservationAdminCall(env, 'reservation_pending_id', { line_user_id: uid });
+    if (!res.ok || res.data?.pending !== true) return null;
+    const code = String(res.data?.reservationId || res.data?.code || '').trim().toUpperCase();
+    if (!code) return null;
+    const kind = String(res.data?.kind || 'id').trim().toLowerCase() === 'slip' ? 'slip' : 'id';
+    return { code, kind, room: String(res.data?.room || '').trim() };
+  } catch (err) {
+    console.error('reservation_pending_id_failed', err);
+    return null;
+  }
+}
+
+// Mirror of the GAS-side prompts: same postback contract, same promise.
+function buildSendDocPromptFlex(codeRaw, kindRaw = 'id') {
+  const kind = String(kindRaw || 'id').trim().toLowerCase() === 'slip' ? 'slip' : 'id';
+  const docLabel = kind === 'slip' ? 'สลิป' : 'รูปบัตรประชาชน';
+  const raw = String(codeRaw || '').trim().toUpperCase();
+  const displayCode = raw.startsWith('#') ? raw : (raw ? `#${raw}` : '');
+  const minutes = Math.round(BOOKING_ID_TTL_SECONDS / 60);
+  const windowNote = kind === 'slip'
+    ? 'กดปุ่มด้านล่างก่อน แล้วส่งรูปสลิปในแชทนี้ได้เลยค่ะ\nกดปุ่มนี้ตอนไหนก็ได้ก่อนหมดเวลาชำระเงิน'
+    : `กดปุ่มด้านล่างก่อน แล้วส่งรูปบัตรประชาชนในแชทนี้ภายใน ${minutes} นาที\nไม่ต้องรีบ กดปุ่มนี้ตอนไหนก็ได้ค่ะ`;
+  return {
+    type: 'flex',
+    altText: `ส่ง${docLabel} ${displayCode}`,
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '20px',
+        contents: [
+          { type: 'text', text: `ส่ง${docLabel}`, weight: 'bold', size: 'lg', wrap: true, color: '#333333' },
+          {
+            type: 'text',
+            text: displayCode ? `รหัสจอง ${displayCode}` : 'รหัสจองของคุณ',
+            size: 'sm',
+            color: '#9CA3AF',
+            wrap: true
+          },
+          {
+            type: 'text',
+            text: windowNote,
+            size: 'sm',
+            color: '#666666',
+            wrap: true
+          }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#22A844',
+            action: {
+              type: 'postback',
+              label: kind === 'slip' ? 'ส่งสลิปตอนนี้' : 'ส่งบัตรประชาชนตอนนี้',
+              data: `act=${kind === 'slip' ? 'send_slip' : 'send_id'}&code=${encodeURIComponent(displayCode.replace(/^#/, ''))}`,
+              displayText: kind === 'slip' ? 'ขอส่งสลิปค่ะ' : 'ขอส่งรูปบัตรประชาชนค่ะ'
+            }
+          }
+        ]
+      }
+    }
+  };
+}
+
 async function forwardToSpecificGasResult(env, gasUrl, body) {
   const secret = getWorkerForwardSecret(env);
   const payload = { ...body, workerSecret: secret };
@@ -4642,6 +4723,103 @@ const worker = {
           } else if (chatId) {
             ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
           }
+          continue;
+        }
+        // "ส่งสลิปตอนนี้" / "ส่งบัตรประชาชนตอนนี้" — the customer opens the
+        // document window when they are ready. Unlike the other booking buttons
+        // these carry no flow identity and must stay tappable for as long as the
+        // row is open, so none of the staleness guards below apply to them.
+        if (act === 'send_id' || act === 'send_slip') {
+          const chatId = getChatId(ev);
+          const resvUrl = getReservationGas(env);
+          if (!resvUrl) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ระบบการจองยังไม่พร้อมใช้งาน กรุณาติดต่อแอดมินค่ะ');
+            continue;
+          }
+
+          // Resuming a booking rebinds the row to whoever tapped, so this
+          // button is only honoured in the customer's own 1:1 chat.
+          if (String(ev?.source?.type || '').trim() !== 'user') {
+            await errorReplyOrPush(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้เฉพาะในแชทส่วนตัวของผู้จองค่ะ');
+            continue;
+          }
+
+          const flowUserId = String(ev?.source?.userId || '').trim();
+          const codeHint = String(data.code || data.bookingCode || data.resId || '').trim();
+          const normalizedCode = extractBookingCode(codeHint) || String(codeHint || '').trim().toUpperCase();
+          if (!normalizedCode) {
+            await errorReplyOrPush(env, replyToken, chatId, 'ไม่พบรหัสจองของปุ่มนี้ กรุณาพิมพ์รหัส #MM... อีกครั้งค่ะ');
+            continue;
+          }
+
+          const currentFlow = flowUserId ? await getActiveFlow(env, flowUserId, ev) : null;
+          const currentKind = String(currentFlow?.kind || currentFlow?.flowType || '').trim().toLowerCase();
+          if (currentFlow && currentKind !== 'reservation') {
+            await errorReplyOrPush(env, replyToken, chatId, 'ตอนนี้กำลังทำรายการอื่นอยู่ กรุณาทำรายการนั้นให้เสร็จก่อนค่ะ');
+            continue;
+          }
+
+          const ackMsg = act === 'send_slip'
+            ? 'กำลังเปิดให้ส่งสลิปค่ะ โปรดรอสักครู่'
+            : 'กำลังเปิดให้ส่งรูปบัตรประชาชนค่ะ โปรดรอสักครู่';
+          if (replyToken) {
+            await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackMsg }]).catch(console.error);
+          } else if (chatId) {
+            ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackMsg).catch(console.error));
+          }
+
+          ctx.waitUntil((async () => {
+            const gasResult = await forwardToSpecificGasResult(
+              env,
+              resvUrl,
+              buildReservationForwardPayload(ev, {
+                flowId: '',
+                version: '',
+                flowVersion: '',
+                phase: act === 'send_slip' ? 'await_slip' : 'await_id',
+                code: normalizedCode,
+                userId: flowUserId
+              })
+            );
+            if (!gasResult.ok) {
+              if (chatId) {
+                await safeLinePushText(
+                  env.LINE_ACCESS_TOKEN,
+                  chatId,
+                  'ระบบการจองยังไม่ตอบรับ กรุณากดปุ่มอีกครั้งค่ะ',
+                  'reservation_send_id_failure_push_failed'
+                );
+              }
+              return;
+            }
+            if (!flowUserId) return;
+
+            const gasAck = getReservationFlowAck(gasResult.data);
+            if (!gasAck?.flowId || !gasAck?.version || gasAck.terminal) {
+              if (chatId) {
+                await safeLinePushText(
+                  env.LINE_ACCESS_TOKEN,
+                  chatId,
+                  'ยังเปิดขั้นตอนส่งเอกสารไม่ได้ กรุณาพิมพ์รหัสจอง #MM... อีกครั้งค่ะ',
+                  'reservation_send_id_no_ack_push_failed'
+                );
+              }
+              return;
+            }
+
+            await setActiveFlow(env, flowUserId, {
+              flowType: 'reservation',
+              kind: 'reservation',
+              phase: gasAck.phase || (act === 'send_slip' ? 'await_slip' : 'await_id'),
+              code: gasAck.code || normalizedCode,
+              event: ev,
+              flowId: gasAck.flowId,
+              version: gasAck.version,
+              flowVersion: gasAck.version,
+              ...(gasAck.ttlSeconds ? { ttlSeconds: gasAck.ttlSeconds } : {}),
+              ...(gasAck.expiresAt ? { expiresAt: gasAck.expiresAt } : {})
+            });
+          })().catch((err) => console.error('reservation_send_id_failed', err)));
           continue;
         }
         // Booking postbacks → forward to reservation GAS (GAS owns booking flow)
@@ -7752,6 +7930,30 @@ const worker = {
               'active_flow_unexpected_image_reply_failed'
             );
             continue;
+          }
+
+          // A late slip or ID card used to land here and disappear into generic
+          // OCR while the booking row sat unfinished forever. If this customer
+          // still owes a document, hand back the matching button instead.
+          if (String(ev?.source?.type || '').trim() === 'user' && imageUserId) {
+            const pendingDoc = await getPendingDocReservation(env, imageUserId);
+            if (pendingDoc?.code) {
+              const messages = [
+                {
+                  type: 'text',
+                  text: pendingDoc.kind === 'slip'
+                    ? 'หน้าต่างส่งสลิปปิดไปแล้วค่ะ กดปุ่มด้านล่างก่อน แล้วส่งรูปอีกครั้งนะคะ'
+                    : 'หน้าต่างส่งบัตรประชาชนปิดไปแล้วค่ะ กดปุ่มด้านล่างก่อน แล้วส่งรูปอีกครั้งนะคะ'
+                },
+                buildSendDocPromptFlex(pendingDoc.code, pendingDoc.kind)
+              ];
+              if (replyToken) {
+                await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages).catch(console.error);
+              } else if (chatId) {
+                ctx.waitUntil(linePush(env.LINE_ACCESS_TOKEN, chatId, messages).catch(console.error));
+              }
+              continue;
+            }
           }
 
           const autoImgUrl = getAutoImgGas(env);

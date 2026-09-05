@@ -3089,3 +3089,162 @@ describe('เลิกจอด', () => {
 		expect(parseCarCommand('เลิกจอด')).toBeNull();
 	});
 });
+
+describe('ID card window opened by the customer', () => {
+	const sendIdEvent = (source: Record<string, any>) => ({
+		type: 'postback',
+		replyToken: 'reply-send-id',
+		webhookEventId: 'evt-send-id',
+		timestamp: Date.now(),
+		source,
+		postback: { data: 'act=send_id&code=MM526' }
+	});
+
+	const workerEnv = {
+		LINE_CHANNEL_SECRET: 'line-secret',
+		LINE_ACCESS_TOKEN: 'line-token',
+		CONFIRMBOOKING_URL: 'https://example.com/reservation',
+		AUTO_IMG_URL: 'https://example.com/auto-img',
+		WORKER_SECRET: 'worker-secret',
+		ADMIN_API_KEY: 'admin-key'
+	};
+
+	it('forwards the tapped code to reservation GAS from a 1:1 chat', async () => {
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			let body: any = null;
+			try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch { body = null; }
+			calls.push({ url: String(input), body });
+			return new Response(JSON.stringify({
+				ok: true,
+				reservationFlow: {
+					flowType: 'reservation', reservationId: '#MM526', flowPhase: 'await_id',
+					flowId: 'flow-1', flowVersion: 2, flowTtlSeconds: 1800
+				}
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const request = await buildSignedLineRequest([sendIdEvent({ type: 'user', userId: 'U-booker' })]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ...workerEnv } as any, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const forwarded = calls.find((call) => call.url.startsWith('https://example.com/reservation'));
+			expect(forwarded).toBeTruthy();
+			expect(JSON.stringify(forwarded?.body)).toContain('MM526');
+			expect(calls.some((call) => call.url === 'https://example.com/auto-img')).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('refuses the button in a group so a booking row cannot be rebound', async () => {
+		const calls: string[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			calls.push(String(input));
+			return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const request = await buildSignedLineRequest([
+				sendIdEvent({ type: 'group', groupId: 'C-group', userId: 'U-someone-else' })
+			]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ...workerEnv } as any, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(calls.some((url) => url.startsWith('https://example.com/reservation'))).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('offers the button instead of feeding a late ID card to generic OCR', async () => {
+		const calls: string[] = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			const url = String(input);
+			calls.push(url);
+			if (url.includes('reservation_pending_id')) {
+				return new Response(JSON.stringify({ ok: true, pending: true, reservationId: '#MM526', room: 'B106' }), {
+					status: 200, headers: { 'content-type': 'application/json' }
+				});
+			}
+			return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message', replyToken: 'reply-late-id', webhookEventId: 'evt-late-id', timestamp: Date.now(),
+				source: { type: 'user', userId: 'U-late-id' }, message: { type: 'image', id: 'msg-late-id' }
+			}]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ...workerEnv } as any, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			expect(calls.some((url) => url.includes('reservation_pending_id'))).toBe(true);
+			expect(calls.some((url) => url === 'https://example.com/auto-img')).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('forwards the slip button as an await_slip resume', async () => {
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			let body: any = null;
+			try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch { body = null; }
+			calls.push({ url: String(input), body });
+			return new Response(JSON.stringify({
+				ok: true,
+				reservationFlow: {
+					flowType: 'reservation', reservationId: '#MM526', flowPhase: 'await_slip',
+					flowId: 'flow-slip', flowVersion: 1, flowTtlSeconds: 3600
+				}
+			}), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'postback', replyToken: 'reply-send-slip', webhookEventId: 'evt-send-slip', timestamp: Date.now(),
+				source: { type: 'user', userId: 'U-booker-slip' }, postback: { data: 'act=send_slip&code=MM526' }
+			}]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ...workerEnv } as any, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const forwarded = calls.find((call) => call.url.startsWith('https://example.com/reservation'));
+			expect(forwarded).toBeTruthy();
+			expect(JSON.stringify(forwarded?.body)).toContain('await_slip');
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
+	it('offers the slip button when the missing document is the slip', async () => {
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+			const url = String(input);
+			let body: any = null;
+			try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch { body = null; }
+			calls.push({ url, body });
+			if (url.includes('reservation_pending_id')) {
+				return new Response(JSON.stringify({ ok: true, pending: true, kind: 'slip', reservationId: '#MM530' }), {
+					status: 200, headers: { 'content-type': 'application/json' }
+				});
+			}
+			return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { 'content-type': 'application/json' } });
+		});
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message', replyToken: 'reply-late-slip', webhookEventId: 'evt-late-slip', timestamp: Date.now(),
+				source: { type: 'user', userId: 'U-late-slip' }, message: { type: 'image', id: 'msg-late-slip' }
+			}]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...env, ...workerEnv } as any, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+			const lineCall = calls.find((call) => String(call.url).includes('api.line.me'));
+			expect(JSON.stringify(lineCall?.body)).toContain('act=send_slip');
+			expect(calls.some((call) => call.url === 'https://example.com/auto-img')).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+});
