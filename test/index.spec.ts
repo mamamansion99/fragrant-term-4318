@@ -1531,6 +1531,14 @@ describe('Worker routes', () => {
 		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101')).toBe('A101');
 		expect(__testables.parseCheckinCommand(' เช็คอินห้อง b514 ')).toBe('B514');
 		expect(__testables.parseCheckinCommand('เช็คอิน A101')).toBeNull();
+		// "ใหม่" ต่อท้าย = สั่งเริ่มรอบใหม่ ไม่ใช่คำสั่งเช็คอินปกติ (กันสร้างแถวซ้ำ)
+		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101 ใหม่')).toBeNull();
+		expect(__testables.parseCheckinRestartCommand('เช็คอินห้อง a101 ใหม่')).toBe('A101');
+		expect(__testables.parseCheckinRestartCommand('เช็คอินห้อง A101')).toBeNull();
+		expect(__testables.buildCheckinStartGuardKey('b101')).toBe('checkin_started:B101');
+		expect(__testables.isCheckinStartGuardActive({ ts: Date.now() })).toBe(true);
+		expect(__testables.isCheckinStartGuardActive({ ts: Date.now() - 31 * 60 * 1000 })).toBe(false);
+		expect(__testables.isCheckinStartGuardActive(null)).toBe(false);
 	});
 
 	it('arms CHECKOUT2 slip flow from postback button data', () => {

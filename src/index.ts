@@ -238,6 +238,9 @@ const CHECKIN_CHANGE_KEYWORDS = [
   'changecheckintime'
 ];
 const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
+// พิมพ์คำสั่งเดิมซ้ำ = สร้างแถวใหม่ในชีท CheckIn ทุกครั้ง (B101 12/09/2026 ได้ 2 แถว)
+// จึงกันซ้ำต่อห้องไว้ และเปิดทางเริ่มใหม่จริง ๆ ด้วยคำว่า "ใหม่" ต่อท้าย
+const CHECKIN_RESTART_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s+(?:ใหม่|เริ่มใหม่|restart|force)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
 const CHECKIN_KEYCARD_PHOTO_TTL_SECONDS = 20 * 60;
@@ -879,6 +882,16 @@ function buildCheckinFlowKey(userId, chatId) {
   return 'checkin_flow:unknown';
 }
 
+// กันคำสั่งเช็คอินห้องเดิมซ้ำ — คนละตัวกับ checkin_flow: ตัวนั้นถูกลบทันทีที่สลิปเข้ามา
+// จึงกันซ้ำไม่ได้ ตัวนี้ผูกกับ "ห้อง" ไม่ใช่คนพิมพ์ เพราะเจ้าหน้าที่คนละคนก็ยิงซ้ำได้
+function buildCheckinStartGuardKey(roomId) {
+  return `checkin_started:${String(roomId || '').toUpperCase()}`;
+}
+
+function isCheckinStartGuardActive(state, now = Date.now()) {
+  return !!(state && state.ts && (now - state.ts < CHECKIN_FLOW_TTL_MS));
+}
+
 function isCheckinFlowStateActive(state, now = Date.now()) {
   return !!(
     state &&
@@ -1021,6 +1034,13 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activ
     } catch (err) {
       console.error('checkin flow kv put failed', err);
     }
+
+    await kvPut(
+      env,
+      buildCheckinStartGuardKey(roomId),
+      { roomId, chatId, lineUserId: userId || null, ts: Date.now() },
+      CHECKIN_FLOW_TTL_SECONDS
+    );
   }
 
   const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
@@ -1030,6 +1050,13 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activ
 function parseCheckinCommand(text) {
   if (!text) return null;
   const match = CHECKIN_COMMAND_RE.exec(text);
+  if (!match) return null;
+  return match[1].toUpperCase();
+}
+
+function parseCheckinRestartCommand(text) {
+  if (!text) return null;
+  const match = CHECKIN_RESTART_COMMAND_RE.exec(text);
   if (!match) return null;
   return match[1].toUpperCase();
 }
@@ -2771,7 +2798,7 @@ function classifyTextCommand(text, options = {}) {
   if (checkoutPayment) {
     return { kind: 'checkout_payment', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
-  if (parseCheckinCommand(raw)) {
+  if (parseCheckinCommand(raw) || parseCheckinRestartCommand(raw)) {
     return { kind: 'checkin', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
   if (parseCleaningCommand(raw)) {
@@ -6410,8 +6437,37 @@ const worker = {
             deferredStatePrompt = 'โปรดส่งรูปหลักฐานเงินสดเป็นรูปภาพในแชทนี้ค่ะ';
           }
 
+          const checkinRestartRoomCode = parseCheckinRestartCommand(textIn);
+          if (checkinRestartRoomCode) {
+            await kvDel(env, buildCheckinStartGuardKey(checkinRestartRoomCode));
+            console.log('checkin_start_restart', { roomId: checkinRestartRoomCode, userId, chatId });
+            await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRestartRoomCode, commandOwner);
+            continue;
+          }
+
           const checkinRoomCode = parseCheckinCommand(textIn);
           if (checkinRoomCode) {
+            const checkinGuardKey = buildCheckinStartGuardKey(checkinRoomCode);
+            const checkinGuard = await kvGet(env, checkinGuardKey);
+            if (isCheckinStartGuardActive(checkinGuard)) {
+              const startedAtText = formatTimeBangkok(new Date(checkinGuard.ts));
+              console.log('checkin_start_duplicate_blocked', {
+                roomId: checkinRoomCode,
+                userId,
+                chatId,
+                startedAt: new Date(checkinGuard.ts).toISOString()
+              });
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `ห้อง ${checkinRoomCode} เริ่มเช็คอินไปแล้วเมื่อ ${startedAtText} น. ค่ะ\n` +
+                  'ถ้ายังไม่ได้ส่งสลิป ส่งรูปเข้ามาในแชทนี้ได้เลย\n' +
+                  `ถ้าต้องการเริ่มรอบใหม่จริง ๆ พิมพ์ว่า  เช็คอินห้อง ${checkinRoomCode} ใหม่`,
+                'checkin_start_duplicate_ack_failed'
+              );
+              continue;
+            }
             await startCheckinFlow(env, ctx, ev, replyToken, textIn, checkinRoomCode, commandOwner);
             continue;
           }
@@ -11064,6 +11120,9 @@ export const __testables = {
   TEXT_STATE_PENALTY_REASON,
   TEXT_STATE_PAYMENT_IMAGE,
   parseCheckinCommand,
+  parseCheckinRestartCommand,
+  buildCheckinStartGuardKey,
+  isCheckinStartGuardActive,
   isCheckinFlowStateActive,
   ACTIVE_FLOW_CONTRACT_VERSION,
   BOOKING_PAYMENT_FLOW_TTL_SECONDS,
