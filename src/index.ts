@@ -1090,10 +1090,24 @@ function parseReturnKeyTrigger(text) {
   return roomToken;
 }
 
+// Commands that decide money or close a flow: `co <room> no|forfeit|waive` gives up
+// a tenant's deposit and `co done <room>` ends the checkout. Kept to the three people
+// who answer for those decisions.
 const CO_ADMIN_ALLOWED_LINE_USER_IDS = new Set([
-  'Ue90558b73d62863e2287ac32e69541a3',
-  'U2855d93e108ccebbef7d1b55ec8827e5',
-  'U9293d43980e98649e20c8759a2c2d7f0'
+  'Ue90558b73d62863e2287ac32e69541a3', // Ma
+  'U2855d93e108ccebbef7d1b55ec8827e5', // P'Koy
+  'U9293d43980e98649e20c8759a2c2d7f0'  // P'Yu
+]);
+
+// `ready <room>` only reports that a room has been cleaned, so the housekeeping staff
+// hold it too. Granting it through the list above would have handed them the deposit
+// decisions as well, which is not the same job.
+const READY_ALLOWED_LINE_USER_IDS = new Set([
+  'Ue90558b73d62863e2287ac32e69541a3', // Ma
+  'U193cae8dd9197f7d4bd6ada8046fd98b', // KP
+  'U2855d93e108ccebbef7d1b55ec8827e5', // P'Koy
+  'U9293d43980e98649e20c8759a2c2d7f0', // P'Yu
+  'Ua3e2f84505daa64ee21b8608e8857c33'  // POCO
 ]);
 const RETURN_KEY_ALLOWED_LINE_USER_IDS = new Set([
   'Ue90558b73d62863e2287ac32e69541a3', // Ma
@@ -1329,6 +1343,18 @@ function isCoAdminAllowedLineUserId(userId) {
   const normalized = String(userId || '').trim();
   if (!normalized) return false;
   return CO_ADMIN_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+function isReadyAllowedLineUserId(userId) {
+  const normalized = String(userId || '').trim();
+  if (!normalized) return false;
+  return READY_ALLOWED_LINE_USER_IDS.has(normalized);
+}
+
+/** Which roster a co/ready shortcut has to appear on. */
+function isShortcutAllowedForUser(shortcut, userId) {
+  if (shortcut?.type === 'ready') return isReadyAllowedLineUserId(userId);
+  return isCoAdminAllowedLineUserId(userId);
 }
 
 // --- Car slot / parking sticker staff commands ---
@@ -6564,7 +6590,7 @@ const worker = {
               continue;
             }
 
-            if (requiresCoAdminShortcutPermission(coAdminShortcut) && !isCoAdminAllowedLineUserId(userId)) {
+            if (requiresCoAdminShortcutPermission(coAdminShortcut) && !isShortcutAllowedForUser(coAdminShortcut, userId)) {
               console.log('co_admin_unauthorized', { userId, text: textIn.slice(0, 80) });
               await replyOrPushText(
                 env,
