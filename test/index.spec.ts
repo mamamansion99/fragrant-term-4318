@@ -558,6 +558,48 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('understands the ways tenants and leads actually phrase common requests', async () => {
+		const kind = async (text: string) => {
+			const fastReply = await __testables.quickKeywordReply(text, {}, 'Uphrase');
+			return { route: __testables.classifyTextCommand(text, { fastReply })?.kind || null, fastReply: fastReply as any };
+		};
+		for (const t of ['ชำระค่าห้อง', 'ชำระค่าห้องค่ะ', 'จ่ายค่าเช่า a408', '#ชำระค่าเช่า A508', 'ชำระค่าเช่า\nห้อง B105', 'แจ้งชำระค่าเช่า', 'ชำระบิลค่าเช่า', 'จ่ายค่าหอ']) {
+			expect((await kind(t)).route, t).toBe('pay_rent');
+		}
+		for (const t of ['ต้องจ่ายค่าห้องมั้ยคะ', 'กำลังจะโอนจ่ายค่าห้องพอดีเลยเห็น']) {
+			expect((await kind(t)).route, t).not.toBe('pay_rent');
+		}
+		expect((await kind('จ่ายค่าลืมกุญแจ')).route).toBe('preset_payment');
+
+		const wifi = await kind('รหัสเน็ต');
+		expect(wifi.fastReply[0].text).toContain('WiFi');
+
+		for (const t of ['มีว่างไหมครับ', 'หอพักเต็มรึยังครับ', 'ยังมีก้องว่างไหมคะ', 'เต็มยังครับ', 'ห้องว่างตอนนี้มีอยู่มั้ยครับ']) {
+			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('ห้องเต็มแต่มีคนออกเรื่อยๆ');
+		}
+		for (const t of ['พี่ก้อยว่างวันไหนบ้างคะ', 'ว่างค่ะ', 'พรุ่งนี้ไม่ว่างค่ะ']) {
+			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('ห้องเต็มแต่มีคนออกเรื่อยๆ');
+		}
+
+		for (const t of ['ราคาเท่าไหร่คะ', 'เดือนละเท่าไหร่คะ', 'ขอทราบราคาด้วยครับ', 'ราคาห้อง']) {
+			expect((await kind(t)).fastReply?.[0]?.text, t).toContain('[ค่าเช่า]');
+		}
+		for (const t of ['ชำระค่าเช่า', 'ค่าเช่าอันนี้ต้องจ่ายแค่น้ำไฟหรือป่าวค่ะ', 'ถ้าเอารถยนต์มาจอด2-3วัน คิดราคาเท่าไหร่คะ', 'ยังสู้ราคาค่าหอไม่ไหวคับ', 'แต่ว่าจะเป็นห้องมุม ราคา 4,500 ใช่ไหมครับ']) {
+			expect(String((await kind(t)).fastReply?.[0]?.text || ''), t).not.toContain('[ค่าเช่า]');
+		}
+
+		const forgot = await kind('หนูลืมกุญแจห้องไว้ในห้องต้องทำไงคะ');
+		expect(forgot.fastReply[0].template.actions[0]).toMatchObject({ type: 'message', text: 'ชำระค่าลืมกุญแจ' });
+		expect((await kind('ลืมกุญแจ')).fastReply).toBeNull();
+
+		const moveout = await kind('B510ขอแจ้งย้ายออกสิ้นเดือนนี้ค่ะ');
+		expect(moveout.fastReply[0].quickReply.items[0].action).toMatchObject({ type: 'message', text: 'แจ้งออก' });
+		for (const t of ['ไม่ใช่ว่าแจ้งออกก่อน1เดือนหรอคะ', 'ยกเลิกการแจ้งย้ายออกได้ไหมครับ', 'แจ้งออก']) {
+			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('แจ้งออกผ่านระบบ');
+		}
+		expect(JSON.stringify((await kind('ขอโลเคชั่นหน่อยค่ะ')).fastReply)).toContain('maps.app.goo.gl');
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',
@@ -2529,7 +2571,8 @@ describe('Worker routes', () => {
 		expect(messages).toHaveLength(2);
 		expect(messages[0].text).toContain('Standard (เฟอร์ครบ): 4,000 บ./ด.');
 		expect(messages[1].text).toContain('ตอนนี้ห้องเต็มแต่มีคนออกเรื่อยๆ');
-		expect(messages[1].text).toContain('https://mm-prebook.pages.dev/');
+		// The live link comes from PREBOOK_URL in wrangler.jsonc (the LIFF entry since f84d738).
+		expect(messages[1].text).toContain(String(env.PREBOOK_URL));
 	});
 
 	it('replies to วิธีจอง with the plain screening question', async () => {

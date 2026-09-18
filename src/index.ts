@@ -546,16 +546,37 @@ async function replyOrPushText(env, replyToken, chatId, text, logLabel = 'line_r
   );
 }
 
+// Polite endings tenants add to a command ("ชำระค่าห้องค่ะ", "จ่ายค่าเช่านะครับ").
+const COMMAND_POLITE_SUFFIX_RE = /\s*(นะ)?\s*(ค่ะ|คะ|ค่า|ครับ|คับ|ครับผม|จ้า|จ้ะ)\s*$/i;
+
+function stripCommandPoliteSuffix(text) {
+  return normalizeCommandText(text).replace(COMMAND_POLITE_SUFFIX_RE, '').trim();
+}
+
+// Rent payment typed by hand, not just the rich-menu label. Seen in the chat
+// log: "ชำระค่าห้อง", "จ่ายค่าเช่า a408", "#ชำระค่าเช่า A508",
+// "ชำระค่าเช่า\nห้อง B105", "แจ้งชำระค่าห้อง", "ชำระบิลค่าเช่า". The room is
+// not needed: the pay-rent flow resolves it from the LINE account.
+// Sentences about rent ("ต้องจ่ายค่าห้องมั้ยคะ") stay with the admin.
+const PAY_RENT_COMMAND_RE = /^#?\s*(แจ้ง\s*)?(ส่ง\s*สลิป|ชำระ|จ่าย|โอน)\s*(บิล\s*)?ค่า\s*(เช่า\s*(ห้อง|หอ)?|ห้อง|หอ)(\s*(ห้อง)?\s*[AaBb]\s*-?\s*\d{3,4})?(\s*(เดือน\s*นี้|เดือน\s*\S{1,12}))?$/;
+
+function isPayRentCommand(text) {
+  const raw = stripCommandPoliteSuffix(text).replace(/\s+/g, ' ');
+  if (!raw) return false;
+  if (/^(send\s*rent\s*slip|pay\s*rent)$/i.test(raw)) return true;
+  return PAY_RENT_COMMAND_RE.test(raw);
+}
+
 function detectPresetOtherPaymentReason(text, checkoutPaymentShortcut = null) {
   if (checkoutPaymentShortcut?.reason) return checkoutPaymentShortcut.reason;
 
-  const compact = normalizeCommandText(text).replace(/\s+/g, '');
+  const compact = stripCommandPoliteSuffix(text).replace(/\s+/g, '');
   if (/^(จ่ายค่าทำความสะอาด|ชำระค่าทำความสะอาด)$/i.test(compact)) return 'CLEANING_PAYMENT';
   if (/^(จ่ายค่าเช่าที่จอดรถ|ชำระค่าเช่าที่จอดรถ)$/i.test(compact)) return 'CAR';
   if (/^(จ่ายเงินค่ายืมกุญแจ|จ่ายเงินค่าเช่ากุญแจ|จ่ายค่าเช่ากุญแจ|ชำระค่าเช่ากุญแจ|เช่ากุญแจเพิ่ม|เช่าคีย์การ์ดเพิ่ม|เช่าชุดกุญแจเพิ่ม)$/i.test(compact)) {
     return 'KEY_RENT';
   }
-  if (/^(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย|ลืม\/ทำกุญแจหาย|ลืมทำกุญแจหาย|กุญแจหาย|คีย์การ์ดหาย)$/i.test(compact)) {
+  if (/^(จ่ายเงินค่าลืมกุญแจ|จ่ายเงินค่าลืมคีย์การ์ด|จ่ายเงินค่ากุญแจหาย|จ่ายค่าลืมกุญแจ|จ่ายค่าลืมคีย์การ์ด|จ่ายค่ากุญแจหาย|ชำระค่าลืมกุญแจ|ชำระค่าลืมคีย์การ์ด|ชำระค่ากุญแจหาย|ลืม\/ทำกุญแจหาย|ลืมทำกุญแจหาย|กุญแจหาย|คีย์การ์ดหาย)$/i.test(compact)) {
     return 'KEY_FORGOT';
   }
   return null;
@@ -2006,6 +2027,16 @@ const AVAILABILITY_REGEXES = [
   /ห้อง(วันนี้|พรุ่งนี้)/i
 ];
 
+// Looser phrasings found in the chat log that never mention ห้อง:
+// "มีว่างไหมครับ", "ตอนนี้พอมีว่างไหมครับ", "ยังว่างอยู่ไหมครับ",
+// "หอพักเต็มรึยังครับ", "เต็มยังครับ", "ยังมีก้องว่างไหมคะ" (typo). Because
+// they are loose they carry their own exclusions for scheduling talk.
+const AVAILABILITY_LOOSE_REGEXES = [
+  /(มี|ยัง|พอ|เหลือ)[^\n]{0,8}ว่าง[^\n]{0,8}(ไหม|มั้ย|มั๊ย|ม้าย|ป่าว|เปล่า|รึยัง|หรือยัง|อยู่|บ้าง|กี่)/i,
+  /(หอ|หอพัก|ก้อง)[^\n]{0,12}(ว่าง|เต็ม)[^\n]{0,8}(ไหม|มั้ย|มั๊ย|ยัง|รึยัง|หรือยัง|อยู่|หรอ|หรือ)/i,
+  /^(ยัง)?เต็ม\s*(ยัง|รึยัง|หรือยัง|อยู่|ไหม|มั้ย)/i
+];
+
 const AVAILABILITY_EXCLUDE_KEYWORDS = [
   'ห้องกี่คืน',
   'ราคา',
@@ -2019,7 +2050,17 @@ const AVAILABILITY_EXCLUDE_KEYWORDS = [
   'ขอเบอร์จอง'
 ];
 
+const AVAILABILITY_LOOSE_EXCLUDE_RE = /(ไม่ว่าง|(พี่|ช่าง|แม่บ้าน|ผู้จัดการ|เจ้าของ)(?:(?!ห้อง)\S){0,6}ว่าง|ว่าง(ช่วง|ตอน|กี่โมง)|ที่จอด|จอดรถ|เครื่องซักผ้า|ตู้เย็น)/;
+
+function isAvailabilityQuestion(text) {
+  const t = String(text || '');
+  if (AVAILABILITY_REGEXES.some((re) => re.test(t))) return true;
+  return AVAILABILITY_LOOSE_REGEXES.some((re) => re.test(t)) && !AVAILABILITY_LOOSE_EXCLUDE_RE.test(t);
+}
+
 const AVAILABILITY_EXCLUDE_REGEXES = [
+  // "พี่ก้อยว่างวันไหนบ้างคะ" asks when a person is free, not about rooms.
+  /(พี่|ช่าง|แม่บ้าน|ผู้จัดการ|เจ้าของ)(?:(?!ห้อง)\S){0,6}ว่าง/,
   /room\s*available/i,
   /\bavailability\b/i,
   /book\s*room/i,
@@ -2890,7 +2931,7 @@ function classifyTextCommand(text, options = {}) {
   if (/^\s*แจ้งออก\s*$/i.test(raw)) {
     return { kind: 'moveout', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
-  if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|ชำระค่าเช่าห้อง|จ่ายค่าเช่า|จ่ายค่าเช่าห้อง|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(raw)) {
+  if (isPayRentCommand(raw)) {
     return { kind: 'pay_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
   if (/^\s*(ชำระค่าปรับ|ชำระค่าอื่นๆ)\s*$/i.test(raw)) {
@@ -7160,7 +7201,7 @@ const worker = {
           if (handled) continue;
 
           // (C) Rent payment trigger
-          if (/^\s*(ส่งสลิปค่าเช่า|ชำระค่าเช่า|ชำระค่าเช่าห้อง|จ่ายค่าเช่า|จ่ายค่าเช่าห้อง|send\s*rent\s*slip|pay\s*rent)\s*$/i.test(textIn)) {
+          if (isPayRentCommand(textIn)) {
             if (chatId) {
               ctx.waitUntil(lineStartLoading(env.LINE_ACCESS_TOKEN, chatId, 7));
             }
@@ -9353,6 +9394,70 @@ function buildRoomRentQuickReply() {
   };
 }
 
+// "ราคาเท่าไหร่คะ", "เดือนละเท่าไหร่คะ", "ขอทราบราคาด้วยครับ", "ราครห้องเท่าไหร่ครับ".
+// Anything naming another charge (ค่าปรับ, ค่าไฟ, ที่จอด ...) is a tenant
+// question about that charge and stays with the admin.
+const ROOM_PRICE_OTHER_CHARGE_RE = /(ค่าปรับ|ค่าไฟ|ค่าน้ำ|ยอด|บิล|กุญแจ|คีย์การ์ด|จอด|ทำความสะอาด|ล้างแอร์|มัดจำ|ประกัน|วันที่|ชั้นที่|คืนละ|ต่อคืน|รายวัน|ค่าส่วนกลาง|เครื่องซักผ้า|ตู้เย็น|ซัก)/;
+
+// A figure in the text ("ราคา 4,500 ใช่ไหม") or a tenant's own rent
+// ("ชำระค่าเช่า", "ค่าเช่าเดือนไหน") means a conversation already under way.
+const ROOM_PRICE_CONTEXT_RE = /(\d{3}|ชำระ|จ่าย|โอน|เดือนไหน|น้ำไฟ|ย้ายออก|สัญญา|จอง|ขึ้น|เดิม|ขนาด|เตียง|ชั้น|เปิดห้อง)/;
+
+function isRoomPriceOnlyAsk(text) {
+  const t = String(text || '').trim();
+  if (!t || t.length > 60) return false;
+  if (ROOM_PRICE_OTHER_CHARGE_RE.test(t) || ROOM_PRICE_CONTEXT_RE.test(t)) return false;
+  // It has to be asking: a price word alone ("สู้ราคาไม่ไหว") is not a question.
+  if (!/(เท่าไ|กี่บาท|ยังไง|ไหนบ้าง|ทราบ|ถาม|^ราค[าร]\s*(ห้อง(พัก)?)?$)/.test(t)) return false;
+  return /(ราค[าร]|เดือนละ|ค่าเช่า|ห้อง[^\n]{0,15}(เท่าไ|กี่บาท))/.test(t);
+}
+
+// "หนูลืมกุญแจห้องไว้ในห้องต้องทำไงคะ", "ลืมกุญแจไว้ในห้องค่ะ": how to get in,
+// with the payment and the building staff one tap away. A bare "ลืมกุญแจ"
+// is left alone so a flow asking for a reason can still take it.
+function buildForgotKeyHelpReply(text) {
+  const t = String(text || '');
+  if (!/ลืม\s*(กุญแจ|คีย์การ์ด|คีย์)/.test(t)) return null;
+  if (!/(ไว้|ในห้อง|ทำ(ไง|ยังไง|อย่างไร)|เข้าห้องไม่ได้|เปิด(ห้อง)?ให้|ช่วย|ต้อง)/.test(t)) return null;
+  return [
+    {
+      type: 'template',
+      altText: 'ลืมกุญแจ / คีย์การ์ด',
+      template: {
+        type: 'buttons',
+        text: 'ลืมกุญแจหรือคีย์การ์ดใช่ไหมคะ ชำระค่าลืมกุญแจได้จากปุ่มด้านล่าง หรือโทรหาแม่บ้านตึกของคุณได้เลยค่ะ',
+        actions: [
+          { type: 'message', label: '💳 ชำระค่าลืมกุญแจ', text: 'ชำระค่าลืมกุญแจ' },
+          { type: 'uri', label: '📞 แม่บ้าน ตึก A (ก้อย)', uri: 'tel:0806490441' },
+          { type: 'uri', label: '📞 แม่บ้าน ตึก B (พี่ยุ)', uri: 'tel:0837420760' }
+        ]
+      }
+    }
+  ];
+}
+
+// "ผมขอเเจ้งย้ายออก อยู่ถึงวันอาทิตย์ ที่ 10/5", "แจ้งย้ายออก 30/05/2026 ค่ะ",
+// "B510ขอแจ้งย้ายออกสิ้นเดือนนี้ค่ะ": point to the move-out form (`แจ้งออก`).
+// Questions about the rules ("ต้องแจ้งออกก่อน 1 เดือนหรอคะ") stay with the admin.
+function buildMoveoutOfferReply(text) {
+  const t = String(text || '').replace(/เเ/g, 'แ');
+  if (/^\s*แจ้ง\s*ออก\s*$/.test(t)) return null;
+  if (!/(ขอ\s*)?แจ้ง\s*(ย้าย\s*)?ออก|จะ\s*ย้าย\s*ออก\s*(วันที่|สิ้นเดือน|ต้นเดือน|เดือน|\d)/.test(t)) return null;
+  if (t.length > 90) return null;
+  if (/(ไหม|มั้ย|มั๊ย|มั่ย|หรอ|ไง|อะไร|\?|รึเปล่า|หรือเปล่า|ใช่|ยกเลิก|เลื่อน|ได้เลยม)/.test(t)) return null;
+  return [
+    {
+      type: 'text',
+      text: 'รับทราบค่ะ 🙏 เพื่อให้วันออกถูกบันทึกในระบบ กรุณากดปุ่มด้านล่างเพื่อกรอกแบบฟอร์มแจ้งออกด้วยนะคะ',
+      quickReply: {
+        items: [
+          { type: 'action', action: { type: 'message', label: '📝 แจ้งออกผ่านระบบ', text: 'แจ้งออก' } }
+        ]
+      }
+    }
+  ];
+}
+
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -9376,8 +9481,11 @@ async function quickKeywordReply(text, env, userId) {
     URGENT_CONTACT_RE.test(normalized) ||
     (normalized.includes('ติดต่อ') && !normalized.includes('สอบถาม'));
 
-  const mentionsWifi = /(wifi|wi[-\s]?fi|ไว[-\s]?ไฟ|ไวฟาย|วายฟาย|วายไฟ)/i.test(normalized);
   const wifiPassHint = /(password|pass|รหัส|รหัสผ่าน|พาสเวิร์ด|พาส)/i.test(normalized);
+  // "รหัสเน็ต" asks for the WiFi password; "เน็ตหลุด" is a repair and was
+  // already routed away above.
+  const mentionsWifi = /(wifi|wi[-\s]?fi|ไว[-\s]?ไฟ|ไวฟาย|วายฟาย|วายไฟ)/i.test(normalized) ||
+    (wifiPassHint && /(เน็ต|อินเทอร์เน็ต|อินเตอร์เน็ต|internet)/i.test(normalized));
   const shortWifiAsk = mentionsWifi && normalized.length <= 20;
 
   if (mentionsWifi && (wifiPassHint || shortWifiAsk)) {
@@ -9423,10 +9531,16 @@ async function quickKeywordReply(text, env, userId) {
     ];
   }
 
+  const forgotKeyReply = buildForgotKeyHelpReply(normalized);
+  if (forgotKeyReply) return forgotKeyReply;
+
+  const moveoutOffer = buildMoveoutOfferReply(normalized);
+  if (moveoutOffer) return moveoutOffer;
+
   const isAvailabilityExcluded =
     AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
     AVAILABILITY_EXCLUDE_REGEXES.some((re) => re.test(normalized) || re.test(lower));
-  const isAvailabilityAsk = AVAILABILITY_REGEXES.some((re) => re.test(normalized));
+  const isAvailabilityAsk = isAvailabilityQuestion(normalized);
   const isRoomRentAsk = isRoomRentInquiry(normalized);
   if (isAvailabilityAsk && isRoomRentAsk) {
     return [
@@ -9436,6 +9550,16 @@ async function quickKeywordReply(text, env, userId) {
         quickReply: buildRoomRentQuickReply()
       },
       ...buildPrebookPromptMessages(env, 'availability')
+    ];
+  }
+
+  if (!isAvailabilityAsk && isRoomPriceOnlyAsk(normalized)) {
+    return [
+      {
+        type: 'text',
+        text: roomDetailByKey('ROOM_RENT'),
+        quickReply: buildRoomRentQuickReply()
+      }
     ];
   }
 
@@ -9592,7 +9716,7 @@ async function quickKeywordReply(text, env, userId) {
     ];
   }
 
-  const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];
+  const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'โลเคชั่น', 'โลเคชัน', 'โลเคชั้น', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];
   const locationEnglishTriggers = ['location', 'map', 'where is', 'how to get', 'how do i get', 'how to go'];
   const locationRegex = /(ไป|เดินทาง).*(ยังไง|อย่างไร|ทางไหน)/i;
   if (includesAny(normalized, locationThaiTriggers) || includesAny(lower, locationEnglishTriggers) || locationRegex.test(normalized)) {
