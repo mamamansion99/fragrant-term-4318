@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { AsyncLocalStorage } from 'node:async_hooks';
 
 /* =========================
  * 0) Small utilities
@@ -3046,6 +3047,7 @@ async function linePushText(channelToken, to, text) {
     const body = await res.text();
     throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
   }
+  logOutboundMessages('push', to, [{ type: 'text', text }]);
 }
 
 async function safeLinePushText(channelToken, to, text, logLabel = 'line_push_failed') {
@@ -3076,6 +3078,7 @@ async function linePush(channelToken, to, messages) {
     const body = await res.text();
     throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
   }
+  logOutboundMessages('push', to, messages);
 }
 
 async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
@@ -3993,7 +3996,11 @@ async function handleLinkToken(request, env) {
 const LINE_BACKGROUND_PROCESSING_HEADER = 'x-mama-line-background';
 
 const worker = {
-  async fetch(request, env, ctx) {
+  fetch(request, env, ctx) {
+    return chatLogContext.run({ env, ctx, eventLog: null }, () => worker.handleFetch(request, env, ctx));
+  },
+
+  async handleFetch(request, env, ctx) {
     const url = new URL(request.url);
 
     // CORS preflight for browser
@@ -4281,7 +4288,16 @@ const worker = {
       }
     }
 
-    for (const ev of events) {
+    for (const loggedEvent of events) {
+      // Each event gets its own log context so a reply that is still in
+      // flight under waitUntil is attributed to the event that caused it,
+      // not to whichever event the loop has moved on to. The single-pass
+      // inner loop keeps every `continue` in the handler body meaning
+      // "done with this event".
+      const eventLog = startEventLog(env, loggedEvent);
+      await chatLogContext.run({ env, ctx, eventLog }, async () => {
+      try {
+      for (const ev of [loggedEvent]) {
       const replyToken = ev?.replyToken;
       const receiptChatId = getChatId(ev) || 'unknown';
       const eventReceipt = {
@@ -6143,28 +6159,7 @@ const worker = {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
-          const inboundLogPayload = {
-            timestamp: new Date(ev?.timestamp || Date.now()).toISOString(),
-            direction: 'IN',
-            eventType: ev?.type || 'message',
-            messageType: m?.type || 'text',
-            text: textIn,
-            replyToken: replyToken || '',
-            userId: userId || '',
-            groupId: ev?.source?.groupId || '',
-            roomId: ev?.source?.roomId || '',
-            chatId: chatId || '',
-            sourceType: ev?.source?.type || '',
-            messageId: m?.id || '',
-            webhookEventId: ev?.webhookEventId || '',
-            deliveryContext: ev?.deliveryContext || null,
-            normalizedBookingCode: parseBookingCodeCommand(textIn) || '',
-            raw: ev
-          };
-
-          ctx.waitUntil(
-            notifyN8nChatLog(env, inboundLogPayload).catch((err) => console.error('chat_log_inbound_failed', err))
-          );
+          tagEventLog(classifyTextCommand(textIn, { isOwnerGroup: isOwnerGroupChat(env, chatId) })?.kind || 'text');
 
           const priorityBookingCode = parseBookingCodeCommand(textIn);
           if (priorityBookingCode) {
@@ -6351,6 +6346,9 @@ const worker = {
             fastReply: precomputedFastReply,
             isOwnerGroup: isOwnerGroupChat(env, chatId)
           });
+          // No command matched: whatever consumes the text from here on is a
+          // waiting workflow state, unless it reaches the GAS catch-all below.
+          tagEventLog(commandRoute?.kind || 'text_state');
           let clearedForCommand = [];
           let commandOwner = null;
           if (commandRoute?.statePolicy === TEXT_COMMAND_REPLACE_FLOW) {
@@ -7665,6 +7663,7 @@ const worker = {
           }
 
           if (deferredStatePrompt && !commandRoute) {
+            tagEventLog('state_prompt');
             await replyOrPushText(
               env,
               replyToken,
@@ -7676,6 +7675,7 @@ const worker = {
           }
 
           // (H) Forward everything else to GAS
+          tagEventLog(commandRoute ? `gas:${commandRoute.kind}` : 'unhandled');
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
         }
@@ -8116,6 +8116,7 @@ const worker = {
 
           const autoImgUrl = getAutoImgGas(env);
           if (autoImgUrl) {
+            tagEventLog('image:auto_img_gas');
             await replyOrPushText(
               env,
               replyToken,
@@ -8127,6 +8128,7 @@ const worker = {
             continue;
           }
 
+          tagEventLog('image:unclaimed');
           await replyOrPushText(
             env,
             replyToken,
@@ -8139,6 +8141,11 @@ const worker = {
         }
 
       }
+      }
+      } finally {
+        flushEventLog(env, ctx, eventLog);
+      }
+      });
     }
 
     return new Response('OK', { status: 200 });
@@ -8377,6 +8384,7 @@ async function lineReply(channelToken, replyToken, messages) {
     const body = await res.text();
     throw new Error(`LINE reply failed ${res.status} ${res.statusText}: ${body}`);
   }
+  logOutboundMessages('reply', null, messages);
 }
 
 function createReplyToLine(env) {
@@ -11110,6 +11118,159 @@ async function notifyN8nChatLog(env, payload) {
     console.error('notifyN8nChatLog error', err);
     return false;
   }
+}
+
+/* -------------------------------------------------------
+ * Chat log: one row per inbound event, one row per reply/push
+ *
+ * Every event is logged from the `finally` of the webhook loop, so images,
+ * stickers, postbacks and follows land in LINE_CHAT_LOGS alongside text, and
+ * `handler` records which route actually took the event ('unhandled' means it
+ * fell through to the GAS catch-all with no automatic answer).
+ *
+ * Outbound rows are written by lineReply/linePush themselves. They have no
+ * env or ctx, so the request's env/ctx and the event being handled travel in
+ * AsyncLocalStorage. `inReplyTo` on an OUT row is the LogId of the IN row it
+ * answers, which is what makes response time measurable.
+ *
+ * Messages the admin types in LINE OA Manager never reach the webhook and
+ * cannot appear here; neither can pushes n8n or GAS send on their own.
+ * ----------------------------------------------------- */
+const chatLogContext = new AsyncLocalStorage();
+const CHAT_LOG_TEXT_LIMIT = 1000;
+
+function chatLogStaffIds(env) {
+  return new Set(
+    `${env?.CAR_ADMIN_LINE_USER_IDS || ''},${env?.STAFF_LINE_USER_IDS || ''}`
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+  );
+}
+
+function describeInboundEvent(ev) {
+  const m = ev?.message || {};
+  switch (ev?.type) {
+    case 'message':
+      switch (m.type) {
+        case 'text': return String(m.text || '').trim();
+        case 'sticker': {
+          const words = Array.isArray(m.keywords) ? m.keywords.slice(0, 3).join(', ') : '';
+          return `(sticker ${m.packageId || ''}/${m.stickerId || ''}${words ? ` ${words}` : ''})`;
+        }
+        case 'file': return `(file ${m.fileName || ''})`;
+        case 'location': return `(location ${m.title || ''} ${m.address || ''})`.replace(/\s+\)/, ')');
+        default: return `(${m.type || 'message'})`;
+      }
+    case 'postback': {
+      const params = ev?.postback?.params ? ` ${JSON.stringify(ev.postback.params)}` : '';
+      return `${ev?.postback?.data || ''}${params}`;
+    }
+    default:
+      return `(${ev?.type || 'event'})`;
+  }
+}
+
+function defaultEventHandler(ev) {
+  if (ev?.type === 'postback') {
+    const data = String(ev?.postback?.data || '');
+    let name = '';
+    try {
+      const parsed = JSON.parse(data);
+      name = parsed?.act || parsed?.action || parsed?.type || '';
+    } catch (_) {
+      const params = new URLSearchParams(data);
+      name = params.get('act') || params.get('action') || (data.includes('=') ? '' : data);
+    }
+    return `postback:${String(name || 'unknown').slice(0, 60)}`;
+  }
+  if (ev?.type === 'message') return ev?.message?.type === 'text' ? 'text' : `message:${ev?.message?.type || ''}`;
+  return ev?.type || 'event';
+}
+
+function startEventLog(env, ev) {
+  const userId = ev?.source?.userId || '';
+  return {
+    timestamp: new Date(ev?.timestamp || Date.now()).toISOString(),
+    direction: 'IN',
+    eventType: ev?.type || '',
+    messageType: ev?.message?.type || '',
+    text: describeInboundEvent(ev).slice(0, CHAT_LOG_TEXT_LIMIT),
+    replyToken: ev?.replyToken || '',
+    userId,
+    groupId: ev?.source?.groupId || '',
+    lineRoomId: ev?.source?.roomId || '',
+    chatId: getChatId(ev),
+    sourceType: ev?.source?.type || '',
+    messageId: ev?.message?.id || '',
+    webhookEventId: ev?.webhookEventId || '',
+    logId: ev?.webhookEventId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    isRedelivery: ev?.deliveryContext?.isRedelivery === true,
+    contactHint: userId && chatLogStaffIds(env).has(userId) ? 'STAFF' : '',
+    handler: '',
+    outCount: 0
+  };
+}
+
+function tagEventLog(handler) {
+  const log = chatLogContext.getStore()?.eventLog;
+  if (log) log.handler = handler;
+}
+
+function flushEventLog(env, ctx, log) {
+  if (!log) return;
+  const { outCount, ...payload } = log;
+  payload.handler = log.handler || defaultEventHandler({
+    type: log.eventType,
+    message: { type: log.messageType },
+    postback: { data: log.eventType === 'postback' ? log.text : '' }
+  });
+  ctx.waitUntil(
+    notifyN8nChatLog(env, payload).catch((err) => console.error('chat_log_inbound_failed', err))
+  );
+}
+
+function summarizeOutboundMessages(messages) {
+  return (Array.isArray(messages) ? messages : [])
+    .map((msg) => {
+      if (msg?.type === 'text') return String(msg.text || '');
+      if (msg?.altText) return `[${msg.type}] ${msg.altText}`;
+      return `[${msg?.type || 'message'}]`;
+    })
+    .join('\n---\n')
+    .slice(0, CHAT_LOG_TEXT_LIMIT);
+}
+
+function logOutboundMessages(kind, to, messages) {
+  const store = chatLogContext.getStore();
+  if (!store?.env || !store?.ctx) return;
+  const inbound = store.eventLog || null;
+  const target = kind === 'reply' ? (inbound?.chatId || '') : String(to || '');
+  const userId = kind === 'reply'
+    ? (inbound?.userId || '')
+    : (target.startsWith('U') ? target : '');
+  const seq = inbound ? ++inbound.outCount : 0;
+  const payload = {
+    timestamp: new Date().toISOString(),
+    direction: 'OUT',
+    eventType: kind,
+    messageType: (Array.isArray(messages) ? messages : []).map((m) => m?.type || '').join(','),
+    text: summarizeOutboundMessages(messages),
+    replyToken: '',
+    userId,
+    groupId: target.startsWith('C') ? target : '',
+    lineRoomId: target.startsWith('R') ? target : '',
+    chatId: target,
+    sourceType: target.startsWith('C') ? 'group' : target.startsWith('R') ? 'room' : 'user',
+    messageId: '',
+    logId: inbound ? `${inbound.logId}:out${seq}` : `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    inReplyTo: inbound?.logId || '',
+    contactHint: userId && chatLogStaffIds(store.env).has(userId) ? 'STAFF' : '',
+    handler: inbound?.handler || defaultEventHandler({ type: inbound?.eventType, message: { type: inbound?.messageType } }) || 'worker'
+  };
+  store.ctx.waitUntil(
+    notifyN8nChatLog(store.env, payload).catch((err) => console.error('chat_log_outbound_failed', err))
+  );
 }
 
 export const __testables = {

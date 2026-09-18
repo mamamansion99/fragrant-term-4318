@@ -373,6 +373,63 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('logs every inbound event with its handler and links worker replies back to it', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		const base = { timestamp: Date.now(), source: { type: 'user', userId: 'Utenant-log' } };
+		const events = [
+			{ ...base, type: 'message', replyToken: 'rt-wifi', webhookEventId: 'ev-wifi', message: { type: 'text', id: 'm1', text: 'WiFi' } },
+			{ ...base, type: 'message', replyToken: 'rt-free', webhookEventId: 'ev-free', message: { type: 'text', id: 'm2', text: 'พรุ่งนี้กลับดึกนะคะ' } },
+			{ ...base, type: 'message', replyToken: 'rt-sticker', webhookEventId: 'ev-sticker', message: { type: 'sticker', id: 'm3', packageId: '1', stickerId: '2', keywords: ['thanks'] } }
+		];
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			MM_WORKER_SECRET: 'test123',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log',
+			CAR_ADMIN_LINE_USER_IDS: 'Ustaff'
+		};
+
+		try {
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(await buildSignedLineRequest(events), mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(200);
+
+			const logs = fetchMock.mock.calls
+				.filter(([url]) => String(url) === 'https://example.com/chat-log')
+				.map(([, init]) => JSON.parse(String(init?.body)));
+			const inbound = Object.fromEntries(
+				logs.filter((l) => l.direction === 'IN').map((l) => [l.logId, l])
+			);
+
+			expect(inbound['ev-wifi'].handler).toBe('quick_keyword');
+			expect(inbound['ev-free'].handler).toBe('unhandled');
+			expect(inbound['ev-sticker']).toMatchObject({
+				messageType: 'sticker',
+				text: '(sticker 1/2 thanks)'
+			});
+			expect(inbound['ev-wifi'].raw).toBeUndefined();
+
+			const wifiReply = logs.find((l) => l.direction === 'OUT' && l.inReplyTo === 'ev-wifi');
+			expect(wifiReply).toMatchObject({
+				eventType: 'reply',
+				userId: 'Utenant-log',
+				handler: 'quick_keyword',
+				logId: 'ev-wifi:out1'
+			});
+			expect(wifiReply.text).toContain('WiFi');
+			expect(logs.some((l) => l.direction === 'OUT' && l.inReplyTo === 'ev-free')).toBe(false);
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',
