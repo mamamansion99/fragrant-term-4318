@@ -430,6 +430,134 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('recognises repair reports without catching money or noise talk', () => {
+		const yes = [
+			'แจ้งซ่อม',
+			'แอร์ห้องไม่เย็นค่ะ ช่วยดูหน่อย',
+			'หลอดไฟหน้าห้องน้ำไฟไม่ติด แจ้งได้ในนี้เลยไหมคะ',
+			'เมื่อคืนฝนตกหนักน้ำซึมเข้าหน้าต่างครับ',
+			'วายฟายใช้ไม่ได้ครับ',
+			'ห้อง A213 มีมดมาไม่หยุดเลยครับ'
+		];
+		const no = ['มีห้องว่างไหมคะ', 'ห้องแอร์ไหมคะ', 'เสียค่าอะไรเพิ่มไหมครับ', 'ขอบคุณค่ะ', 'หนูลืมกุญแจห้อง'];
+		for (const t of yes) expect(__testables.detectRepairIntent(t), t).toBe(true);
+		for (const t of no) expect(__testables.detectRepairIntent(t), t).toBe(false);
+		expect(__testables.isUrgentRepairText('เหมือนจับเหรียญแล้วสัมผัสตัวเครื่องเลยโดนไฟดูด')).toBe(true);
+		expect(__testables.parseRepairCommand('แจ้งซ่อม แอร์น้ำหยด')).toEqual({ seed: 'แอร์น้ำหยด' });
+		expect(__testables.parseRepairCommand('ซ่อมแอร์')).toBeNull();
+	});
+
+	it('does not answer a repair report with the room-visit canned reply', async () => {
+		expect(await __testables.quickKeywordReply('แอร์ห้องไม่เย็นค่ะ ช่วยดูหน่อย', {}, 'U1')).toBeNull();
+	});
+
+	it('walks a tenant through a repair ticket and pages the staff group with the photo', async () => {
+		const staffGroup = 'Cstaff-repair';
+		const tenant = 'Urepair-tenant';
+		const calls: Array<{ url: string; body: any }> = [];
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init: any) => {
+			const url = String(input?.url || input);
+			let body: any = null;
+			try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch (_) { body = init?.body; }
+			calls.push({ url, body });
+			if (url === 'https://example.com/repair') {
+				if (body.action === 'create') {
+					return new Response(JSON.stringify({
+						ok: true, ticketId: 'R260918-A602-1', roomId: 'A602', tenantName: 'ทดสอบ',
+						lineUserId: tenant, category: body.category, categoryLabel: body.categoryLabel,
+						description: body.description, entry: body.entry, urgent: body.urgent, status: 'OPEN'
+					}), { status: 200 });
+				}
+				return new Response(JSON.stringify({
+					ok: true, ticketId: body.ticketId, roomId: 'A602', lineUserId: tenant,
+					category: 'FIX_AC', categoryLabel: 'แอร์', description: 'น้ำหยด', entry: 'APPOINT', status: 'ACCEPTED'
+				}), { status: 200 });
+			}
+			if (url.includes('/v2/bot/group/')) {
+				return new Response(JSON.stringify({ displayName: 'ช่างเอ' }), { status: 200 });
+			}
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log',
+			REPAIR_WEBHOOK_URL: 'https://example.com/repair',
+			REPAIR_STAFF_GROUP_ID: staffGroup
+		};
+		let seq = 0;
+		const send = async (event: Record<string, any>) => {
+			seq += 1;
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(await buildSignedLineRequest([{
+				timestamp: Date.now(),
+				webhookEventId: `ev-repair-${seq}`,
+				replyToken: `rt-repair-${seq}`,
+				source: { type: 'user', userId: tenant },
+				...event
+			}]), mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+		};
+		const lastReply = () => [...calls].reverse().find((c) => c.url.includes('/v2/bot/message/reply'))?.body;
+
+		try {
+			await send({ type: 'message', message: { type: 'text', id: '1001', text: 'แจ้งซ่อม' } });
+			const categoryItems = lastReply().messages[0].quickReply.items.map((i: any) => i.action.data);
+			expect(categoryItems).toContain('act=REPAIR_CAT&c=FIX_AC');
+
+			await send({ type: 'postback', postback: { data: 'act=REPAIR_CAT&c=FIX_AC' } });
+			expect(lastReply().messages[0].text).toContain('พิมพ์อาการ');
+
+			// Would get the room-visit canned answer if the flow did not own it.
+			await send({ type: 'message', message: { type: 'text', id: '1002', text: 'น้ำหยดจากแอร์ ช่วยดูหน่อยค่ะ' } });
+			expect(lastReply().messages[0].quickReply.items.map((i: any) => i.action.data)).toContain('act=REPAIR_SUBMIT&e=ANYTIME');
+
+			await send({ type: 'message', message: { type: 'image', id: '123456789012', contentProvider: { type: 'line' } } });
+			expect(lastReply().messages[0].text).toContain('1 ไฟล์');
+
+			await send({ type: 'postback', postback: { data: 'act=REPAIR_SUBMIT&e=APPOINT' } });
+			const create = calls.find((c) => c.url === 'https://example.com/repair' && c.body.action === 'create')!.body;
+			expect(create).toMatchObject({
+				lineUserId: tenant,
+				category: 'FIX_AC',
+				description: 'น้ำหยดจากแอร์ ช่วยดูหน่อยค่ะ',
+				entry: 'APPOINT',
+				mediaCount: 1
+			});
+			expect(create.mediaUrls[0]).toMatch(/\/media\/line\/123456789012\?k=content&s=[0-9a-f]{24}$/);
+			expect(lastReply().messages[0].text).toContain('R260918-A602-1');
+
+			const staffPush = calls.find((c) => c.url.includes('/v2/bot/message/push') && c.body.to === staffGroup)!.body;
+			expect(staffPush.messages[0].type).toBe('flex');
+			expect(staffPush.messages[1]).toMatchObject({ type: 'image' });
+
+			// Signed media proxy: wrong signature is refused, right one streams LINE content.
+			const bad = await worker.fetch(new Request('http://example.com/media/line/123456789012?k=content&s=00'), mockEnv, createExecutionContext());
+			expect(bad.status).toBe(403);
+			const good = await worker.fetch(new Request(create.mediaUrls[0].replace(/^https?:\/\/[^/]+/, 'http://example.com')), mockEnv, createExecutionContext());
+			expect(good.status).toBe(200);
+			expect(calls.some((c) => c.url === 'https://api-data.line.me/v2/bot/message/123456789012/content')).toBe(true);
+
+			// Staff accepts in the group → tenant is told.
+			seq += 1;
+			const ctx = createExecutionContext();
+			await worker.fetch(await buildSignedLineRequest([{
+				type: 'postback', timestamp: Date.now(), webhookEventId: 'ev-staff', replyToken: 'rt-staff',
+				source: { type: 'group', groupId: staffGroup, userId: 'Ustaff1' },
+				postback: { data: 'act=REPAIR_STAFF&t=R260918-A602-1&s=ACCEPT' }
+			}]), mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			const update = calls.find((c) => c.url === 'https://example.com/repair' && c.body.action === 'update')!.body;
+			expect(update).toMatchObject({ ticketId: 'R260918-A602-1', event: 'ACCEPT', actorName: 'ช่างเอ' });
+			const tenantPush = calls.find((c) => c.url.includes('/v2/bot/message/push') && c.body.to === tenant)!.body;
+			expect(tenantPush.messages[0].text).toContain('รับเรื่องแจ้งซ่อม R260918-A602-1');
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('parses cleaning tenant and management commands', () => {
 		expect(__testables.parseCleaningCommand('บริการทำความสะอาด')).toEqual({
 			act: 'tenant',

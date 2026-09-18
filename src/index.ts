@@ -917,6 +917,7 @@ async function clearUserWorkflowStatesForEvent(env, event, reason = 'new_command
     `reg_id:${userId}`,
     `${TENANT_CHANGE_KEY_PREFIX}${userId}`,
     parkingOutsiderPhoneFlowKey(userId),
+    repairFlowKey(userId),
     `${stateKey}:moveout_flow`,
     getCheckinKeycardWaitingPhotoUserKey(userId)
   ].filter(Boolean));
@@ -2834,6 +2835,9 @@ function classifyTextCommand(text, options = {}) {
   if (options.isOwnerGroup && /โหมดคัดกรอง/i.test(raw)) {
     return { kind: 'screening_config', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
+  if (parseRepairCommand(raw)) {
+    return { kind: 'repair', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
 
   const coAdminShortcut = parseCoAdminShortcut(raw);
   if (coAdminShortcut) {
@@ -3997,7 +4001,8 @@ const LINE_BACKGROUND_PROCESSING_HEADER = 'x-mama-line-background';
 
 const worker = {
   fetch(request, env, ctx) {
-    return chatLogContext.run({ env, ctx, eventLog: null }, () => worker.handleFetch(request, env, ctx));
+    const origin = (() => { try { return new URL(request.url).origin; } catch (_) { return ''; } })();
+    return chatLogContext.run({ env, ctx, origin, eventLog: null }, () => worker.handleFetch(request, env, ctx));
   },
 
   async handleFetch(request, env, ctx) {
@@ -4010,6 +4015,10 @@ const worker = {
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith('/media/room-rent/')) {
       return serveRoomRentImage(request, url);
+    }
+
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith('/media/line/')) {
+      return serveSignedLineMedia(request, env, url);
     }
 
     // Frontend API → proxy to GAS #2
@@ -4295,7 +4304,7 @@ const worker = {
       // inner loop keeps every `continue` in the handler body meaning
       // "done with this event".
       const eventLog = startEventLog(env, loggedEvent);
-      await chatLogContext.run({ env, ctx, eventLog }, async () => {
+      await chatLogContext.run({ ...(chatLogContext.getStore() || {}), env, ctx, eventLog }, async () => {
       try {
       for (const ev of [loggedEvent]) {
       const replyToken = ev?.replyToken;
@@ -5946,6 +5955,12 @@ const worker = {
           );
           continue;
         }
+        if (String(data.act || '').startsWith('REPAIR_')) {
+          tagEventLog(`postback:${data.act}`);
+          await handleRepairPostback(env, ctx, ev, replyToken, data);
+          continue;
+        }
+
         if (isFixAct(data.act)) {
           const text = fixDetailByKey(data.act);
           ctx.waitUntil(lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error));
@@ -6160,6 +6175,9 @@ const worker = {
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
           tagEventLog(classifyTextCommand(textIn, { isOwnerGroup: isOwnerGroupChat(env, chatId) })?.kind || 'text');
+          if (isUrgentRepairText(textIn)) {
+            ctx.waitUntil(alertUrgentRepair(env, ev, textIn).catch((err) => console.error('repair_urgent_alert_failed', err)));
+          }
 
           const priorityBookingCode = parseBookingCodeCommand(textIn);
           if (priorityBookingCode) {
@@ -6414,6 +6432,18 @@ const worker = {
             });
           }
           let deferredStatePrompt = '';
+
+          if (commandRoute?.kind === 'repair') {
+            await startRepairFlow(env, ev, replyToken, parseRepairCommand(textIn)?.seed || '', 'menu');
+            continue;
+          }
+          // An open repair flow takes free text as the description. Canned
+          // quick-keyword answers must not steal it; real commands still win.
+          const openRepairFlow = (ev?.source?.type === 'user' && userId) ? await getRepairFlow(env, userId) : null;
+          if (openRepairFlow && (!commandRoute || commandRoute.kind === 'quick_keyword')) {
+            tagEventLog('repair_flow');
+            if (await handleRepairFlowText(env, ctx, ev, replyToken, textIn, openRepairFlow)) continue;
+          }
 
           // Checkout transfer commands are high-priority state transitions.
           // Handle them before any older registration/payment state can consume
@@ -7676,8 +7706,21 @@ const worker = {
 
           // (H) Forward everything else to GAS
           tagEventLog(commandRoute ? `gas:${commandRoute.kind}` : 'unhandled');
+          if (!commandRoute && await maybeOfferRepair(env, ev, replyToken, textIn)) {
+            tagEventLog('repair_offer');
+          }
           ctx.waitUntil(forwardToGas(env, { events: [ev] }));
           continue;
+        }
+
+        // Photos and clips for an open repair flow (1:1 chat only).
+        if ((m.type === 'image' || m.type === 'video') && ev?.source?.type === 'user' && ev?.source?.userId) {
+          const repairFlow = await getRepairFlow(env, ev.source.userId);
+          if (repairFlow && repairFlow.step !== 'room') {
+            tagEventLog('repair_media');
+            await handleRepairFlowMedia(env, ev, replyToken, repairFlow);
+            continue;
+          }
         }
 
         // === IMAGE ===
@@ -9313,6 +9356,10 @@ function buildRoomRentQuickReply() {
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
+
+  // A tenant describing something broken must reach the repair offer, not a
+  // canned answer that happens to share a word ("ช่วยดูหน่อย" is not a visit).
+  if (detectRepairIntent(normalized) || isUrgentRepairText(normalized)) return null;
 
   if (isRoomVisitIntent(normalized)) {
     return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
@@ -11273,7 +11320,690 @@ function logOutboundMessages(kind, to, messages) {
   );
 }
 
+/* -------------------------------------------------------
+ * Repair tickets (แจ้งซ่อม)
+ *
+ * Tenant, 1:1 chat:  แจ้งซ่อม → pick category → describe → photos/videos
+ *   (optional) → pick how the technician may enter → ticket number.
+ * Staff group:       ticket card with รับงาน / ซ่อมเสร็จ, plus the photos.
+ * Tenant again:      ซ่อมเสร็จ asks ใช้ได้แล้ว / ยังมีปัญหา; ยังมีปัญหา reopens.
+ *
+ * The worker owns every LINE message; n8n (webhook `repair`) only reads
+ * Overview for the room and reads/writes Management!Repairs, answering with
+ * the ticket row. Photos are never copied: the staff group gets LINE image
+ * messages whose URLs point at /media/line/<id> here, a signed proxy to the
+ * tenant's original LINE content.
+ * ----------------------------------------------------- */
+const REPAIR_FLOW_TTL_SECONDS = 30 * 60;
+const REPAIR_URGENT_DEDUPE_SECONDS = 10 * 60;
+const REPAIR_MAX_MEDIA = 8;
+const DEFAULT_REPAIR_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/repair';
+const DEFAULT_REPAIR_STAFF_GROUP_ID = 'C355d5b5c8a01d88bf61296b4e10f1575';
+
+const REPAIR_CATEGORIES = [
+  { key: 'FIX_AC', label: 'แอร์' },
+  { key: 'FIX_WATER', label: 'น้ำ/ท่อรั่ว' },
+  { key: 'FIX_BATH', label: 'ห้องน้ำ/สุขภัณฑ์' },
+  { key: 'FIX_ELECTRIC', label: 'ไฟ/ปลั๊ก' },
+  { key: 'FIX_HEATER', label: 'น้ำอุ่น' },
+  { key: 'FIX_DOOR', label: 'ประตู/กุญแจ/หน้าต่าง' },
+  { key: 'FIX_NET', label: 'เน็ต/WiFi' },
+  { key: 'FIX_FURN', label: 'เฟอร์นิเจอร์/อุปกรณ์' },
+  { key: 'FIX_PEST', label: 'มด/แมลง' },
+  { key: 'FIX_SMELL', label: 'กลิ่น/เสียง' },
+  { key: 'FIX_OTHER', label: 'อื่น ๆ' }
+];
+const REPAIR_ENTRY_LABELS = {
+  ANYTIME: 'เข้าห้องได้เลยถ้าไม่อยู่',
+  APPOINT: 'นัดก่อนเข้าห้อง'
+};
+
+function repairCategoryLabel(key) {
+  return REPAIR_CATEGORIES.find((c) => c.key === key)?.label || 'อื่น ๆ';
+}
+
+function repairFlowKey(userId) {
+  const id = String(userId || '').trim();
+  return id ? `repair:flow:${id}` : '';
+}
+
+function repairSeedKey(userId) {
+  const id = String(userId || '').trim();
+  return id ? `repair:seed:${id}` : '';
+}
+
+function getRepairWebhookUrl(env) {
+  return env?.REPAIR_WEBHOOK_URL || DEFAULT_REPAIR_WEBHOOK_URL;
+}
+
+function getRepairStaffGroupId(env) {
+  return String(env?.REPAIR_STAFF_GROUP_ID || env?.CAR_STAFF_GROUP_ID || DEFAULT_REPAIR_STAFF_GROUP_ID).trim();
+}
+
+// `แจ้งซ่อม` alone (rich menu) or `แจ้งซ่อม <อาการ>`.
+function parseRepairCommand(text) {
+  const m = /^\s*แจ้ง\s*ซ่อม\s*[:：-]?\s*([\s\S]*)$/.exec(String(text || ''));
+  if (!m) return null;
+  return { seed: m[1].trim() };
+}
+
+const REPAIR_DIRECT_RE = /(แจ้งซ่อม|ช่างมาดู|เรียกช่าง|ให้ช่าง|ซ่อมให้|มาซ่อม|น้ำไม่ไหล|น้ำรั่ว|น้ำหยด|น้ำซึม|น้ำท่วม|น้ำขัง|น้ำไหลอ่อน|ไฟดับ|ไฟไม่ติด|ไฟกระพริบ|ไฟตก|ไฟช็อต|ไฟดูด|มีมด|มดขึ้น|มดเยอะ|แมลงสาบ|ปลวก|ตัวเรือด|กลิ่นท่อ)/i;
+const REPAIR_OBJECT_PROBLEM_RE = new RegExp(
+  '(แอร์|ท่อ|ก๊อก|ฝักบัว|ชักโครก|โถส้วม|ส้วม|สายชำระ|อ่างล้าง|ซิงค์|หลอดไฟ|ไฟในห้อง|ไฟห้อง|ปลั๊ก|เบรกเกอร์|เบรคเกอร์|สวิตช์|สวิทช์|เครื่องทำน้ำอุ่น|น้ำอุ่น|ประตู|ลูกบิด|กลอน|หน้าต่าง|มุ้งลวด|ผ้าม่าน|ราวม่าน|ตู้เสื้อผ้า|เตียง|ที่นอน|ตู้เย็น|ทีวี|พัดลม|เน็ต|wifi|wi-fi|ไวไฟ|วายฟาย|เพดาน|ผนัง|กำแพง|กระเบื้อง|ลิฟต์|ลิฟท์|เครื่องซักผ้า|คีย์การ์ด|ที่กดน้ำ|ตู้น้ำ)' +
+  '.{0,20}' +
+  '(ไม่เย็น|ไม่ติด|ไม่ทำงาน|ไม่ไหล|ไหลอ่อน|ไม่อุ่น|ไม่ร้อน|ใช้ไม่ได้|ใช่ไม่ได้|ใช้งานไม่ได้|เชื่อมไม่ได้|เชื่อมต่อไม่ได้|เข้าไม่ได้|เปิดไม่ได้|ปิดไม่ได้|ปิดไม่สนิท|ล็อคไม่ได้|ล็อกไม่ได้|หลุด|เสีย(?!ง|ค่า|เงิน|เวลา)|พัง|ชำรุด|หัก|แตก|ร้าว|รั่ว|หยด|ซึม|ตัน|อุดตัน|ดับ|กระพริบ|ช็อต|ชอต|มีเสียง|เสียงดัง|เหม็น|มีกลิ่น|ขึ้นรา|เป็นรา|สนิม|บวม|ไหลตลอด|ไหลไม่หยุด|ไม่หยุด|ช้ามาก|ไม่มีสัญญาณ|เปิดไม่ติด)',
+  'i'
+);
+
+// Tuned on LINE_CHAT_LOGS (Apr–Sep 2026): the tenant only ever gets a
+// "เปิดเรื่องแจ้งซ่อมไหม?" question from this, so recall matters more than a
+// stray noise complaint being asked once.
+function detectRepairIntent(text) {
+  const t = String(text || '').trim();
+  if (t.length < 4) return false;
+  return REPAIR_DIRECT_RE.test(t) || REPAIR_OBJECT_PROBLEM_RE.test(t);
+}
+
+const REPAIR_URGENT_RE = /(ไฟดูด|ไฟช็อต|ไฟชอต|ไฟรั่ว|ประกายไฟ|มีควัน|ควันขึ้น|ควันออก|ไฟไหม้|กลิ่นไหม้|ไหม้แล้ว|กลิ่นแก๊ส|แก๊สรั่ว|น้ำท่วม|ติดในลิฟ|ติดลิฟ|ลิฟต์ค้าง|ลิฟท์ค้าง)/i;
+
+function isUrgentRepairText(text) {
+  return REPAIR_URGENT_RE.test(String(text || ''));
+}
+
+function guessRepairCategory(text) {
+  const t = String(text || '').toLowerCase();
+  if (/แอร์/.test(t)) return 'FIX_AC';
+  if (/น้ำอุ่น/.test(t)) return 'FIX_HEATER';
+  if (/เน็ต|wifi|wi-fi|ไวไฟ|วายฟาย/.test(t)) return 'FIX_NET';
+  if (/มด|แมลง|ปลวก|ตัวเรือด/.test(t)) return 'FIX_PEST';
+  if (/ชักโครก|ส้วม|สายชำระ|อ่างล้าง|ซิงค์|ฝักบัว/.test(t)) return 'FIX_BATH';
+  if (/น้ำ|ท่อ|ก๊อก/.test(t)) return 'FIX_WATER';
+  if (/ไฟ|ปลั๊ก|เบรกเกอร์|เบรคเกอร์|สวิตช์|สวิทช์/.test(t)) return 'FIX_ELECTRIC';
+  if (/ประตู|ลูกบิด|กลอน|กุญแจ|คีย์การ์ด|หน้าต่าง|มุ้งลวด/.test(t)) return 'FIX_DOOR';
+  if (/กลิ่น|เหม็น|เสียง/.test(t)) return 'FIX_SMELL';
+  if (/ตู้|เตียง|ที่นอน|ตู้เย็น|ทีวี|พัดลม|ม่าน/.test(t)) return 'FIX_FURN';
+  return '';
+}
+
+function repairQuickReplyItem(label, data, displayText) {
+  return {
+    type: 'action',
+    action: { type: 'postback', label: label.slice(0, 20), data, displayText: displayText || label }
+  };
+}
+
+function buildRepairCategoryMessage(flow, intro = '') {
+  const suggested = flow?.suggestedCategory || '';
+  const ordered = suggested
+    ? [REPAIR_CATEGORIES.find((c) => c.key === suggested), ...REPAIR_CATEGORIES.filter((c) => c.key !== suggested)]
+    : REPAIR_CATEGORIES;
+  const lines = [intro || '🔧 แจ้งซ่อม', 'เลือกหมวดของปัญหาจากปุ่มด้านล่างได้เลยค่ะ'];
+  if (flow?.description) lines.push('', `อาการ: ${flow.description}`);
+  return {
+    type: 'text',
+    text: lines.join('\n'),
+    quickReply: {
+      items: [
+        ...ordered.filter(Boolean).map((c) => repairQuickReplyItem(c.label, `act=REPAIR_CAT&c=${c.key}`, `หมวด: ${c.label}`)),
+        repairQuickReplyItem('ยกเลิก', 'act=REPAIR_CANCEL', 'ยกเลิกแจ้งซ่อม')
+      ].slice(0, 13)
+    }
+  };
+}
+
+function buildRepairDescriptionPrompt(flow) {
+  return {
+    type: 'text',
+    text: `หมวด: ${repairCategoryLabel(flow.category)}\nพิมพ์อาการสั้น ๆ ได้เลยค่ะ เช่น "แอร์มีน้ำหยดตรงช่องลม ตั้งแต่เมื่อวาน"`,
+    quickReply: { items: [repairQuickReplyItem('ยกเลิก', 'act=REPAIR_CANCEL', 'ยกเลิกแจ้งซ่อม')] }
+  };
+}
+
+function buildRepairMediaPrompt(flow, intro = '') {
+  const count = Array.isArray(flow?.media) ? flow.media.length : 0;
+  const head = intro || (count
+    ? `ได้รับรูป/คลิปแล้ว ${count} ไฟล์ ส่งเพิ่มได้อีก หรือเลือกด้านล่างเพื่อส่งเรื่อง`
+    : 'ส่งรูปหรือคลิปจุดที่มีปัญหาได้เลยค่ะ (ถ้ามี)\nแล้วเลือกว่าให้ช่างเข้าห้องแบบไหน เพื่อส่งเรื่อง');
+  return {
+    type: 'text',
+    text: head,
+    quickReply: {
+      items: [
+        repairQuickReplyItem(`✅ ${REPAIR_ENTRY_LABELS.ANYTIME}`, 'act=REPAIR_SUBMIT&e=ANYTIME', REPAIR_ENTRY_LABELS.ANYTIME),
+        repairQuickReplyItem(`📅 ${REPAIR_ENTRY_LABELS.APPOINT}`, 'act=REPAIR_SUBMIT&e=APPOINT', REPAIR_ENTRY_LABELS.APPOINT),
+        repairQuickReplyItem('ยกเลิก', 'act=REPAIR_CANCEL', 'ยกเลิกแจ้งซ่อม')
+      ]
+    }
+  };
+}
+
+function nextRepairPrompt(flow) {
+  if (!flow.category) return buildRepairCategoryMessage(flow);
+  if (!flow.description) return buildRepairDescriptionPrompt(flow);
+  return buildRepairMediaPrompt(flow);
+}
+
+async function saveRepairFlow(env, userId, flow) {
+  await kvPut(env, repairFlowKey(userId), { ...flow, ts: Date.now() }, REPAIR_FLOW_TTL_SECONDS);
+}
+
+async function getRepairFlow(env, userId) {
+  const key = repairFlowKey(userId);
+  if (!key) return null;
+  const flow = await kvGet(env, key);
+  return flow && flow.state === 'repair' ? flow : null;
+}
+
+async function startRepairFlow(env, ev, replyToken, seedText = '', source = 'menu') {
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+  if (ev?.source?.type !== 'user' || !userId) {
+    await replyOrPushText(env, replyToken, chatId, 'แจ้งซ่อมได้ในแชตส่วนตัวกับ Mama Mansion นะคะ', 'repair_group_refused');
+    return;
+  }
+  const seed = String(seedText || '').trim().slice(0, 500);
+  const flow = {
+    state: 'repair',
+    source,
+    category: '',
+    suggestedCategory: guessRepairCategory(seed),
+    description: seed,
+    urgent: isUrgentRepairText(seed),
+    media: [],
+    roomId: ''
+  };
+  await saveRepairFlow(env, userId, flow);
+  await replyOrPushMessages(env, replyToken, chatId, [buildRepairCategoryMessage(flow)], 'repair_start_reply_failed');
+}
+
+// Consumes text while a repair flow is waiting for it. Returns true when handled.
+async function handleRepairFlowText(env, ctx, ev, replyToken, textIn, flow) {
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+  const text = String(textIn || '').trim();
+  if (!text) return false;
+  if (/^(ยกเลิก|cancel)$/i.test(text)) {
+    await kvDel(env, repairFlowKey(userId));
+    await replyOrPushText(env, replyToken, chatId, 'ยกเลิกแจ้งซ่อมแล้วค่ะ', 'repair_cancel_reply_failed');
+    return true;
+  }
+
+  if (flow.step === 'room') {
+    const room = parseRoomToken(text.replace(/ห้อง|\s+/g, ''));
+    if (!room) {
+      await replyOrPushText(env, replyToken, chatId, 'พิมพ์เลขห้องให้ถูกต้อง เช่น A305 หรือ B512 ค่ะ', 'repair_room_retry_failed');
+      return true;
+    }
+    await submitRepairFlow(env, ctx, ev, replyToken, { ...flow, roomId: room }, flow.entry || 'APPOINT');
+    return true;
+  }
+
+  const next = { ...flow };
+  if (isUrgentRepairText(text)) next.urgent = true;
+  if (!next.description) {
+    next.description = text.slice(0, 500);
+  } else {
+    next.description = `${next.description}\n${text}`.slice(0, 1000);
+  }
+  if (!next.category && !next.suggestedCategory) next.suggestedCategory = guessRepairCategory(next.description);
+  await saveRepairFlow(env, userId, next);
+  const prompt = next.category ? buildRepairMediaPrompt(next, 'รับรายละเอียดแล้วค่ะ ส่งรูปหรือคลิปเพิ่มได้ หรือเลือกด้านล่างเพื่อส่งเรื่อง') : nextRepairPrompt(next);
+  await replyOrPushMessages(env, replyToken, chatId, [prompt], 'repair_text_reply_failed');
+  return true;
+}
+
+// Photos and videos sent while a repair flow is open. Returns true when handled.
+async function handleRepairFlowMedia(env, ev, replyToken, flow) {
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+  const m = ev?.message || {};
+  const media = Array.isArray(flow.media) ? [...flow.media] : [];
+  if (media.length < REPAIR_MAX_MEDIA && m.id) media.push({ id: m.id, type: m.type });
+  const next = { ...flow, media };
+  await saveRepairFlow(env, userId, next);
+  // LINE delivers an album as one event per photo: answer the first and
+  // then only every few, so the tenant is not buried in acknowledgements.
+  if (media.length === 1 || media.length % 4 === 0 || media.length >= REPAIR_MAX_MEDIA) {
+    await replyOrPushMessages(env, replyToken, chatId, [nextRepairPrompt(next)], 'repair_media_reply_failed');
+  }
+  return true;
+}
+
+async function callRepairWebhook(env, body) {
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(getRepairWebhookUrl(env), { method: 'POST', headers, body: JSON.stringify(body) });
+    const text = await res.text().catch(() => '');
+    let data = null;
+    try { data = text ? JSON.parse(text) : null; } catch (_) { data = null; }
+    if (Array.isArray(data)) data = data[0] || null;
+    if (!res.ok || !data) {
+      console.error('repair_webhook_failed', { status: res.status, body: text.slice(0, 300) });
+      return { ok: false, data: null };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    console.error('repair_webhook_error', String(err?.message || err));
+    return { ok: false, data: null };
+  }
+}
+
+function currentWorkerOrigin() {
+  return chatLogContext.getStore()?.origin || '';
+}
+
+async function signRepairMedia(env, messageId, kind) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(String(env?.LINE_CHANNEL_SECRET || '')),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`line-media:${messageId}:${kind}`));
+  return Array.from(new Uint8Array(sig)).slice(0, 12).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function repairMediaUrl(env, origin, messageId, kind) {
+  const sig = await signRepairMedia(env, messageId, kind);
+  return `${origin}/media/line/${encodeURIComponent(messageId)}?k=${kind}&s=${sig}`;
+}
+
+// GET /media/line/<messageId>?k=content|preview&s=<sig>
+async function serveSignedLineMedia(request, env, url) {
+  const messageId = decodeURIComponent(url.pathname.slice('/media/line/'.length));
+  const kind = url.searchParams.get('k') === 'preview' ? 'preview' : 'content';
+  if (!/^\d{5,25}$/.test(messageId)) return new Response('Not found', { status: 404 });
+  const expected = await signRepairMedia(env, messageId, kind);
+  if (url.searchParams.get('s') !== expected) return new Response('Forbidden', { status: 403 });
+  const upstream = await fetch(
+    `https://api-data.line.me/v2/bot/message/${messageId}/content${kind === 'preview' ? '/preview' : ''}`,
+    { headers: { Authorization: `Bearer ${env.LINE_ACCESS_TOKEN}` } }
+  );
+  if (!upstream.ok) return new Response('Gone', { status: upstream.status === 404 ? 410 : 502 });
+  return new Response(request.method === 'HEAD' ? null : upstream.body, {
+    status: 200,
+    headers: {
+      'content-type': upstream.headers.get('content-type') || 'application/octet-stream',
+      'cache-control': 'private, max-age=86400'
+    }
+  });
+}
+
+async function buildRepairMediaMessages(env, origin, media) {
+  if (!origin) return [];
+  const out = [];
+  for (const item of (Array.isArray(media) ? media : []).slice(0, 4)) {
+    if (item.type === 'video') {
+      out.push({
+        type: 'video',
+        originalContentUrl: await repairMediaUrl(env, origin, item.id, 'content'),
+        previewImageUrl: await repairMediaUrl(env, origin, item.id, 'preview')
+      });
+    } else {
+      out.push({
+        type: 'image',
+        originalContentUrl: await repairMediaUrl(env, origin, item.id, 'content'),
+        previewImageUrl: await repairMediaUrl(env, origin, item.id, 'preview')
+      });
+    }
+  }
+  return out;
+}
+
+function repairStatusLabel(status) {
+  return ({
+    OPEN: 'รอรับงาน',
+    ACCEPTED: 'รับงานแล้ว',
+    DONE: 'ซ่อมเสร็จ รอผู้เช่ายืนยัน',
+    CLOSED: 'ปิดงาน',
+    REOPENED: 'ผู้เช่าแจ้งว่ายังมีปัญหา'
+  })[status] || status || '-';
+}
+
+function buildRepairStaffFlex(ticket, headline = '') {
+  const urgent = String(ticket.urgent || '').toUpperCase() === 'TRUE' || ticket.urgent === true;
+  const row = (label, value) => ({
+    type: 'box',
+    layout: 'baseline',
+    spacing: 'sm',
+    contents: [
+      { type: 'text', text: label, size: 'sm', color: '#888888', flex: 2 },
+      { type: 'text', text: String(value || '-'), size: 'sm', wrap: true, flex: 5 }
+    ]
+  });
+  const room = ticket.roomId || '(ไม่ทราบห้อง)';
+  const title = `${urgent ? '🚨 ' : '🔧 '}${room} · ${ticket.categoryLabel || repairCategoryLabel(ticket.category)}`;
+  return {
+    type: 'flex',
+    altText: `${headline || 'แจ้งซ่อม'} ${room} ${ticket.ticketId}`.trim(),
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: urgent ? '#C62828' : '#1E4E79',
+        contents: [
+          { type: 'text', text: headline || 'แจ้งซ่อมใหม่', size: 'xs', color: '#FFFFFFCC' },
+          { type: 'text', text: title, weight: 'bold', size: 'md', color: '#FFFFFF', wrap: true }
+        ]
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          row('เลขงาน', ticket.ticketId),
+          row('ผู้เช่า', ticket.tenantName),
+          row('อาการ', ticket.description),
+          row('เข้าห้อง', REPAIR_ENTRY_LABELS[ticket.entry] || ticket.entry),
+          row('รูป/คลิป', `${Number(ticket.mediaCount || 0)} ไฟล์`),
+          row('สถานะ', repairStatusLabel(ticket.status))
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'postback', label: 'รับงาน', data: `act=REPAIR_STAFF&t=${ticket.ticketId}&s=ACCEPT`, displayText: `รับงาน ${ticket.ticketId}` }
+          },
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: '#2E7D32',
+            action: { type: 'postback', label: 'ซ่อมเสร็จ', data: `act=REPAIR_STAFF&t=${ticket.ticketId}&s=DONE`, displayText: `ซ่อมเสร็จ ${ticket.ticketId}` }
+          }
+        ]
+      }
+    }
+  };
+}
+
+function buildRepairTenantDoneMessage(ticket) {
+  return {
+    type: 'text',
+    text: `✅ งานซ่อม ${ticket.ticketId} (${ticket.categoryLabel || repairCategoryLabel(ticket.category)}) เสร็จแล้วค่ะ\nตอนนี้ใช้งานได้ปกติไหมคะ`,
+    quickReply: {
+      items: [
+        repairQuickReplyItem('ใช้ได้แล้ว 👍', `act=REPAIR_TENANT&t=${ticket.ticketId}&s=OK`, 'ใช้ได้ปกติแล้ว'),
+        repairQuickReplyItem('ยังมีปัญหา', `act=REPAIR_TENANT&t=${ticket.ticketId}&s=REOPEN`, 'ยังมีปัญหาอยู่')
+      ]
+    }
+  };
+}
+
+async function submitRepairFlow(env, ctx, ev, replyToken, flow, entry) {
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+  const origin = currentWorkerOrigin();
+  const media = Array.isArray(flow.media) ? flow.media : [];
+  const mediaUrls = [];
+  for (const item of media) mediaUrls.push(origin ? await repairMediaUrl(env, origin, item.id, 'content') : item.id);
+
+  const result = await callRepairWebhook(env, {
+    action: 'create',
+    lineUserId: userId,
+    roomId: flow.roomId || '',
+    category: flow.category || 'FIX_OTHER',
+    categoryLabel: repairCategoryLabel(flow.category),
+    description: flow.description || '',
+    entry,
+    urgent: !!flow.urgent,
+    source: flow.source || 'menu',
+    mediaCount: media.length,
+    mediaUrls
+  });
+
+  if (!result.ok) {
+    await saveRepairFlow(env, userId, { ...flow, entry });
+    await replyOrPushMessages(env, replyToken, chatId, [
+      buildRepairMediaPrompt(flow, 'ระบบบันทึกงานซ่อมไม่สำเร็จ กรุณากดส่งเรื่องอีกครั้งค่ะ ถ้ายังไม่ได้ โทรหาผู้จัดการ 082-798-1676')
+    ], 'repair_submit_failed_reply');
+    return;
+  }
+
+  const data = result.data || {};
+  if (data.ok === false && data.reason === 'no_room') {
+    await saveRepairFlow(env, userId, { ...flow, entry, step: 'room' });
+    await replyOrPushText(env, replyToken, chatId, 'ระบบยังไม่พบห้องของบัญชี LINE นี้ พิมพ์เลขห้องได้เลยค่ะ เช่น A305', 'repair_ask_room_failed');
+    return;
+  }
+  if (data.ok === false) {
+    await replyOrPushText(env, replyToken, chatId, 'ระบบบันทึกงานซ่อมไม่สำเร็จ กรุณาลองใหม่อีกครั้ง หรือโทร 082-798-1676 ค่ะ', 'repair_submit_rejected_reply');
+    return;
+  }
+
+  await kvDel(env, repairFlowKey(userId));
+  const ticket = { ...data, mediaCount: media.length };
+  const confirm = [
+    `✅ รับเรื่องแจ้งซ่อมแล้วค่ะ`,
+    `เลขงาน: ${ticket.ticketId}`,
+    ticket.roomId ? `ห้อง: ${ticket.roomId}` : '',
+    `หมวด: ${ticket.categoryLabel || repairCategoryLabel(ticket.category)}`,
+    `การเข้าห้อง: ${REPAIR_ENTRY_LABELS[entry] || entry}`,
+    '',
+    'เจ้าหน้าที่จะแจ้งกลับในแชตนี้เมื่อรับงานค่ะ'
+  ].filter((line, i, arr) => line || arr[i - 1]).join('\n');
+  await replyOrPushText(env, replyToken, chatId, confirm, 'repair_submit_confirm_failed');
+
+  const staffGroupId = getRepairStaffGroupId(env);
+  if (staffGroupId) {
+    const staffMessages = [buildRepairStaffFlex(ticket, ticket.urgent ? 'แจ้งซ่อมด่วน' : 'แจ้งซ่อมใหม่')];
+    staffMessages.push(...(await buildRepairMediaMessages(env, origin, media)));
+    await linePush(env.LINE_ACCESS_TOKEN, staffGroupId, staffMessages.slice(0, 5))
+      .catch((err) => console.error('repair_staff_push_failed', String(err?.message || err)));
+  }
+}
+
+async function getLineGroupMemberName(env, groupId, userId) {
+  if (!groupId || !userId) return '';
+  try {
+    const res = await fetch(`https://api.line.me/v2/bot/group/${groupId}/member/${userId}`, {
+      headers: { Authorization: `Bearer ${env.LINE_ACCESS_TOKEN}` }
+    });
+    if (!res.ok) return '';
+    const profile = await res.json();
+    return String(profile?.displayName || '');
+  } catch (_) {
+    return '';
+  }
+}
+
+const REPAIR_UPDATE_REFUSALS = {
+  not_found: 'ไม่พบเลขงานนี้ในชีท Repairs',
+  already_closed: 'งานนี้ปิดไปแล้ว',
+  already_accepted: 'งานนี้มีคนรับไปแล้ว',
+  already_done: 'งานนี้กดซ่อมเสร็จไปแล้ว',
+  not_done: 'งานนี้ยังไม่ได้กดซ่อมเสร็จ',
+  not_owner: 'เลขงานนี้ไม่ใช่ของบัญชีนี้'
+};
+
+async function handleRepairPostback(env, ctx, ev, replyToken, data) {
+  const act = String(data.act || '');
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+
+  if (act === 'REPAIR_START') {
+    const seed = userId ? await kvGet(env, repairSeedKey(userId)) : null;
+    if (userId) await kvDel(env, repairSeedKey(userId));
+    await clearUserWorkflowStatesForEvent(env, ev, 'repair_start');
+    // Same ownership a typed `แจ้งซ่อม` gets, so an older reservation or
+    // payment flow cannot claim the photos that follow.
+    if (userId) {
+      await setActiveFlow(env, userId, {
+        flowType: 'repair',
+        kind: 'repair',
+        phase: 'starting',
+        event: ev,
+        scopeType: 'user',
+        scopeId: '',
+        ttlSeconds: REPAIR_FLOW_TTL_SECONDS
+      }).catch((err) => console.error('repair_active_flow_failed', String(err?.message || err)));
+    }
+    await startRepairFlow(env, ev, replyToken, seed?.text || '', 'suggested');
+    return;
+  }
+
+  if (act === 'REPAIR_DISMISS') {
+    if (userId) await kvDel(env, repairSeedKey(userId));
+    await replyOrPushText(env, replyToken, chatId, 'รับทราบค่ะ แอดมินจะตอบกลับในแชตนี้นะคะ', 'repair_dismiss_reply_failed');
+    return;
+  }
+
+  if (act === 'REPAIR_CANCEL') {
+    if (userId) await kvDel(env, repairFlowKey(userId));
+    await replyOrPushText(env, replyToken, chatId, 'ยกเลิกแจ้งซ่อมแล้วค่ะ', 'repair_cancel_reply_failed');
+    return;
+  }
+
+  if (act === 'REPAIR_CAT' || act === 'REPAIR_SUBMIT') {
+    const flow = await getRepairFlow(env, userId);
+    if (!flow) {
+      await replyOrPushText(env, replyToken, chatId, 'หมดเวลาแจ้งซ่อมรอบนี้แล้ว พิมพ์ "แจ้งซ่อม" เพื่อเริ่มใหม่ได้เลยค่ะ', 'repair_expired_reply_failed');
+      return;
+    }
+    if (act === 'REPAIR_CAT') {
+      const category = REPAIR_CATEGORIES.some((c) => c.key === data.c) ? data.c : 'FIX_OTHER';
+      const next = { ...flow, category };
+      await saveRepairFlow(env, userId, next);
+      await replyOrPushMessages(env, replyToken, chatId, [nextRepairPrompt(next)], 'repair_category_reply_failed');
+      return;
+    }
+    if (!flow.category) {
+      await replyOrPushMessages(env, replyToken, chatId, [buildRepairCategoryMessage(flow)], 'repair_submit_needs_category');
+      return;
+    }
+    // A double tap on the submit button must not open two tickets.
+    if (flow.submittingAt && Date.now() - flow.submittingAt < 60 * 1000) return;
+    await saveRepairFlow(env, userId, { ...flow, submittingAt: Date.now() });
+    const entry = data.e === 'ANYTIME' ? 'ANYTIME' : 'APPOINT';
+    await submitRepairFlow(env, ctx, ev, replyToken, flow, entry);
+    return;
+  }
+
+  if (act === 'REPAIR_STAFF' || act === 'REPAIR_TENANT') {
+    const ticketId = String(data.t || '').trim();
+    const isStaff = act === 'REPAIR_STAFF';
+    const event = isStaff
+      ? (data.s === 'DONE' ? 'DONE' : 'ACCEPT')
+      : (data.s === 'OK' ? 'TENANT_OK' : 'TENANT_REOPEN');
+    if (isStaff && ev?.source?.type !== 'group') return;
+    const actorName = isStaff ? await getLineGroupMemberName(env, ev?.source?.groupId, userId) : '';
+    const result = await callRepairWebhook(env, {
+      action: 'update',
+      ticketId,
+      event,
+      lineUserId: userId,
+      actorName
+    });
+    if (!result.ok) {
+      await replyOrPushText(env, replyToken, chatId, `อัปเดตงาน ${ticketId} ไม่สำเร็จ ลองกดอีกครั้งค่ะ`, 'repair_update_failed_reply');
+      return;
+    }
+    const ticket = result.data || {};
+    if (ticket.ok === false) {
+      const why = REPAIR_UPDATE_REFUSALS[ticket.reason] || ticket.reason || 'ไม่ทราบสาเหตุ';
+      await replyOrPushText(env, replyToken, chatId, `${ticketId}: ${why}`, 'repair_update_refused_reply');
+      return;
+    }
+    const who = actorName || 'เจ้าหน้าที่';
+    const staffGroupId = getRepairStaffGroupId(env);
+    if (event === 'ACCEPT') {
+      await replyOrPushText(env, replyToken, chatId, `👷 ${who} รับงาน ${ticketId} (${ticket.roomId || '-'}) แล้ว`, 'repair_accept_group_reply');
+      if (ticket.lineUserId) {
+        const follow = ticket.entry === 'APPOINT' ? '\nเจ้าหน้าที่จะติดต่อนัดเวลาเข้าห้องอีกครั้งค่ะ' : '';
+        await safeLinePushText(env.LINE_ACCESS_TOKEN, ticket.lineUserId, `👷 เจ้าหน้าที่รับเรื่องแจ้งซ่อม ${ticketId} แล้วค่ะ${follow}`, 'repair_accept_tenant_push');
+      }
+    } else if (event === 'DONE') {
+      await replyOrPushText(env, replyToken, chatId, `✅ ${who} ปิดงานซ่อม ${ticketId} (${ticket.roomId || '-'}) — ส่งให้ผู้เช่ายืนยันแล้ว`, 'repair_done_group_reply');
+      if (ticket.lineUserId) {
+        await linePush(env.LINE_ACCESS_TOKEN, ticket.lineUserId, [buildRepairTenantDoneMessage(ticket)])
+          .catch((err) => console.error('repair_done_tenant_push', String(err?.message || err)));
+      }
+    } else if (event === 'TENANT_OK') {
+      await replyOrPushText(env, replyToken, chatId, `ขอบคุณค่ะ ปิดงาน ${ticketId} เรียบร้อย 🙏`, 'repair_tenant_ok_reply');
+      if (staffGroupId) await safeLinePushText(env.LINE_ACCESS_TOKEN, staffGroupId, `👍 ${ticket.roomId || ''} ยืนยันแล้วว่างาน ${ticketId} ใช้ได้ปกติ`, 'repair_tenant_ok_group_push');
+    } else {
+      await replyOrPushText(env, replyToken, chatId, `รับทราบค่ะ เปิดงาน ${ticketId} ใหม่แล้ว เจ้าหน้าที่จะกลับไปดูอีกครั้ง\nถ้ามีรูปเพิ่มเติม ส่งในแชตนี้ได้เลยค่ะ`, 'repair_tenant_reopen_reply');
+      if (staffGroupId) {
+        await linePush(env.LINE_ACCESS_TOKEN, staffGroupId, [buildRepairStaffFlex(ticket, 'ผู้เช่าแจ้งว่ายังมีปัญหา')])
+          .catch((err) => console.error('repair_reopen_group_push', String(err?.message || err)));
+      }
+    }
+  }
+}
+
+// Free text that is not a command: offer to open a ticket, and page staff at
+// once when it sounds dangerous. Returns true when it answered the tenant.
+async function maybeOfferRepair(env, ev, replyToken, textIn) {
+  const userId = ev?.source?.userId || '';
+  const chatId = getChatId(ev);
+  if (ev?.source?.type !== 'user' || !userId) return false;
+  const urgent = isUrgentRepairText(textIn);
+  if (!urgent && !detectRepairIntent(textIn)) return false;
+
+  await kvPut(env, repairSeedKey(userId), { text: String(textIn || '').slice(0, 500) }, REPAIR_FLOW_TTL_SECONDS);
+  const messages = [];
+  if (urgent) {
+    messages.push({
+      type: 'template',
+      altText: 'แจ้งเหตุด่วน',
+      template: {
+        type: 'buttons',
+        text: '🚨 แจ้งเจ้าหน้าที่แล้วค่ะ ถ้าอันตราย ออกห่างจุดนั้นก่อน และโทรหาเราได้ทันที',
+        actions: [
+          { type: 'uri', label: '📞 ผู้จัดการ (มา)', uri: 'tel:0827981676' },
+          { type: 'uri', label: '📞 ตึก A (ก้อย)', uri: 'tel:0806490441' },
+          { type: 'uri', label: '📞 ตึก B (พี่ยุ)', uri: 'tel:0837420760' },
+          { type: 'postback', label: '🔧 เปิดเรื่องแจ้งซ่อม', data: 'act=REPAIR_START', displayText: 'แจ้งซ่อม' }
+        ]
+      }
+    });
+  } else {
+    messages.push({
+      type: 'text',
+      text: 'ต้องการเปิดเรื่องแจ้งซ่อมไหมคะ จะได้มีเลขงานและติดตามสถานะได้',
+      quickReply: {
+        items: [
+          repairQuickReplyItem('🔧 แจ้งซ่อม', 'act=REPAIR_START', 'แจ้งซ่อม'),
+          repairQuickReplyItem('ไม่ใช่ ถามแอดมิน', 'act=REPAIR_DISMISS', 'ไม่ใช่เรื่องซ่อม')
+        ]
+      }
+    });
+  }
+  await replyOrPushMessages(env, replyToken, chatId, messages, 'repair_offer_reply_failed');
+  return true;
+}
+
+async function alertUrgentRepair(env, ev, textIn) {
+  const userId = ev?.source?.userId || '';
+  if (ev?.source?.type !== 'user' || !userId) return;
+  const dedupeKey = `repair:urgent:${userId}`;
+  if (await kvGet(env, dedupeKey)) return;
+  await kvPut(env, dedupeKey, { ts: Date.now() }, REPAIR_URGENT_DEDUPE_SECONDS);
+  const staffGroupId = getRepairStaffGroupId(env);
+  const text = `🚨 ข้อความด่วนจากผู้เช่า (${userId.slice(-6)})\n"${String(textIn || '').slice(0, 300)}"\nเปิดแชตใน LINE OA เพื่อติดต่อกลับทันที`;
+  const targets = [staffGroupId, ...getOwnerGroupIds(env)].filter(Boolean);
+  await Promise.allSettled(
+    [...new Set(targets)].map((to) => safeLinePushText(env.LINE_ACCESS_TOKEN, to, text, 'repair_urgent_push_failed'))
+  );
+}
+
 export const __testables = {
+  detectRepairIntent,
+  isUrgentRepairText,
+  parseRepairCommand,
+  guessRepairCategory,
+  buildRepairStaffFlex,
+  repairFlowKey,
   parseQueryString,
   parsePostbackData,
   buildCleaningBillingPostbackPayload,
