@@ -1159,6 +1159,7 @@ const BILL_MANUAL_PAYMENT_TTL_SECONDS = 10 * 60;
 const BILL_MANUAL_PAYMENT_KEY_PREFIX = 'bill-manual:payment:';
 const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
+const CO_MOVE_OUT_REASON_MAX = 200;
 
 function parseRoomToken(token) {
   const room = String(token || '').trim().toUpperCase();
@@ -1325,15 +1326,20 @@ function parseCoAdminShortcut(text) {
       };
     }
 
-    if (tokens.length < 2 || tokens.length > 3) return null;
+    // co <room> [no|forfeit|waive] [move-out reason...]
+    // Anything after the room (and the optional outcome keyword) is a free-text
+    // reason the tenant gave for leaving. It is kept in its original case and
+    // never part of normalizedCommand, which n8n still matches strictly.
     const roomId = parseRoomToken(tokens[1]);
     if (!roomId) return null;
-    const outcome = tokens.length === 3 ? tokens[2] : '';
-    if (outcome && !CO_ADMIN_OUTCOME_SET.has(outcome)) return null;
+    const outcome = CO_ADMIN_OUTCOME_SET.has(tokens[2]) ? tokens[2] : '';
+    const rawTokens = raw.split(/\s+/).filter(Boolean);
+    const reason = rawTokens.slice(outcome ? 3 : 2).join(' ').slice(0, CO_MOVE_OUT_REASON_MAX);
     return {
       type: 'co',
       roomId,
       outcome: outcome || null,
+      reason: reason || null,
       normalizedCommand: outcome ? `co ${roomId.toLowerCase()} ${outcome}` : `co ${roomId.toLowerCase()}`
     };
   }
@@ -6653,6 +6659,7 @@ const worker = {
               await handleCheckoutStart(env, {
                 roomId: coAdminShortcut.roomId,
                 text: textIn,
+                reason: coAdminShortcut.reason,
                 event: ev,
                 replyToken
               });
@@ -6677,6 +6684,7 @@ const worker = {
               shortcutType: coAdminShortcut.type,
               roomId: coAdminShortcut.roomId,
               outcome: coAdminShortcut.outcome,
+              reason: coAdminShortcut.reason || '',
               command: coAdminShortcut.normalizedCommand,
               text: textIn,
               lineUserId: userId || null,
@@ -6689,7 +6697,8 @@ const worker = {
 
             const webhookOk = await notifyN8nCoAdminWebhook(env, payload);
             const ackText = webhookOk
-              ? `Command received: ${coAdminShortcut.normalizedCommand}`
+              ? `Command received: ${coAdminShortcut.normalizedCommand}` +
+                (coAdminShortcut.reason ? `\nเหตุผลที่ย้ายออก: ${coAdminShortcut.reason}` : '')
               : 'Command received, but webhook failed';
 
             await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
@@ -10817,6 +10826,7 @@ async function handleCheckoutStart(env, opts) {
       roomId,
       lineUserId: userId,
       text,
+      reason: opts?.reason || '',
       timestamp: ts
     };
     if (opts?.shortcutType) {
@@ -10830,6 +10840,7 @@ async function handleCheckoutStart(env, opts) {
 
     const lines = [
       `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
+      opts?.reason ? `เหตุผลที่ย้ายออก: ${opts.reason}` : '',
       res?.dueAt ? `กำหนดตรวจ/ปิดงานภายใน: ${res.dueAt}` : '',
       res?.mainUrl ? `ลิงก์ติดตาม: ${res.mainUrl}` : ''
     ].filter(Boolean);

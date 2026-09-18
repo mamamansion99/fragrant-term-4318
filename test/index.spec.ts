@@ -1754,6 +1754,25 @@ describe('Worker routes', () => {
 		expect(__testables.isCoAdminAllowedLineUserId('U-not-on-admin-list')).toBe(false);
 	});
 
+	it('captures a free-text move-out reason after the co room', () => {
+		const start = __testables.parseCoAdminShortcut('co A101 ย้ายไปทำงาน  ต่างจังหวัด') as Record<string, unknown>;
+		expect(start.roomId).toBe('A101');
+		expect(start.outcome).toBe(null);
+		expect(start.reason).toBe('ย้ายไปทำงาน ต่างจังหวัด');
+		expect(start.normalizedCommand).toBe('co a101');
+		expect(__testables.isCheckoutStartShortcut(start)).toBe(true);
+
+		const withOutcome = __testables.parseCoAdminShortcut('co a101 NO Bought a condo') as Record<string, unknown>;
+		expect(withOutcome.outcome).toBe('no');
+		expect(withOutcome.reason).toBe('Bought a condo');
+		expect(withOutcome.normalizedCommand).toBe('co a101 no');
+		expect(__testables.isCheckoutStartShortcut(withOutcome)).toBe(false);
+
+		expect((__testables.parseCoAdminShortcut('co A101') as Record<string, unknown>).reason).toBe(null);
+		expect((__testables.parseCoAdminShortcut('co A101 waive') as Record<string, unknown>).reason).toBe(null);
+		expect(__testables.parseCoAdminShortcut('co ห้องA101 ย้าย')).toBe(null);
+	});
+
 	it('parses the check-in room command', () => {
 		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101')).toBe('A101');
 		expect(__testables.parseCheckinCommand(' เช็คอินห้อง b514 ')).toBe('B514');
