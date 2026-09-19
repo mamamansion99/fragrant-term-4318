@@ -1160,6 +1160,26 @@ const BILL_MANUAL_PAYMENT_KEY_PREFIX = 'bill-manual:payment:';
 const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 const CO_MOVE_OUT_REASON_MAX = 200;
+const DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-notice';
+// "แจ้งออก a101 ย้ายไปทำงานต่างจังหวัด" — staff note why a tenant is leaving,
+// usually days before anyone types `co a101`. The reason is optional so the
+// date the tenant gave notice is kept even when staff are in a hurry.
+// A bare "แจ้งออก" used to open the tenant move-out form (GAS magic link). That
+// form is retired: tenants now tell staff in chat. The bare word is answered
+// here and never forwarded, so GAS cannot keep sending the old link.
+const MOVE_OUT_BARE_RE = /^\s*แจ้ง\s*ออก\s*$/;
+const MOVE_OUT_BARE_REPLY = 'รับทราบค่ะ 🙏 พิมพ์วันที่จะย้ายออกไว้ในแชทนี้ได้เลย แอดมินจะติดต่อกลับค่ะ';
+const MOVE_OUT_NOTICE_RE = /^\s*แจ้ง\s*ออก\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*([\s\S]*)$/i;
+
+function parseMoveOutNoticeCommand(text) {
+  const t = String(text || '').replace(/เเ/g, 'แ');
+  const m = t.match(MOVE_OUT_NOTICE_RE);
+  if (!m) return null;
+  const roomId = parseRoomToken(m[1]);
+  if (!roomId) return null;
+  const reason = m[2].replace(/\s+/g, ' ').trim().slice(0, CO_MOVE_OUT_REASON_MAX);
+  return { roomId, reason };
+}
 
 function parseRoomToken(token) {
   const room = String(token || '').trim().toUpperCase();
@@ -2934,8 +2954,8 @@ function classifyTextCommand(text, options = {}) {
   if (raw === 'ลงทะเบียนไอดี') {
     return { kind: 'registration', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
-  if (/^\s*แจ้งออก\s*$/i.test(raw)) {
-    return { kind: 'moveout', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  if (parseMoveOutNoticeCommand(raw) || MOVE_OUT_BARE_RE.test(raw.replace(/เเ/g, 'แ'))) {
+    return { kind: 'moveout_notice', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
   if (isPayRentCommand(raw)) {
     return { kind: 'pay_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
@@ -6653,6 +6673,16 @@ const worker = {
             continue;
           }
 
+          if (MOVE_OUT_BARE_RE.test(textIn.replace(/เเ/g, 'แ'))) {
+            await replyOrPushText(env, replyToken, chatId, MOVE_OUT_BARE_REPLY, 'moveout_bare_reply_failed');
+            continue;
+          }
+          const moveOutNotice = parseMoveOutNoticeCommand(textIn);
+          if (moveOutNotice) {
+            await handleMoveOutNotice(env, { ...moveOutNotice, userId, chatId, replyToken });
+            continue;
+          }
+
           const coAdminShortcut = parseCoAdminShortcut(textIn);
           if (coAdminShortcut) {
             if (isCheckoutStartShortcut(coAdminShortcut)) {
@@ -6678,13 +6708,14 @@ const worker = {
               continue;
             }
 
+            const reasonInfo = await resolveMoveOutReason(env, coAdminShortcut.roomId, coAdminShortcut.reason);
             const payload = {
               source: 'line_message',
               intent: 'co_admin_shortcut',
               shortcutType: coAdminShortcut.type,
               roomId: coAdminShortcut.roomId,
               outcome: coAdminShortcut.outcome,
-              reason: coAdminShortcut.reason || '',
+              reason: reasonInfo.reason,
               command: coAdminShortcut.normalizedCommand,
               text: textIn,
               lineUserId: userId || null,
@@ -6697,8 +6728,7 @@ const worker = {
 
             const webhookOk = await notifyN8nCoAdminWebhook(env, payload);
             const ackText = webhookOk
-              ? `Command received: ${coAdminShortcut.normalizedCommand}` +
-                (coAdminShortcut.reason ? `\nเหตุผลที่ย้ายออก: ${coAdminShortcut.reason}` : '')
+              ? [`Command received: ${coAdminShortcut.normalizedCommand}`, moveOutReasonLine(coAdminShortcut.roomId, reasonInfo)].join('\n')
               : 'Command received, but webhook failed';
 
             await replyOrPushText(env, replyToken, chatId, ackText, 'co_admin_ack_failed');
@@ -7186,24 +7216,6 @@ const worker = {
             continue;
           }
 
-
-          // (A) Magic link (แจ้งออก) → forward to GAS to issue token + send link
-          if (/^\s*(แจ้งออก)\s*$/i.test(textIn)) {
-            // quick acknowledge so user sees immediate response
-            await replyOrPushText(
-              env,
-              replyToken,
-              chatId,
-              'กำลังสร้างลิงก์แจ้งออกให้คุณ… กรุณารอสักครู่',
-              'moveout_start_ack_failed'
-            );
-
-            // forward the original LINE event to GAS
-            // (your GAS doPost will detect text === แจ้งออก and call _issueAndSendMoveOutMagicLink_)
-            await forwardToGas(env, { events: [ev] });
-
-            continue;
-          }
 
           // (B) While inside move-out flow (รวม confirm)
           const handled = await moveoutTextGate(env, stateKey, textIn, replyToken);
@@ -9445,28 +9457,6 @@ function buildForgotKeyHelpReply(text) {
   ];
 }
 
-// "ผมขอเเจ้งย้ายออก อยู่ถึงวันอาทิตย์ ที่ 10/5", "แจ้งย้ายออก 30/05/2026 ค่ะ",
-// "B510ขอแจ้งย้ายออกสิ้นเดือนนี้ค่ะ": point to the move-out form (`แจ้งออก`).
-// Questions about the rules ("ต้องแจ้งออกก่อน 1 เดือนหรอคะ") stay with the admin.
-function buildMoveoutOfferReply(text) {
-  const t = String(text || '').replace(/เเ/g, 'แ');
-  if (/^\s*แจ้ง\s*ออก\s*$/.test(t)) return null;
-  if (!/(ขอ\s*)?แจ้ง\s*(ย้าย\s*)?ออก|จะ\s*ย้าย\s*ออก\s*(วันที่|สิ้นเดือน|ต้นเดือน|เดือน|\d)/.test(t)) return null;
-  if (t.length > 90) return null;
-  if (/(ไหม|มั้ย|มั๊ย|มั่ย|หรอ|ไง|อะไร|\?|รึเปล่า|หรือเปล่า|ใช่|ยกเลิก|เลื่อน|ได้เลยม)/.test(t)) return null;
-  return [
-    {
-      type: 'text',
-      text: 'รับทราบค่ะ 🙏 เพื่อให้วันออกถูกบันทึกในระบบ กรุณากดปุ่มด้านล่างเพื่อกรอกแบบฟอร์มแจ้งออกด้วยนะคะ',
-      quickReply: {
-        items: [
-          { type: 'action', action: { type: 'message', label: '📝 แจ้งออกผ่านระบบ', text: 'แจ้งออก' } }
-        ]
-      }
-    }
-  ];
-}
-
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -9542,9 +9532,6 @@ async function quickKeywordReply(text, env, userId) {
 
   const forgotKeyReply = buildForgotKeyHelpReply(normalized);
   if (forgotKeyReply) return forgotKeyReply;
-
-  const moveoutOffer = buildMoveoutOfferReply(normalized);
-  if (moveoutOffer) return moveoutOffer;
 
   const isAvailabilityExcluded =
     AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
@@ -10731,6 +10718,79 @@ function n8nWebhookSecret(env) {
   return env.N8N_WEBHOOK_SECRET || env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
 }
 
+/** CheckOut_Notice workflow: records `แจ้งออก` notices and looks them up for `co`. */
+async function callN8nCoNotice(env, payload) {
+  const url = env.N8N_CO_NOTICE_WEBHOOK_URL || DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) {
+      console.error('co_notice_failed', { status: res.status, action: payload?.action, data });
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('co_notice_error', { action: payload?.action, err: String(err) });
+    return null;
+  }
+}
+
+/**
+ * Reason typed inline with `co` wins; otherwise use what staff recorded with
+ * `แจ้งออก` since this room's last checkout. A failed lookup never blocks `co`.
+ */
+async function resolveMoveOutReason(env, roomId, inlineReason) {
+  const inline = String(inlineReason || '').trim();
+  if (inline) return { reason: inline, source: 'inline', notedAt: '' };
+  const hit = await callN8nCoNotice(env, { action: 'lookup', roomId });
+  const reason = String(hit?.reason || '').trim();
+  if (reason) return { reason, source: 'notice', notedAt: String(hit?.notedAt || '') };
+  return { reason: '', source: hit ? 'none' : 'lookup_failed', notedAt: '' };
+}
+
+function formatNoticeDate(iso) {
+  const m = String(iso || '').match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${Number(m[3])}/${Number(m[2])}` : '';
+}
+
+function moveOutReasonLine(roomId, info) {
+  if (info?.reason) {
+    const when = info.source === 'notice' ? formatNoticeDate(info.notedAt) : '';
+    return `เหตุผลที่ย้ายออก: ${info.reason}${when ? ` (แจ้งไว้ ${when})` : ''}`;
+  }
+  return `ยังไม่มีเหตุผลย้ายออก พิมพ์ "แจ้งออก ${roomId} <เหตุผล>" เพิ่มได้`;
+}
+
+async function handleMoveOutNotice(env, { roomId, reason, userId, chatId, replyToken }) {
+  const res = await callN8nCoNotice(env, {
+    action: 'record',
+    roomId,
+    reason,
+    lineUserId: userId || '',
+    lineName: CAR_STAFF_NAMES[userId] || ''
+  });
+
+  let text;
+  if (!res) {
+    text = `❗บันทึกแจ้งออกห้อง ${roomId} ไม่สำเร็จ ลองพิมพ์ใหม่อีกครั้งค่ะ`;
+  } else if (res.mode === 'flow') {
+    text = `✅ บันทึกเหตุผลย้ายออก ห้อง ${roomId} ลงรายการเช็คเอาต์ที่เปิดอยู่แล้ว\nเหตุผล: ${reason}`;
+  } else if (reason) {
+    text = `✅ บันทึกแจ้งออก ห้อง ${roomId} แล้ว\nเหตุผล: ${reason}\nตอนพิมพ์ co ${roomId.toLowerCase()} ระบบจะใส่เหตุผลนี้ให้เอง`;
+  } else {
+    text = `✅ บันทึกแจ้งออก ห้อง ${roomId} แล้ว (ยังไม่มีเหตุผล)\nเพิ่มได้โดยพิมพ์ "แจ้งออก ${roomId} <เหตุผล>"`;
+  }
+  await replyOrPushText(env, replyToken, chatId, text, 'moveout_notice_reply_failed');
+}
+
 async function notifyN8nCheckoutStart(env, payload) {
   const url = getCheckoutWebhook(env);
   if (!url) throw new Error('missing checkout webhook URL');
@@ -10821,12 +10881,13 @@ async function handleCheckoutStart(env, opts) {
   }
 
   try {
+    const reasonInfo = await resolveMoveOutReason(env, roomId, opts?.reason);
     const payload = {
       source: 'LINE_TEXT',
       roomId,
       lineUserId: userId,
       text,
-      reason: opts?.reason || '',
+      reason: reasonInfo.reason,
       timestamp: ts
     };
     if (opts?.shortcutType) {
@@ -10840,7 +10901,7 @@ async function handleCheckoutStart(env, opts) {
 
     const lines = [
       `✅ เริ่มทำรายการเช็คเอ้าท์ ห้อง ${roomId} แล้ว`,
-      opts?.reason ? `เหตุผลที่ย้ายออก: ${opts.reason}` : '',
+      moveOutReasonLine(roomId, reasonInfo),
       res?.dueAt ? `กำหนดตรวจ/ปิดงานภายใน: ${res.dueAt}` : '',
       res?.mainUrl ? `ลิงก์ติดตาม: ${res.mainUrl}` : ''
     ].filter(Boolean);
@@ -12210,6 +12271,9 @@ export const __testables = {
   buildCleaningManagementAckText,
   buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
+  parseMoveOutNoticeCommand,
+  resolveMoveOutReason,
+  moveOutReasonLine,
   isCheckoutStartShortcut,
   requiresCoAdminShortcutPermission,
   isCoAdminAllowedLineUserId,

@@ -592,9 +592,8 @@ describe('Worker routes', () => {
 		expect(forgot.fastReply[0].template.actions[0]).toMatchObject({ type: 'message', text: 'ชำระค่าลืมกุญแจ' });
 		expect((await kind('ลืมกุญแจ')).fastReply).toBeNull();
 
-		const moveout = await kind('B510ขอแจ้งย้ายออกสิ้นเดือนนี้ค่ะ');
-		expect(moveout.fastReply[0].quickReply.items[0].action).toMatchObject({ type: 'message', text: 'แจ้งออก' });
-		for (const t of ['ไม่ใช่ว่าแจ้งออกก่อน1เดือนหรอคะ', 'ยกเลิกการแจ้งย้ายออกได้ไหมครับ', 'แจ้งออก']) {
+		// The tenant move-out form is retired: tenants tell staff in chat instead.
+		for (const t of ['B510ขอแจ้งย้ายออกสิ้นเดือนนี้ค่ะ', 'ไม่ใช่ว่าแจ้งออกก่อน1เดือนหรอคะ', 'แจ้งออก']) {
 			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('แจ้งออกผ่านระบบ');
 		}
 		expect(JSON.stringify((await kind('ขอโลเคชั่นหน่อยค่ะ')).fastReply)).toContain('maps.app.goo.gl');
@@ -1771,6 +1770,43 @@ describe('Worker routes', () => {
 		expect((__testables.parseCoAdminShortcut('co A101') as Record<string, unknown>).reason).toBe(null);
 		expect((__testables.parseCoAdminShortcut('co A101 waive') as Record<string, unknown>).reason).toBe(null);
 		expect(__testables.parseCoAdminShortcut('co ห้องA101 ย้าย')).toBe(null);
+	});
+
+	it('parses the staff move-out notice command', () => {
+		const parse = __testables.parseMoveOutNoticeCommand;
+		expect(parse('แจ้งออก a101 ย้ายไปทำงาน  ต่างจังหวัด')).toEqual({ roomId: 'A101', reason: 'ย้ายไปทำงาน ต่างจังหวัด' });
+		expect(parse('แจ้งออกA101ซื้อบ้าน')).toEqual({ roomId: 'A101', reason: 'ซื้อบ้าน' });
+		expect(parse('เเจ้งออก ห้อง B510')).toEqual({ roomId: 'B510', reason: '' });
+		expect(parse('แจ้งออก')).toBe(null);
+		expect(parse('แจ้งออก A10123')).toBe(null);
+		expect(parse('ขอแจ้งออก A101')).toBe(null);
+		expect(__testables.classifyTextCommand('แจ้งออก A101 ย้ายงาน')?.kind).toBe('moveout_notice');
+		expect(__testables.classifyTextCommand('แจ้งออก')?.kind).toBe('moveout_notice');
+	});
+
+	it('uses the inline co reason before asking n8n for a recorded notice', async () => {
+		const realFetch = globalThis.fetch;
+		const calls: any[] = [];
+		globalThis.fetch = (async (_url: string, init: any) => {
+			calls.push(JSON.parse(init.body));
+			return new Response(JSON.stringify({ ok: true, route: 'lookup', reason: 'ซื้อคอนโด', notedAt: '2026-09-12T10:00:00+07:00' }), { status: 200 });
+		}) as any;
+		try {
+			const inline = await __testables.resolveMoveOutReason({}, 'A101', 'ย้ายงาน');
+			expect(inline).toMatchObject({ reason: 'ย้ายงาน', source: 'inline' });
+			expect(calls.length).toBe(0);
+
+			const fromNotice = await __testables.resolveMoveOutReason({}, 'A101', null);
+			expect(calls[0]).toEqual({ action: 'lookup', roomId: 'A101' });
+			expect(__testables.moveOutReasonLine('A101', fromNotice)).toBe('เหตุผลที่ย้ายออก: ซื้อคอนโด (แจ้งไว้ 12/9)');
+
+			globalThis.fetch = (async () => { throw new Error('down'); }) as any;
+			const failed = await __testables.resolveMoveOutReason({}, 'A101', '');
+			expect(failed).toMatchObject({ reason: '', source: 'lookup_failed' });
+			expect(__testables.moveOutReasonLine('A101', failed)).toContain('แจ้งออก A101 <เหตุผล>');
+		} finally {
+			globalThis.fetch = realFetch;
+		}
 	});
 
 	it('parses the check-in room command', () => {
