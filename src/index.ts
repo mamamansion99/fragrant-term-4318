@@ -3762,7 +3762,7 @@ export class ActiveFlowOwner {
  * typing a command. The reply summarises what is still open and links to
  * the board itself, which is where the work actually gets done.
  * ========================= */
-const DEFAULT_MAID_BOARD_URL = 'https://maid-webapp.vercel.app';
+const DEFAULT_MAID_BOARD_URL = 'https://maid-webapp-umber.vercel.app';
 const DEFAULT_MAID_API_URL =
   'https://script.google.com/macros/s/AKfycbzCexFdfNouI2ru_4Hiia7B8cf0mZNhEVzj8EPOYfcxUykN1zoJ3j2Dlsr75tSZqX2evw/exec';
 const MAID_BOARD_COMMANDS = new Set(['งาน', 'งานค้าง', 'task', 'tasks', 'board']);
