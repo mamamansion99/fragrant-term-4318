@@ -2130,6 +2130,39 @@ function isRoomVisitIntent(text) {
   return hasTarget;
 }
 
+// "ขอดูรูปห้อง" also satisfies isRoomVisitIntent (ขอดู + ห้อง), so this must be
+// checked first or leads asking for photos get visiting hours instead.
+const ROOM_TOUR_360_URL = 'https://mm-v2.pages.dev/tour';
+const ROOM_PHOTO_MEDIA_RE = /(รูป|(?<!ส)ภาพ|360|photo|pic|picture|image|วิดีโอ|วีดีโอ|คลิป|video)/i;
+const ROOM_PHOTO_TARGET_RE = /(ห้อง|หอ|แมนชั่น|room|dorm|mansion)/i;
+// Tenants and staff talk about photos they take or attach (inspection, repair,
+// slips); those are not requests to see the rooms.
+const ROOM_PHOTO_EXCLUDE_RE = /(ถ่าย|แนบ|ส่ง(?:รูป|ภาพ|คลิป)[^?]*แล้ว|สลิป|ใบเสร็จ|บัตร)/i;
+
+function isRoomPhotoIntent(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return false;
+  const compact = raw.replace(/\s+/g, '');
+  if (ROOM_PHOTO_EXCLUDE_RE.test(compact)) return false;
+  return ROOM_PHOTO_MEDIA_RE.test(compact) && ROOM_PHOTO_TARGET_RE.test(compact);
+}
+
+function buildRoomPhotoReply() {
+  return [
+    {
+      type: 'template',
+      altText: `ดูรูปห้องและภาพจำลอง 360° ได้ที่ ${ROOM_TOUR_360_URL}`,
+      template: {
+        type: 'buttons',
+        text: 'ดูรูปห้องได้ที่เว็บไซต์เลยครับ มีภาพจำลอง 360° ให้หมุนดูรอบห้องได้ทั้ง 2 แบบห้อง',
+        actions: [
+          { type: 'uri', label: '🏠 ชมห้อง 360°', uri: ROOM_TOUR_360_URL }
+        ]
+      }
+    }
+  ];
+}
+
 function isKmitlTravelGuideIntent(text) {
   const raw = String(text || '').trim();
   if (!raw) return false;
@@ -9465,6 +9498,9 @@ async function quickKeywordReply(text, env, userId) {
   // canned answer that happens to share a word ("ช่วยดูหน่อย" is not a visit).
   if (detectRepairIntent(normalized) || isUrgentRepairText(normalized)) return null;
 
+  if (isRoomPhotoIntent(normalized)) {
+    return buildRoomPhotoReply();
+  }
   if (isRoomVisitIntent(normalized)) {
     return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
   }

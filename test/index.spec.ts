@@ -571,6 +571,15 @@ describe('Worker routes', () => {
 		}
 		expect((await kind('จ่ายค่าลืมกุญแจ')).route).toBe('preset_payment');
 
+		for (const t of ['ขอดูรูปห้องหน่อย', 'ขอรูปห้องหน่อยครับ', 'มีรูปห้องไหมคะ', 'ส่งรูปห้องให้ดูหน่อย', 'ขอดูห้อง 360', 'room photos please']) {
+			const photo = await kind(t);
+			expect(photo.route, t).toBe('quick_keyword');
+			expect(photo.fastReply[0].template.actions[0].uri, t).toBe('https://mm-v2.pages.dev/tour');
+		}
+		for (const t of ['ถ่ายรูปห้องส่งให้แล้วนะคะ', 'ส่งรูปห้องไปแล้วค่ะ', 'ขอดูห้องหน่อยครับ', 'สภาพห้องเป็นยังไงบ้าง']) {
+			expect((await kind(t)).fastReply?.[0]?.template?.actions?.[0]?.uri, t).toBeUndefined();
+		}
+
 		const wifi = await kind('รหัสเน็ต');
 		expect(wifi.fastReply[0].text).toContain('WiFi');
 
