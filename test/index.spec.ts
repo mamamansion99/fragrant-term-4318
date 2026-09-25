@@ -588,8 +588,8 @@ describe('Worker routes', () => {
 			expect(bubbles[1].body.contents[1].text).toBe('4,500 บาท/เดือน');
 			expect(photo.fastReply.at(-1)).toEqual({
 				type: 'image',
-				originalContentUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-1080.jpg',
-				previewImageUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-540.jpg'
+				originalContentUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-v2.jpg',
+				previewImageUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-v2-preview.jpg'
 			});
 			expect(photo.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image']);
 			expect(visitHours(photo), t).toBe(false);

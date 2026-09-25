@@ -2226,8 +2226,8 @@ function buildRoomPhotoBubble(card) {
 // A reply holds at most 5 messages; the visit-hours variant uses 3.
 const ROOM_PRICE_SHEET_IMAGE = {
   type: 'image',
-  originalContentUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-1080.jpg`,
-  previewImageUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-540.jpg`
+  originalContentUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-v2.jpg`,
+  previewImageUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-v2-preview.jpg`
 };
 
 // No intro text: the cards speak for themselves (owner's call, 2026-09-25).
