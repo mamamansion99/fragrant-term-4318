@@ -2223,19 +2223,16 @@ function buildRoomPhotoBubble(card) {
 }
 
 // The rate sheet (rent, deposit, fees, booking) goes last so the photos lead.
-// A reply holds at most 5 messages; the visit-hours variant uses 4.
+// A reply holds at most 5 messages; the visit-hours variant uses 3.
 const ROOM_PRICE_SHEET_IMAGE = {
   type: 'image',
   originalContentUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-1080.jpg`,
   previewImageUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-540.jpg`
 };
 
+// No intro text: the cards speak for themselves (owner's call, 2026-09-25).
 function buildRoomPhotoReply() {
   return [
-    {
-      type: 'text',
-      text: 'รูปห้องครับ 📷 เลื่อนดูได้เลย กดที่การ์ดเพื่อดูรูปเพิ่มและภาพจำลอง 360° หมุนดูรอบห้องได้ ส่วนภาพสุดท้ายเป็นเรทราคาและค่าใช้จ่ายทั้งหมดครับ'
-    },
     {
       type: 'flex',
       altText: `รูปห้องและภาพจำลอง 360° ${ROOM_TOUR_360_URL}`,

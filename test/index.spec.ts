@@ -591,7 +591,7 @@ describe('Worker routes', () => {
 				originalContentUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-1080.jpg',
 				previewImageUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-540.jpg'
 			});
-			expect(photo.fastReply.length).toBeLessThanOrEqual(5);
+			expect(photo.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image']);
 			expect(visitHours(photo), t).toBe(false);
 		}
 		// Chat "ขอดูห้อง" could mean either; a date or coming-over word means a visit.
