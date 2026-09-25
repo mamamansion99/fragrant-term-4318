@@ -72,16 +72,20 @@ const LINE_IMAGE_MAX_ORIGINAL_BYTES = 10 * 1024 * 1024;
 const LINE_IMAGE_MAX_PREVIEW_BYTES = 1 * 1024 * 1024;
 const ROOM_RENT_IMAGE_REVISION = '20260727-1';
 
+// Drive image 1 is the old rate sheet (old second phone number). The owner's
+// new sheet on mm-v2 replaces it; images 2-3 (room cards with floor plans)
+// still come through the Drive proxy.
 function buildRoomRentImageMessages(origin) {
-  return ROOM_RENT_DRIVE_IMAGE_IDS.map((_, idx) => {
-    const originalUrl = `${origin}/media/room-rent/${idx + 1}?v=orig&rev=${ROOM_RENT_IMAGE_REVISION}`;
-    const previewUrl = `${origin}/media/room-rent/${idx + 1}?v=preview&rev=${ROOM_RENT_IMAGE_REVISION}`;
+  const roomCards = ROOM_RENT_DRIVE_IMAGE_IDS.slice(1).map((_, idx) => {
+    const originalUrl = `${origin}/media/room-rent/${idx + 2}?v=orig&rev=${ROOM_RENT_IMAGE_REVISION}`;
+    const previewUrl = `${origin}/media/room-rent/${idx + 2}?v=preview&rev=${ROOM_RENT_IMAGE_REVISION}`;
     return {
       type: 'image',
       originalContentUrl: originalUrl,
       previewImageUrl: previewUrl
     };
   });
+  return [ROOM_PRICE_SHEET_IMAGE, ...roomCards];
 }
 
 function resolveRoomRentVariant(url) {
@@ -12315,6 +12319,7 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  buildRoomRentImageMessages,
   detectRepairIntent,
   isUrgentRepairText,
   parseRepairCommand,

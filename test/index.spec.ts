@@ -2668,6 +2668,16 @@ describe('Worker routes', () => {
 		expect(messages[1].text).toContain(String(env.PREBOOK_URL));
 	});
 
+	it('sends the new rate sheet first from the ภาพ + เรทราคา button', () => {
+		const messages = __testables.buildRoomRentImageMessages('https://w.example') as Array<Record<string, string>>;
+		expect(messages.map((m) => m.originalContentUrl)).toEqual([
+			'https://mm-v2.pages.dev/images/line/price-sheet-v2.jpg',
+			'https://w.example/media/room-rent/2?v=orig&rev=20260727-1',
+			'https://w.example/media/room-rent/3?v=orig&rev=20260727-1'
+		]);
+		expect(messages[0].previewImageUrl).toBe('https://mm-v2.pages.dev/images/line/price-sheet-v2-preview.jpg');
+	});
+
 	it('replies to วิธีจอง with the plain screening question', async () => {
 		const messages = await __testables.quickKeywordReply('วิธีจอง', env, '') as Array<Record<string, any>>;
 
