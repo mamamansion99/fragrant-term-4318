@@ -2174,9 +2174,11 @@ function isAmbiguousRoomViewRequest(text) {
 }
 
 // Stills live on the website (images/line) as JPEG: Flex cannot show WebP.
+// Prices follow the official rate sheet; keep them in step with ROOM_RENT and
+// the /tour page.
 const ROOM_PHOTO_CARDS = [
-  { image: 'std-1', title: 'ห้องมาตรฐาน · 22 m²', text: 'เฟอร์นิเจอร์ครบ ห้องน้ำในตัว', anchor: 'standard', tour: true },
-  { image: 'corner-1', title: 'ห้องหัวมุม · 23 m²', text: 'หน้าต่างบานใหญ่ รับแสงธรรมชาติ', anchor: 'corner', tour: true },
+  { image: 'std-1', title: 'ห้องมาตรฐาน · 22 m²', price: '4,000 บาท/เดือน', text: 'เฟอร์นิเจอร์ครบ ห้องน้ำในตัว', anchor: 'standard', tour: true },
+  { image: 'corner-1', title: 'ห้องหัวมุม · 23 m²', price: '4,500 บาท/เดือน', text: 'หน้าต่างบานใหญ่ รับแสงธรรมชาติ', anchor: 'corner', tour: true },
   { image: 'bath-1', title: 'ห้องน้ำ', text: 'ห้องน้ำในตัว พร้อมเครื่องทำน้ำอุ่น', anchor: 'bath' },
   { image: 'building-1', title: 'อาคาร & ที่จอดรถ', text: 'ตัวอาคารและลานจอดรถ', anchor: 'building' }
 ];
@@ -2200,6 +2202,7 @@ function buildRoomPhotoBubble(card) {
       spacing: 'xs',
       contents: [
         { type: 'text', text: card.title, weight: 'bold', size: 'md', wrap: true },
+        ...(card.price ? [{ type: 'text', text: card.price, weight: 'bold', size: 'sm', color: '#3f5fe0' }] : []),
         { type: 'text', text: card.text, size: 'sm', color: '#596b83', wrap: true }
       ]
     },
@@ -2219,11 +2222,19 @@ function buildRoomPhotoBubble(card) {
   };
 }
 
+// The rate sheet (rent, deposit, fees, booking) goes last so the photos lead.
+// A reply holds at most 5 messages; the visit-hours variant uses 4.
+const ROOM_PRICE_SHEET_IMAGE = {
+  type: 'image',
+  originalContentUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-1080.jpg`,
+  previewImageUrl: `${ROOM_TOUR_BASE_URL}/images/line/price-sheet-540.jpg`
+};
+
 function buildRoomPhotoReply() {
   return [
     {
       type: 'text',
-      text: 'รูปห้องครับ 📷 เลื่อนดูได้เลย กดที่การ์ดเพื่อดูรูปเพิ่มและภาพจำลอง 360° หมุนดูรอบห้องได้'
+      text: 'รูปห้องครับ 📷 เลื่อนดูได้เลย กดที่การ์ดเพื่อดูรูปเพิ่มและภาพจำลอง 360° หมุนดูรอบห้องได้ ส่วนภาพสุดท้ายเป็นเรทราคาและค่าใช้จ่ายทั้งหมดครับ'
     },
     {
       type: 'flex',
@@ -2232,7 +2243,8 @@ function buildRoomPhotoReply() {
         type: 'carousel',
         contents: ROOM_PHOTO_CARDS.map(buildRoomPhotoBubble)
       }
-    }
+    },
+    ROOM_PRICE_SHEET_IMAGE
   ];
 }
 

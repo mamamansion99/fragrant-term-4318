@@ -584,12 +584,21 @@ describe('Worker routes', () => {
 				'https://mm-v2.pages.dev/tour#bath', 'https://mm-v2.pages.dev/tour#building'
 			]);
 			expect(bubbles[0].hero.url).toBe('https://mm-v2.pages.dev/images/line/std-1-1024.jpg');
+			expect(bubbles[0].body.contents[1].text).toBe('4,000 บาท/เดือน');
+			expect(bubbles[1].body.contents[1].text).toBe('4,500 บาท/เดือน');
+			expect(photo.fastReply.at(-1)).toEqual({
+				type: 'image',
+				originalContentUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-1080.jpg',
+				previewImageUrl: 'https://mm-v2.pages.dev/images/line/price-sheet-540.jpg'
+			});
+			expect(photo.fastReply.length).toBeLessThanOrEqual(5);
 			expect(visitHours(photo), t).toBe(false);
 		}
 		// Chat "ขอดูห้อง" could mean either; a date or coming-over word means a visit.
 		for (const t of ['ขอดูห้องหน่อยค่ะ', 'ขอดูห้องโดยประมาณได้มั้ยคะ', 'ขอดูตัวอย่างห้องค่ะ']) {
 			const r = await kind(t);
 			expect(visitHours(r) && !!photoCarousel(r), t).toBe(true);
+			expect(r.fastReply.length, t).toBeLessThanOrEqual(5);
 		}
 		for (const t of ['ขอไปดูห้องวันนี้ได้ไหมคะ', 'ขอดูห้องจริงที่จะเข้าอยู่ได้ไหมคะ', 'ผมขอดูสัญญาหออีกรอบได้ไหมครับ']) {
 			expect(photoCarousel(await kind(t)), t).toBeUndefined();
