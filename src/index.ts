@@ -2132,32 +2132,105 @@ function isRoomVisitIntent(text) {
 
 // "ขอดูรูปห้อง" also satisfies isRoomVisitIntent (ขอดู + ห้อง), so this must be
 // checked first or leads asking for photos get visiting hours instead.
-const ROOM_TOUR_360_URL = 'https://mm-v2.pages.dev/tour';
+// Phrasings below come from LINE_CHAT_LOGS (Apr–Sep 2026).
+const ROOM_TOUR_BASE_URL = 'https://mm-v2.pages.dev';
+const ROOM_TOUR_360_URL = `${ROOM_TOUR_BASE_URL}/tour`;
 const ROOM_PHOTO_MEDIA_RE = /(รูป|(?<!ส)ภาพ|360|photo|pic|picture|image|วิดีโอ|วีดีโอ|คลิป|video)/i;
 const ROOM_PHOTO_TARGET_RE = /(ห้อง|หอ|แมนชั่น|room|dorm|mansion)/i;
+// A third of the requests never say ห้อง: "มีรูปไหมคะ", "ขอดูรูปหน่อยคะ",
+// "มีภาพภายในมั้ยคะ". Without a target, require asking for a photo as a question.
+const ROOM_PHOTO_ASK_RE = /(มี|ขอ|อยากดู|อยากเห็น)[^\n]{0,12}?(รูป|(?<!ส)ภาพ)/;
+const ROOM_PHOTO_ASK_END_RE = /(ไหม|มั้ย|มัย|ม้าย|มั๊ย|หน่อย|เพิ่มเติม|ก่อน)/;
+// Real untargeted asks are short; a long message mentioning a photo is a
+// tenant describing something ("มีรูปว่าส่งแล้ว แต่ไม่มีของ…มั้ยคะ").
+const ROOM_PHOTO_ASK_MAX_LENGTH = 45;
+// "ถ่ายห้องมาให้ดูคร่าวๆมั้ยคะ" asks for photos; "จะถ่ายให้ดูนะคะ" is a tenant.
+const ROOM_PHOTO_TAKE_FOR_ME_RE = /ถ่าย[^\n]{0,12}ให้ดู/;
 // Tenants and staff talk about photos they take or attach (inspection, repair,
-// slips); those are not requests to see the rooms.
-const ROOM_PHOTO_EXCLUDE_RE = /(ถ่าย|แนบ|ส่ง(?:รูป|ภาพ|คลิป)[^?]*แล้ว|สลิป|ใบเสร็จ|บัตร)/i;
+// slips); those are not requests to see the rooms. "ถ่ายภาพห้องให้ดูได้มั้ย" is.
+const ROOM_PHOTO_EXCLUDE_RE = /(ถ่าย(?![^\n]{0,12}ให้ดู)|แนบ|ส่ง(?:รูป|ภาพ|คลิป)[^?]*แล้ว|ไม่มี(?:รูป|ภาพ)|สลิป|ใบเสร็จ|บัตร|พัสดุ|ตู้เย็น|ทองคำรูปพรรณ)/i;
+// "ขอดูห้องหน่อยค่ะ" in chat is as often a photo request as a visit. Only a
+// date, time or coming-over word makes it clearly a visit.
+const ROOM_VIEW_REQUEST_RE = /(ขอ|อยาก)ดู(?:ตัวอย่าง|รายละเอียด|ภายใน)?(?:ใน)?(?:ห้อง|หอ)/;
+const ROOM_VISIT_IN_PERSON_RE = /(เข้า|ไป|(?<!ประ)มา|นัด|แวะ|วัน|พรุ่งนี้|เสาร์|อาทิตย์|จันทร์|ตอนนี้|เช้า|บ่าย|เย็น|โมง|จริง|\d)/;
 
 function isRoomPhotoIntent(text) {
   const raw = String(text || '').trim();
   if (!raw) return false;
   const compact = raw.replace(/\s+/g, '');
   if (ROOM_PHOTO_EXCLUDE_RE.test(compact)) return false;
-  return ROOM_PHOTO_MEDIA_RE.test(compact) && ROOM_PHOTO_TARGET_RE.test(compact);
+  if (ROOM_PHOTO_TAKE_FOR_ME_RE.test(compact)) {
+    return ROOM_PHOTO_TARGET_RE.test(compact) && ROOM_PHOTO_ASK_END_RE.test(compact);
+  }
+  if (ROOM_PHOTO_MEDIA_RE.test(compact) && ROOM_PHOTO_TARGET_RE.test(compact)) return true;
+  return compact.length <= ROOM_PHOTO_ASK_MAX_LENGTH &&
+    ROOM_PHOTO_ASK_RE.test(compact) &&
+    ROOM_PHOTO_ASK_END_RE.test(compact);
+}
+
+function isAmbiguousRoomViewRequest(text) {
+  const compact = String(text || '').replace(/\s+/g, '');
+  return ROOM_VIEW_REQUEST_RE.test(compact) && !ROOM_VISIT_IN_PERSON_RE.test(compact);
+}
+
+// Stills live on the website (images/line) as JPEG: Flex cannot show WebP.
+const ROOM_PHOTO_CARDS = [
+  { image: 'std-1', title: 'ห้องมาตรฐาน · 22 m²', text: 'เฟอร์นิเจอร์ครบ ห้องน้ำในตัว', anchor: 'standard', tour: true },
+  { image: 'corner-1', title: 'ห้องหัวมุม · 23 m²', text: 'หน้าต่างบานใหญ่ รับแสงธรรมชาติ', anchor: 'corner', tour: true },
+  { image: 'bath-1', title: 'ห้องน้ำ', text: 'ห้องน้ำในตัว พร้อมเครื่องทำน้ำอุ่น', anchor: 'bath' },
+  { image: 'building-1', title: 'อาคาร & ที่จอดรถ', text: 'ตัวอาคารและลานจอดรถ', anchor: 'building' }
+];
+
+function buildRoomPhotoBubble(card) {
+  const pageUrl = `${ROOM_TOUR_360_URL}#${card.anchor}`;
+  return {
+    type: 'bubble',
+    size: 'kilo',
+    hero: {
+      type: 'image',
+      url: `${ROOM_TOUR_BASE_URL}/images/line/${card.image}-1024.jpg`,
+      size: 'full',
+      aspectRatio: '3:2',
+      aspectMode: 'cover',
+      action: { type: 'uri', label: 'ดูรูปเพิ่ม', uri: pageUrl }
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      spacing: 'xs',
+      contents: [
+        { type: 'text', text: card.title, weight: 'bold', size: 'md', wrap: true },
+        { type: 'text', text: card.text, size: 'sm', color: '#596b83', wrap: true }
+      ]
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      contents: [
+        {
+          type: 'button',
+          style: card.tour ? 'primary' : 'link',
+          color: card.tour ? '#3f5fe0' : undefined,
+          height: 'sm',
+          action: { type: 'uri', label: card.tour ? 'ดูรูปเพิ่ม + 360°' : 'ดูรูปเพิ่ม', uri: pageUrl }
+        }
+      ]
+    }
+  };
 }
 
 function buildRoomPhotoReply() {
   return [
     {
-      type: 'template',
-      altText: `ดูรูปห้องและภาพจำลอง 360° ได้ที่ ${ROOM_TOUR_360_URL}`,
-      template: {
-        type: 'buttons',
-        text: 'ดูรูปห้องได้ที่เว็บไซต์เลยครับ มีภาพจำลอง 360° ให้หมุนดูรอบห้องได้ทั้ง 2 แบบห้อง',
-        actions: [
-          { type: 'uri', label: '🏠 ชมห้อง 360°', uri: ROOM_TOUR_360_URL }
-        ]
+      type: 'text',
+      text: 'รูปห้องครับ 📷 เลื่อนดูได้เลย กดที่การ์ดเพื่อดูรูปเพิ่มและภาพจำลอง 360° หมุนดูรอบห้องได้'
+    },
+    {
+      type: 'flex',
+      altText: `รูปห้องและภาพจำลอง 360° ${ROOM_TOUR_360_URL}`,
+      contents: {
+        type: 'carousel',
+        contents: ROOM_PHOTO_CARDS.map(buildRoomPhotoBubble)
       }
     }
   ];
@@ -9502,6 +9575,9 @@ async function quickKeywordReply(text, env, userId) {
     return buildRoomPhotoReply();
   }
   if (isRoomVisitIntent(normalized)) {
+    if (isAmbiguousRoomViewRequest(normalized)) {
+      return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }, ...buildRoomPhotoReply()];
+    }
     return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
   }
   if (isKmitlTravelGuideIntent(normalized)) {

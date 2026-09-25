@@ -571,13 +571,33 @@ describe('Worker routes', () => {
 		}
 		expect((await kind('จ่ายค่าลืมกุญแจ')).route).toBe('preset_payment');
 
-		for (const t of ['ขอดูรูปห้องหน่อย', 'ขอรูปห้องหน่อยครับ', 'มีรูปห้องไหมคะ', 'ส่งรูปห้องให้ดูหน่อย', 'ขอดูห้อง 360', 'room photos please']) {
+		// Phrasings taken from LINE_CHAT_LOGS.
+		const photoCarousel = (r: any) => r.fastReply?.find((m: any) => m.type === 'flex');
+		const visitHours = (r: any) => r.fastReply?.some((m: any) => String(m.text || '').startsWith('สามารถมาเยี่ยมชม'));
+		for (const t of ['ขอดูรูปห้องหน่อย', 'มีรูปไหมค่ะ', 'ขอดูรูปหน่อยคะ', 'มีภาพภายในมั้ยคะ', 'มีเป็นรูปมั้ยคะ พอดีอยู่ต่างจังหวัด',
+			'สามารถถ่ายภาพห้องให้ดูได้มั้ยคะ', 'พี่สะดวกถ่ายห้องมาให้ดูคร่าวๆมั้ยคะ', 'ขอดูห้อง 360', 'room photos please']) {
 			const photo = await kind(t);
 			expect(photo.route, t).toBe('quick_keyword');
-			expect(photo.fastReply[0].template.actions[0].uri, t).toBe('https://mm-v2.pages.dev/tour');
+			const bubbles = photoCarousel(photo).contents.contents;
+			expect(bubbles.map((b: any) => b.footer.contents[0].action.uri), t).toEqual([
+				'https://mm-v2.pages.dev/tour#standard', 'https://mm-v2.pages.dev/tour#corner',
+				'https://mm-v2.pages.dev/tour#bath', 'https://mm-v2.pages.dev/tour#building'
+			]);
+			expect(bubbles[0].hero.url).toBe('https://mm-v2.pages.dev/images/line/std-1-1024.jpg');
+			expect(visitHours(photo), t).toBe(false);
 		}
-		for (const t of ['ถ่ายรูปห้องส่งให้แล้วนะคะ', 'ส่งรูปห้องไปแล้วค่ะ', 'ขอดูห้องหน่อยครับ', 'สภาพห้องเป็นยังไงบ้าง']) {
-			expect((await kind(t)).fastReply?.[0]?.template?.actions?.[0]?.uri, t).toBeUndefined();
+		// Chat "ขอดูห้อง" could mean either; a date or coming-over word means a visit.
+		for (const t of ['ขอดูห้องหน่อยค่ะ', 'ขอดูห้องโดยประมาณได้มั้ยคะ', 'ขอดูตัวอย่างห้องค่ะ']) {
+			const r = await kind(t);
+			expect(visitHours(r) && !!photoCarousel(r), t).toBe(true);
+		}
+		for (const t of ['ขอไปดูห้องวันนี้ได้ไหมคะ', 'ขอดูห้องจริงที่จะเข้าอยู่ได้ไหมคะ', 'ผมขอดูสัญญาหออีกรอบได้ไหมครับ']) {
+			expect(photoCarousel(await kind(t)), t).toBeUndefined();
+		}
+		for (const t of ['ถ่ายรูปห้องส่งให้แล้วนะคะ', 'ส่งรูปห้องไปแล้วค่ะ', 'สภาพห้องเป็นยังไงบ้าง', 'ไม่มีรูปเลยค่ะตอนนี้',
+			'เดี๋ยวไว้ค่ำๆถึงหอแล้วจะถ่ายให้ดูนะคะ', 'มีภาพตู้เย็นไหมคะ',
+			'พัสดุค่ะ ของหนูหายสองครั้งแล้ว ก็มาส่งที่หอค่ะ มีรูปว่าส่งแล้ว แต่ไม่มีของ มีใครหยิบผิดไปบ้างมั้ยคะ']) {
+			expect(photoCarousel(await kind(t)), t).toBeUndefined();
 		}
 
 		const wifi = await kind('รหัสเน็ต');
