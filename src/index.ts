@@ -12305,6 +12305,9 @@ async function maybeOfferRepair(env, ev, replyToken, textIn) {
 }
 
 async function alertUrgentRepair(env, ev, textIn) {
+  // ปิดการแจ้งเตือนด่วนเข้า LINE ตามที่เจ้าของสั่ง (อ่านเองใน LINE OA)
+  // เปิดกลับได้ด้วย env URGENT_REPAIR_ALERT=on
+  if (String(env?.URGENT_REPAIR_ALERT || '').toLowerCase() !== 'on') return;
   const userId = ev?.source?.userId || '';
   if (ev?.source?.type !== 'user' || !userId) return;
   const dedupeKey = `repair:urgent:${userId}`;
