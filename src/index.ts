@@ -1165,6 +1165,8 @@ const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 const CO_MOVE_OUT_REASON_MAX = 200;
 const DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-notice';
+const DEFAULT_N8N_FLOOD_ALERT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/flood-alert';
+const DEFAULT_FLOOD_ALERT_GROUP_ID = 'Cdf017804cb8d6f4a8e02c831d700e4b5'; // LINE group "MM API"
 // "แจ้งออก a101 ย้ายไปทำงานต่างจังหวัด" — staff note why a tenant is leaving,
 // usually days before anyone types `co a101`. The reason is optional so the
 // date the tenant gave notice is kept even when staff are in a hurry.
@@ -4541,6 +4543,18 @@ const worker = {
           }
         }
 
+        const floodAction = FLOOD_POSTBACK_ACTIONS[String(data.act || '').trim()];
+        if (floodAction) {
+          tagEventLog('flood_alert');
+          await handleFloodEvent(env, ev, replyToken, {
+            action: floodAction,
+            alert_id: String(data.id || ''),
+            level: String(data.lv || ''),
+            water: String(data.v || '')
+          });
+          continue;
+        }
+
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
 
         // ผู้เช่า/คนนอกกดเลือกวิธีจ่ายจากการ์ดที่ส่งให้หลังกรอกทะเบียนในฟอร์ม
@@ -6361,6 +6375,13 @@ const worker = {
           const stateKey = getStateKey(ev);
           const userId = ev?.source?.userId || '';
           tagEventLog(classifyTextCommand(textIn, { isOwnerGroup: isOwnerGroupChat(env, chatId) })?.kind || 'text');
+          // before the urgent-repair check: "น้ำท่วมซอย" is a report here, not a repair
+          const floodCommand = isFloodGroupChat(env, chatId) ? parseFloodCommand(textIn) : null;
+          if (floodCommand) {
+            tagEventLog('flood_alert');
+            await handleFloodEvent(env, ev, replyToken, floodCommand);
+            continue;
+          }
           if (isUrgentRepairText(textIn)) {
             ctx.waitUntil(alertUrgentRepair(env, ev, textIn).catch((err) => console.error('repair_urgent_alert_failed', err)));
           }
@@ -10843,6 +10864,103 @@ function n8nWebhookSecret(env) {
   return env.N8N_WEBHOOK_SECRET || env.WORKER_SECRET || env.MM_WORKER_SECRET || '';
 }
 
+/* =========================
+ * Flood alert (n8n MM_FloodAlert)
+ * n8n owns the alert state. The worker only forwards the card's buttons and the
+ * water reports staff type in the MM API group, then replies with what n8n returns.
+ * ========================= */
+const FLOOD_POSTBACK_ACTIONS = {
+  FLOOD_ACK: 'ack',
+  FLOOD_SNOOZE: 'snooze',
+  FLOOD_DETAIL: 'detail',
+  FLOOD_REPORT: 'report'
+};
+const FLOOD_TEXT_COMMANDS = {
+  'สถานะน้ำ': { action: 'status' },
+  'น้ำขัง': { action: 'report', water: 'road' },
+  'น้ำขังหน้าหอ': { action: 'report', water: 'road' },
+  'น้ำท่วมซอย': { action: 'report', water: 'soi' },
+  'น้ำเข้าหอ': { action: 'report', water: 'property' },
+  'น้ำลดแล้ว': { action: 'report', water: 'none' }
+};
+const FLOOD_TEXT_RE = /^(สถานะน้ำ|น้ำขังหน้าหอ|น้ำขัง|น้ำท่วมซอย|น้ำเข้าหอ|น้ำลดแล้ว)(?:\s+([\s\S]*))?$/;
+
+function parseFloodCommand(text) {
+  const match = String(text || '').trim().match(FLOOD_TEXT_RE);
+  if (!match) return null;
+  return { ...FLOOD_TEXT_COMMANDS[match[1]], note: String(match[2] || '').trim().slice(0, 200) };
+}
+
+function isFloodGroupChat(env, chatId) {
+  if (!chatId) return false;
+  return getConfiguredGroupIds(env?.FLOOD_ALERT_GROUP_ID, [DEFAULT_FLOOD_ALERT_GROUP_ID]).includes(chatId);
+}
+
+// Escalation pushes go 1:1, so the tap may come from outside the group.
+async function getLineDisplayName(env, ev) {
+  const userId = ev?.source?.userId || '';
+  if (!userId) return '';
+  if (ev?.source?.groupId) return getLineGroupMemberName(env, ev.source.groupId, userId);
+  try {
+    const res = await fetch(`https://api.line.me/v2/bot/profile/${userId}`, {
+      headers: { Authorization: `Bearer ${env.LINE_ACCESS_TOKEN}` }
+    });
+    if (!res.ok) return '';
+    const profile = await res.json();
+    return String(profile?.displayName || '');
+  } catch (_) {
+    return '';
+  }
+}
+
+async function callN8nFloodAlert(env, payload) {
+  const url = env.N8N_FLOOD_ALERT_URL || DEFAULT_N8N_FLOOD_ALERT_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data) {
+      console.error('flood_alert_failed', { status: res.status, action: payload?.action });
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('flood_alert_error', { action: payload?.action, err: String(err) });
+    return null;
+  }
+}
+
+async function handleFloodEvent(env, ev, replyToken, request) {
+  const chatId = getChatId(ev);
+  const displayName = await getLineDisplayName(env, ev);
+  const result = await callN8nFloodAlert(env, {
+    ...request,
+    userId: ev?.source?.userId || '',
+    groupId: ev?.source?.groupId || '',
+    chatId,
+    displayName,
+    source: ev?.type === 'postback' ? 'line_postback' : 'line_message',
+    eventId: ev?.webhookEventId || '',
+    receivedAt: new Date().toISOString()
+  });
+  if (!result) {
+    await replyOrPushText(env, replyToken, chatId, 'ระบบเตือนน้ำท่วมไม่ตอบสนอง กรุณากดหรือพิมพ์อีกครั้ง', 'flood_alert_failure_reply_failed');
+    return;
+  }
+  const messages = Array.isArray(result.messages) ? result.messages.slice(0, 5) : [];
+  if (messages.length && replyToken) {
+    await lineReply(env.LINE_ACCESS_TOKEN, replyToken, messages)
+      .catch((err) => console.error('flood_alert_reply_failed', String(err?.message || err)));
+  }
+}
+
 /** CheckOut_Notice workflow: records `แจ้งออก` notices and looks them up for `co`. */
 async function callN8nCoNotice(env, payload) {
   const url = env.N8N_CO_NOTICE_WEBHOOK_URL || DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL;
@@ -12351,6 +12469,9 @@ export const __testables = {
   forwardToSpecificGas,
   forwardToGas,
   classifyTextCommand,
+  parseFloodCommand,
+  isFloodGroupChat,
+  FLOOD_POSTBACK_ACTIONS,
   shouldTextStateConsumeInput,
   TEXT_COMMAND_REPLACE_FLOW,
   TEXT_COMMAND_BYPASS_FLOW,

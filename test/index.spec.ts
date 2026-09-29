@@ -1822,6 +1822,21 @@ describe('Worker routes', () => {
 		expect(__testables.classifyTextCommand('แจ้งออก')?.kind).toBe('moveout_notice');
 	});
 
+	it('parses flood water reports typed in the MM API group', () => {
+		const parse = __testables.parseFloodCommand;
+		expect(parse('น้ำขัง')).toEqual({ action: 'report', water: 'road', note: '' });
+		expect(parse('น้ำขังหน้าหอ สูงครึ่งล้อ')).toEqual({ action: 'report', water: 'road', note: 'สูงครึ่งล้อ' });
+		expect(parse('น้ำท่วมซอย')).toMatchObject({ action: 'report', water: 'soi' });
+		expect(parse('น้ำเข้าหอ')).toMatchObject({ action: 'report', water: 'property' });
+		expect(parse('น้ำลดแล้ว')).toMatchObject({ action: 'report', water: 'none' });
+		expect(parse('สถานะน้ำ')).toMatchObject({ action: 'status' });
+		expect(parse('น้ำขังเมื่อวานลดยัง')).toBe(null);
+		expect(parse('ค่าน้ำเดือนนี้')).toBe(null);
+		expect(__testables.isFloodGroupChat({}, 'Cdf017804cb8d6f4a8e02c831d700e4b5')).toBe(true);
+		expect(__testables.isFloodGroupChat({}, 'C355d5b5c8a01d88bf61296b4e10f1575')).toBe(false);
+		expect(__testables.FLOOD_POSTBACK_ACTIONS.FLOOD_ACK).toBe('ack');
+	});
+
 	it('uses the inline co reason before asking n8n for a recorded notice', async () => {
 		const realFetch = globalThis.fetch;
 		const calls: any[] = [];
