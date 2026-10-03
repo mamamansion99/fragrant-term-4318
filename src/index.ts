@@ -5663,6 +5663,9 @@ const worker = {
           action === 'ADMIN_SEND_SLOT' ||
           action === 'ADMIN_HOLD' ||
           isRenewalAdminPickSigningAction;
+        // ปุ่ม "อนุมัติทั้ง N ห้อง" ของการ์ดวันกระจุก (Renewal Main → Build Manager Batch Card)
+        // ไม่มี inquiryId เพราะกุญแจของชุดคือวันหมดสัญญา (end) — n8n แยกเส้นทางเองจาก postbackData
+        const isManagerBatchAction = action === 'MANAGER_RENEWAL_BATCH';
         const isContractRenewalAction =
           action === 'CONTINUE' ||
           action === 'LEAVE' ||
@@ -5676,6 +5679,7 @@ const worker = {
           isSignSlot ||
           isSignAskAdmin ||
           isRenewalAdminAction ||
+          isManagerBatchAction ||
           isManagerDecisionEvent;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
@@ -5690,12 +5694,16 @@ const worker = {
         const inquiryOptionalActions = [
           'RENEWAL_ACCEPT_TERMS',
           'RENEWAL_ASK_MORE',
-          'RENEWAL_ADMIN_PICK_SIGNING'
+          'RENEWAL_ADMIN_PICK_SIGNING',
+          'MANAGER_RENEWAL_BATCH'
         ];
         const requiresInquiryId = !inquiryOptionalActions.includes(action);
         if (!inq && requiresInquiryId) missingRenewalFields.push('inquiryId');
         if (isManagerDecisionEvent) {
           if (!managerDecision) missingRenewalFields.push('decision');
+        } else if (isManagerBatchAction) {
+          if (!managerDecision) missingRenewalFields.push('decision');
+          if (!String(data.end || '').trim()) missingRenewalFields.push('end');
         } else if (!action && !isSignSlot) {
           missingRenewalFields.push('action');
         }
@@ -5722,7 +5730,7 @@ const worker = {
           const selectedDateTime = String(postbackParams.datetime || '');
           const selectedDate = String(postbackParams.date || '');
           const selectedTime = String(postbackParams.time || '');
-          if (isRenewalAdminAction) {
+          if (isRenewalAdminAction || isManagerBatchAction) {
             if (!isRenewalAdminGroupChat(env, chatId)) {
               await errorReplyOrPush(env, replyToken, chatId, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มผู้จัดการเท่านั้น');
               continue;
@@ -5834,9 +5842,11 @@ const worker = {
           };
 
           try {
-            const ackText = isManagerDecisionEvent
-              ? (managerReplyMap[managerDecision] || 'Recorded manager decision.')
-              : (replyMap[action] || 'รับทราบค่ะ');
+            const ackText = isManagerBatchAction
+              ? `รับคำสั่งอนุมัติทั้งชุด (หมดสัญญา ${String(data.end || '').trim()}) แล้ว ระบบกำลังส่งคำถามต่อสัญญาให้ผู้เช่า`
+              : isManagerDecisionEvent
+                ? (managerReplyMap[managerDecision] || 'Recorded manager decision.')
+                : (replyMap[action] || 'รับทราบค่ะ');
             await replyToLine(replyToken, [{ type: 'text', text: ackText }]);
           } catch (err) {
             console.error('contract_renewal_reply_fail', err);
