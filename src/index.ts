@@ -1244,6 +1244,96 @@ function parseMoveOutNoticeCommand(text) {
   return { roomId, reason };
 }
 
+// "moveout a101" — staff pick the move-out day from LINE's date picker and it
+// lands on the mamamansion99 Google Calendar as an all-day event. n8n
+// MoveOut_Calendar (H1J0qvTn64nSydJy) keys the event by room, so picking again
+// moves the existing event instead of adding a second one.
+const DEFAULT_N8N_MOVEOUT_CALENDAR_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/moveout-calendar';
+const MOVEOUT_CALENDAR_ACT = 'MOVEOUT_DATE';
+const MOVEOUT_CALENDAR_RE = /^\s*move\s*-?\s*out\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*$/i;
+const MOVEOUT_CALENDAR_DENIED = 'คำสั่งนี้ใช้ได้เฉพาะเจ้าหน้าที่ค่ะ';
+const MOVEOUT_CALENDAR_FAIL = '❗ลงปฏิทินไม่สำเร็จ ลองกดเลือกวันใหม่อีกครั้งค่ะ';
+const THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+function parseMoveOutCalendarCommand(text) {
+  const m = String(text || '').match(MOVEOUT_CALENDAR_RE);
+  if (!m) return null;
+  const roomId = parseRoomToken(m[1]);
+  return roomId ? { roomId } : null;
+}
+
+function parseMoveOutCalendarPostback(data, params) {
+  if (String(data?.act || '').trim().toUpperCase() !== MOVEOUT_CALENDAR_ACT) return null;
+  const roomId = parseRoomToken(data.room);
+  const date = String(params?.date || '').trim();
+  if (!roomId || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return { invalid: true };
+  return { roomId, date };
+}
+
+function isoDateBangkok(date = new Date()) {
+  return new Date(date.getTime() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+function formatThaiDateFromIso(iso) {
+  const [y, m, d] = String(iso || '').split('-').map(Number);
+  if (!y || !m || !d) return String(iso || '');
+  return `${d} ${THAI_MONTHS_SHORT[m - 1]} ${y + 543}`;
+}
+
+function buildMoveOutDatePicker(roomId, now = new Date()) {
+  const day = 86400000;
+  return {
+    type: 'template',
+    altText: `เลือกวันย้ายออก ห้อง ${roomId}`,
+    template: {
+      type: 'buttons',
+      text: `🚪 ห้อง ${roomId}\nเลือกวันย้ายออก แล้วระบบจะลง Google Calendar ให้`,
+      actions: [{
+        type: 'datetimepicker',
+        label: '📅 เลือกวันย้ายออก',
+        data: `act=${MOVEOUT_CALENDAR_ACT}&room=${roomId}`,
+        mode: 'date',
+        initial: isoDateBangkok(now),
+        min: isoDateBangkok(new Date(now.getTime() - 30 * day)),
+        max: isoDateBangkok(new Date(now.getTime() + 365 * day))
+      }]
+    }
+  };
+}
+
+function buildMoveOutCalendarReply(result) {
+  if (!result?.ok) return MOVEOUT_CALENDAR_FAIL;
+  const when = formatThaiDateFromIso(result.date);
+  if (result.updated && result.previousDate && result.previousDate !== result.date) {
+    return `✅ เลื่อนวันย้ายออก ห้อง ${result.room} ในปฏิทินแล้ว\n${formatThaiDateFromIso(result.previousDate)} → ${when}`;
+  }
+  return `✅ ลงปฏิทินแล้ว\nห้อง ${result.room} ย้ายออก ${when}`;
+}
+
+async function notifyN8nMoveOutCalendar(env, payload) {
+  const url = env.N8N_MOVEOUT_CALENDAR_URL || DEFAULT_N8N_MOVEOUT_CALENDAR_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(20000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.ok !== true) {
+      console.error('moveout_calendar_failed', res.status);
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('moveout_calendar_error', String(err));
+    return null;
+  }
+}
+
 function parseRoomToken(token) {
   const room = String(token || '').trim().toUpperCase();
   if (!/^[AB]\d{3,4}$/.test(room)) return null;
@@ -3131,6 +3221,9 @@ function classifyTextCommand(text, options = {}) {
   }
   if (raw === 'ลงทะเบียนไอดี') {
     return { kind: 'registration', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  if (parseMoveOutCalendarCommand(raw)) {
+    return { kind: 'moveout_calendar', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
   if (parseMoveOutNoticeCommand(raw) || MOVE_OUT_BARE_RE.test(raw.replace(/เเ/g, 'แ'))) {
     return { kind: 'moveout_notice', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
@@ -5684,6 +5777,26 @@ const worker = {
         };
         console.log('line_postback', postbackLog);
 
+        const moveOutDate = parseMoveOutCalendarPostback(data, ev?.postback?.params);
+        if (moveOutDate) {
+          const chatIdMO = getChatId(ev);
+          const staffId = String(ev?.source?.userId || '');
+          let replyText = MOVEOUT_CALENDAR_FAIL;
+          if (!chatLogStaffIds(env).has(staffId)) {
+            replyText = MOVEOUT_CALENDAR_DENIED;
+          } else if (!moveOutDate.invalid) {
+            const result = await notifyN8nMoveOutCalendar(env, {
+              roomId: moveOutDate.roomId,
+              date: moveOutDate.date,
+              userId: staffId,
+              byName: carStaffName(staffId)
+            });
+            replyText = buildMoveOutCalendarReply(result);
+          }
+          await replyOrPushText(env, replyToken, chatIdMO, replyText, 'moveout_calendar_reply_failed');
+          continue;
+        }
+
         const leaveReason = parseLeaveReasonPostback(data);
         if (leaveReason) {
           const chatIdLR = getChatId(ev);
@@ -6917,6 +7030,14 @@ const worker = {
 
           if (MOVE_OUT_BARE_RE.test(textIn.replace(/เเ/g, 'แ'))) {
             await replyOrPushText(env, replyToken, chatId, MOVE_OUT_BARE_REPLY, 'moveout_bare_reply_failed');
+            continue;
+          }
+          const moveOutCalendar = parseMoveOutCalendarCommand(textIn);
+          if (moveOutCalendar) {
+            const messages = chatLogStaffIds(env).has(userId)
+              ? [buildMoveOutDatePicker(moveOutCalendar.roomId)]
+              : [{ type: 'text', text: MOVEOUT_CALENDAR_DENIED }];
+            await replyOrPushMessages(env, replyToken, chatId, messages, 'moveout_calendar_reply_failed');
             continue;
           }
           const moveOutNotice = parseMoveOutNoticeCommand(textIn);
@@ -12699,6 +12820,10 @@ export const __testables = {
   buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
   parseMoveOutNoticeCommand,
+  parseMoveOutCalendarCommand,
+  parseMoveOutCalendarPostback,
+  buildMoveOutDatePicker,
+  buildMoveOutCalendarReply,
   parseLeaveReasonPostback,
   parseLeaveReasonText,
   resolveMoveOutReason,

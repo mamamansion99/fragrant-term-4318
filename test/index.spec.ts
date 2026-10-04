@@ -1822,6 +1822,33 @@ describe('Worker routes', () => {
 		expect(__testables.classifyTextCommand('แจ้งออก')?.kind).toBe('moveout_notice');
 	});
 
+	it('parses the moveout calendar command and date picker postback', () => {
+		const parse = __testables.parseMoveOutCalendarCommand;
+		expect(parse('moveout a101')).toEqual({ roomId: 'A101' });
+		expect(parse('Move out ห้อง B510')).toEqual({ roomId: 'B510' });
+		expect(parse('move-out A101')).toEqual({ roomId: 'A101' });
+		expect(parse('moveout A101 พรุ่งนี้')).toBe(null);
+		expect(parse('moveout')).toBe(null);
+		expect(parse('moveout A10123')).toBe(null);
+		expect(__testables.classifyTextCommand('moveout a101')?.kind).toBe('moveout_calendar');
+
+		const pb = __testables.parseMoveOutCalendarPostback;
+		expect(pb({ act: 'MOVEOUT_DATE', room: 'a101' }, { date: '2026-10-31' })).toEqual({ roomId: 'A101', date: '2026-10-31' });
+		expect(pb({ act: 'MOVEOUT_DATE', room: 'A101' }, {})).toEqual({ invalid: true });
+		expect(pb({ act: 'LEAD_A' }, { date: '2026-10-31' })).toBe(null);
+
+		const picker = __testables.buildMoveOutDatePicker('A101', new Date('2026-10-04T20:00:00Z')) as any;
+		const action = picker.template.actions[0];
+		expect(action).toMatchObject({ type: 'datetimepicker', mode: 'date', data: 'act=MOVEOUT_DATE&room=A101', initial: '2026-10-05' });
+		expect(action.min < action.initial && action.initial < action.max).toBe(true);
+
+		const reply = __testables.buildMoveOutCalendarReply;
+		expect(reply({ ok: true, room: 'A101', date: '2026-10-31', updated: false })).toBe('✅ ลงปฏิทินแล้ว\nห้อง A101 ย้ายออก 31 ต.ค. 2569');
+		expect(reply({ ok: true, room: 'A101', date: '2026-11-01', updated: true, previousDate: '2026-10-31' }))
+			.toBe('✅ เลื่อนวันย้ายออก ห้อง A101 ในปฏิทินแล้ว\n31 ต.ค. 2569 → 1 พ.ย. 2569');
+		expect(reply(null)).toContain('ไม่สำเร็จ');
+	});
+
 	it('parses the leave-reason quick reply and the typed reason', () => {
 		const pb = __testables.parseLeaveReasonPostback;
 		expect(pb({ action: 'LEAVE_REASON', inq: 'RI-A310-2026-11-30', room: 'a310', r: 'rent' }))
