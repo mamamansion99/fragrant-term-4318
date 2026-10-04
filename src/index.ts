@@ -1167,6 +1167,8 @@ const CO_MOVE_OUT_REASON_MAX = 200;
 const DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-notice';
 const DEFAULT_N8N_FLOOD_ALERT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/flood-alert';
 const DEFAULT_FLOOD_ALERT_GROUP_ID = 'Cdf017804cb8d6f4a8e02c831d700e4b5'; // LINE group "MM API"
+const DEFAULT_N8N_FLOOD_SURVEY_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/flood-survey-line';
+const FLOOD_SURVEY_POSTBACK_ACT = 'FSV';
 // "แจ้งออก a101 ย้ายไปทำงานต่างจังหวัด" — staff note why a tenant is leaving,
 // usually days before anyone types `co a101`. The reason is optional so the
 // date the tenant gave notice is kept even when staff are in a hurry.
@@ -1176,6 +1178,61 @@ const DEFAULT_FLOOD_ALERT_GROUP_ID = 'Cdf017804cb8d6f4a8e02c831d700e4b5'; // LIN
 const MOVE_OUT_BARE_RE = /^\s*แจ้ง\s*ออก\s*$/;
 const MOVE_OUT_BARE_REPLY = 'รับทราบค่ะ 🙏 พิมพ์วันที่จะย้ายออกไว้ในแชทนี้ได้เลย แอดมินจะติดต่อกลับค่ะ';
 const MOVE_OUT_NOTICE_RE = /^\s*แจ้ง\s*ออก\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*([\s\S]*)$/i;
+
+// เหตุผลย้ายออก — คำถาม 1 ข้อ ต่อท้ายข้อความยืนยันไม่ต่อสัญญา (Renewal Main → Build Tenant Final Confirmation)
+// ปุ่ม quick reply ยิง postback action=LEAVE_REASON&inq=..&room=..&r=<CODE>
+// ปุ่ม "อื่น ๆ" เปิดคีย์บอร์ดพร้อมคำนำ "เหตุผลย้ายออก A310: " แล้วข้อความที่พิมพ์ต่อถูกส่งเป็น detail
+// ทั้งคู่ส่งเข้า n8n Renewal_LeaveReason ซึ่งเขียน Renewal_Inquiries.LeaveReason / LeaveReasonDetail
+// รหัสต้องตรงกับ LEAVE_REASONS ใน Renewal Main และ REASONS ใน Renewal_LeaveReason
+const DEFAULT_N8N_LEAVE_REASON_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/renewal-leave-reason';
+const LEAVE_REASON_CODES = new Set([
+  'JOB', 'BOUGHT_HOME', 'FAMILY', 'RENT', 'ROOM_TYPE', 'ROOM_ISSUE',
+  'NOISE_SAFETY', 'PARKING_COMMUTE', 'SERVICE', 'OTHER', 'SKIP'
+]);
+const LEAVE_REASON_TEXT_RE = /^\s*เหตุผล\s*ย้าย\s*ออก\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*[:：]?\s*([\s\S]*)$/i;
+const LEAVE_REASON_DETAIL_MAX = 500;
+const LEAVE_REASON_THANKS = 'ขอบคุณสำหรับคำตอบค่ะ 🙏 ข้อมูลนี้จะนำไปปรับปรุงหอให้ดีขึ้นค่ะ';
+const LEAVE_REASON_OTHER_PROMPT = 'พิมพ์เหตุผลต่อท้ายข้อความที่ขึ้นให้ แล้วกดส่งได้เลยค่ะ';
+const LEAVE_REASON_SKIP_REPLY = 'ไม่เป็นไรค่ะ ขอบคุณที่อยู่กับเรานะคะ 🙏';
+const LEAVE_REASON_FAIL_REPLY = 'บันทึกคำตอบไม่สำเร็จ รบกวนลองใหม่อีกครั้งค่ะ';
+
+function parseLeaveReasonPostback(data) {
+  if (String(data?.action || '').trim().toUpperCase() !== 'LEAVE_REASON') return null;
+  const reason = String(data.r || '').trim().toUpperCase();
+  const inquiryId = String(data.inq || '').trim();
+  const roomId = parseRoomToken(data.room);
+  if (!LEAVE_REASON_CODES.has(reason) || !inquiryId || !roomId) return { invalid: true };
+  return { reason, inquiryId, roomId };
+}
+
+function parseLeaveReasonText(text) {
+  const m = String(text || '').match(LEAVE_REASON_TEXT_RE);
+  if (!m) return null;
+  const roomId = parseRoomToken(m[1]);
+  if (!roomId) return null;
+  const detail = m[2].replace(/\s+/g, ' ').trim().slice(0, LEAVE_REASON_DETAIL_MAX);
+  return { roomId, detail };
+}
+
+async function notifyN8nLeaveReason(env, payload) {
+  const url = env.N8N_LEAVE_REASON_URL || DEFAULT_N8N_LEAVE_REASON_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) console.error('leave_reason_forward_non_200', res.status);
+    return res.ok;
+  } catch (err) {
+    console.error('leave_reason_forward_error', String(err));
+    return false;
+  }
+}
 
 function parseMoveOutNoticeCommand(text) {
   const t = String(text || '').replace(/เเ/g, 'แ');
@@ -3078,6 +3135,9 @@ function classifyTextCommand(text, options = {}) {
   if (parseMoveOutNoticeCommand(raw) || MOVE_OUT_BARE_RE.test(raw.replace(/เเ/g, 'แ'))) {
     return { kind: 'moveout_notice', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
+  if (parseLeaveReasonText(raw)) {
+    return { kind: 'leave_reason', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
   if (isPayRentCommand(raw)) {
     return { kind: 'pay_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
@@ -4555,6 +4615,13 @@ const worker = {
           continue;
         }
 
+        const floodSurveyAnswer = parseFloodSurveyPostback(data);
+        if (floodSurveyAnswer) {
+          tagEventLog('flood_survey');
+          await handleFloodSurveyAnswer(env, ev, replyToken, floodSurveyAnswer);
+          continue;
+        }
+
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
 
         // ผู้เช่า/คนนอกกดเลือกวิธีจ่ายจากการ์ดที่ส่งให้หลังกรอกทะเบียนในฟอร์ม
@@ -5616,6 +5683,31 @@ const worker = {
           timestamp: new Date(ev?.timestamp || Date.now()).toISOString()
         };
         console.log('line_postback', postbackLog);
+
+        const leaveReason = parseLeaveReasonPostback(data);
+        if (leaveReason) {
+          const chatIdLR = getChatId(ev);
+          if (leaveReason.invalid) {
+            await replyOrPushText(env, replyToken, chatIdLR, LEAVE_REASON_FAIL_REPLY, 'leave_reason_reply_failed');
+            continue;
+          }
+          const ok = await notifyN8nLeaveReason(env, {
+            inquiryId: leaveReason.inquiryId,
+            roomId: leaveReason.roomId,
+            reason: leaveReason.reason,
+            userId: String(ev?.source?.userId || ''),
+            source: 'postback'
+          });
+          const replyText = !ok
+            ? LEAVE_REASON_FAIL_REPLY
+            : leaveReason.reason === 'OTHER'
+              ? LEAVE_REASON_OTHER_PROMPT
+              : leaveReason.reason === 'SKIP'
+                ? LEAVE_REASON_SKIP_REPLY
+                : LEAVE_REASON_THANKS;
+          await replyOrPushText(env, replyToken, chatIdLR, replyText, 'leave_reason_reply_failed');
+          continue;
+        }
 
         // Mark paid → quick ack then forward to n8n
         const markPaidUrl = env.N8N_MMV2_MARK_PAID_URL || '';
@@ -6830,6 +6922,22 @@ const worker = {
           const moveOutNotice = parseMoveOutNoticeCommand(textIn);
           if (moveOutNotice) {
             await handleMoveOutNotice(env, { ...moveOutNotice, userId, chatId, replyToken });
+            continue;
+          }
+          const leaveReasonText = parseLeaveReasonText(textIn);
+          if (leaveReasonText) {
+            if (!leaveReasonText.detail) {
+              await replyOrPushText(env, replyToken, chatId, LEAVE_REASON_OTHER_PROMPT, 'leave_reason_reply_failed');
+              continue;
+            }
+            const ok = await notifyN8nLeaveReason(env, {
+              roomId: leaveReasonText.roomId,
+              reason: 'OTHER',
+              detail: leaveReasonText.detail,
+              userId,
+              source: 'text'
+            });
+            await replyOrPushText(env, replyToken, chatId, ok ? LEAVE_REASON_THANKS : LEAVE_REASON_FAIL_REPLY, 'leave_reason_reply_failed');
             continue;
           }
 
@@ -10971,6 +11079,64 @@ async function handleFloodEvent(env, ev, replyToken, request) {
   }
 }
 
+/* =========================
+ * Flood survey (n8n MM_FloodSurvey, Oct 2026)
+ * Tenants answer in the chat by tapping postback buttons
+ * (act=FSV&t=<room token>&q=<question>&a=<answer>). n8n records the answer and
+ * returns the next question, which goes back on the reply token so it costs no
+ * push quota. Push is only the fallback when the reply token is gone.
+ * ========================= */
+function parseFloodSurveyPostback(data) {
+  if (String(data?.act || '').trim() !== FLOOD_SURVEY_POSTBACK_ACT) return null;
+  return {
+    token: String(data.t || '').trim(),
+    question: String(data.q || '').trim(),
+    answer: String(data.a || '').trim()
+  };
+}
+
+async function callN8nFloodSurvey(env, payload) {
+  const url = env.N8N_FLOOD_SURVEY_URL || DEFAULT_N8N_FLOOD_SURVEY_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) {
+      console.error('flood_survey_failed', { status: res.status, question: payload?.question });
+      return null;
+    }
+    return data;
+  } catch (err) {
+    console.error('flood_survey_error', { question: payload?.question, err: String(err) });
+    return null;
+  }
+}
+
+async function handleFloodSurveyAnswer(env, ev, replyToken, answer) {
+  const chatId = getChatId(ev);
+  const result = await callN8nFloodSurvey(env, {
+    ...answer,
+    userId: ev?.source?.userId || '',
+    eventId: ev?.webhookEventId || '',
+    receivedAt: new Date().toISOString()
+  });
+  if (!result) {
+    await replyOrPushText(env, replyToken, chatId, 'ขออภัยค่ะ ระบบบันทึกคำตอบขัดข้อง รบกวนกดตอบอีกครั้งนะคะ', 'flood_survey_failure_reply_failed');
+    return;
+  }
+  const messages = Array.isArray(result.messages) ? result.messages.slice(0, 5) : [];
+  if (messages.length) {
+    await replyOrPushMessages(env, replyToken, chatId, messages, 'flood_survey_reply_failed');
+  }
+}
+
 /** CheckOut_Notice workflow: records `แจ้งออก` notices and looks them up for `co`. */
 async function callN8nCoNotice(env, payload) {
   const url = env.N8N_CO_NOTICE_WEBHOOK_URL || DEFAULT_N8N_CO_NOTICE_WEBHOOK_URL;
@@ -12482,6 +12648,7 @@ export const __testables = {
   parseFloodCommand,
   isFloodGroupChat,
   FLOOD_POSTBACK_ACTIONS,
+  parseFloodSurveyPostback,
   shouldTextStateConsumeInput,
   TEXT_COMMAND_REPLACE_FLOW,
   TEXT_COMMAND_BYPASS_FLOW,
@@ -12532,6 +12699,8 @@ export const __testables = {
   buildCleaningTenantConfirmFlex,
   parseCoAdminShortcut,
   parseMoveOutNoticeCommand,
+  parseLeaveReasonPostback,
+  parseLeaveReasonText,
   resolveMoveOutReason,
   moveOutReasonLine,
   isCheckoutStartShortcut,

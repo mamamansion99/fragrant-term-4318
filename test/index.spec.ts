@@ -1822,6 +1822,24 @@ describe('Worker routes', () => {
 		expect(__testables.classifyTextCommand('แจ้งออก')?.kind).toBe('moveout_notice');
 	});
 
+	it('parses the leave-reason quick reply and the typed reason', () => {
+		const pb = __testables.parseLeaveReasonPostback;
+		expect(pb({ action: 'LEAVE_REASON', inq: 'RI-A310-2026-11-30', room: 'a310', r: 'rent' }))
+			.toEqual({ reason: 'RENT', inquiryId: 'RI-A310-2026-11-30', roomId: 'A310' });
+		expect(pb({ action: 'LEAVE_REASON', inq: 'RI-A310-2026-11-30', room: 'A310', r: 'BOGUS' })).toEqual({ invalid: true });
+		expect(pb({ action: 'LEAVE_REASON', room: 'A310', r: 'RENT' })).toEqual({ invalid: true });
+		expect(pb({ action: 'manager_renewal_batch' })).toBe(null);
+
+		const txt = __testables.parseLeaveReasonText;
+		expect(txt('เหตุผลย้ายออก A310: ได้งาน  ที่เชียงใหม่')).toEqual({ roomId: 'A310', detail: 'ได้งาน ที่เชียงใหม่' });
+		expect(txt('เหตุผลย้ายออก a310 ย้ายไปอยู่กับแฟน')).toEqual({ roomId: 'A310', detail: 'ย้ายไปอยู่กับแฟน' });
+		expect(txt('เหตุผลย้ายออก A310: ')).toEqual({ roomId: 'A310', detail: '' });
+		expect(txt('เหตุผลย้ายออก')).toBe(null);
+		expect(txt('แจ้งออก A310 ย้ายงาน')).toBe(null);
+		expect(__testables.classifyTextCommand('เหตุผลย้ายออก A310: ย้ายงาน')?.kind).toBe('leave_reason');
+		expect(__testables.classifyTextCommand('แจ้งออก A310 ย้ายงาน')?.kind).toBe('moveout_notice');
+	});
+
 	it('parses flood water reports typed in the MM API group', () => {
 		const parse = __testables.parseFloodCommand;
 		expect(parse('น้ำขัง')).toEqual({ action: 'report', water: 'road', note: '' });
@@ -1835,6 +1853,58 @@ describe('Worker routes', () => {
 		expect(__testables.isFloodGroupChat({}, 'Cdf017804cb8d6f4a8e02c831d700e4b5')).toBe(true);
 		expect(__testables.isFloodGroupChat({}, 'C355d5b5c8a01d88bf61296b4e10f1575')).toBe(false);
 		expect(__testables.FLOOD_POSTBACK_ACTIONS.FLOOD_ACK).toBe('ack');
+	});
+
+	it('forwards flood survey taps to n8n and replies with the next question', async () => {
+		const parse = __testables.parseFloodSurveyPostback;
+		expect(parse({ act: 'FSV', t: 'A601-abcdefgh23', q: 'transport', a: 'some' }))
+			.toEqual({ token: 'A601-abcdefgh23', question: 'transport', answer: 'some' });
+		expect(parse({ act: 'FLOOD_ACK', id: 'x' })).toBe(null);
+
+		const tenant = 'Usurvey-tenant';
+		const calls: Array<{ url: string; body: any }> = [];
+		let surveyStatus = 200;
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: any, init: any) => {
+			const url = String(input?.url || input);
+			let body: any = null;
+			try { body = init?.body ? JSON.parse(String(init.body)) : null; } catch (_) { body = init?.body; }
+			calls.push({ url, body });
+			if (url === 'https://example.com/flood-survey') {
+				return new Response(JSON.stringify({ ok: true, messages: [{ type: 'text', text: 'ข้อ 2/4' }] }), { status: surveyStatus });
+			}
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log',
+			N8N_FLOOD_SURVEY_URL: 'https://example.com/flood-survey'
+		};
+		const tap = async (seq: number) => {
+			const ctx = createExecutionContext();
+			const res = await worker.fetch(await buildSignedLineRequest([{
+				type: 'postback', timestamp: Date.now(), webhookEventId: `ev-fsv-${seq}`, replyToken: `rt-fsv-${seq}`,
+				source: { type: 'user', userId: tenant },
+				postback: { data: 'act=FSV&t=A601-abcdefgh23&q=transport&a=some' }
+			}]), mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+			expect(res.status).toBe(200);
+		};
+		const lastReply = () => [...calls].reverse().find((c) => c.url.includes('/v2/bot/message/reply'))?.body;
+
+		try {
+			await tap(1);
+			const forwarded = calls.find((c) => c.url === 'https://example.com/flood-survey')!.body;
+			expect(forwarded).toMatchObject({ token: 'A601-abcdefgh23', question: 'transport', answer: 'some', userId: tenant, eventId: 'ev-fsv-1' });
+			expect(lastReply()).toMatchObject({ replyToken: 'rt-fsv-1', messages: [{ type: 'text', text: 'ข้อ 2/4' }] });
+
+			surveyStatus = 500;
+			await tap(2);
+			expect(lastReply().messages[0].text).toContain('ระบบบันทึกคำตอบขัดข้อง');
+		} finally {
+			fetchMock.mockRestore();
+		}
 	});
 
 	it('uses the inline co reason before asking n8n for a recorded notice', async () => {
