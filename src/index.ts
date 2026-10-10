@@ -4064,7 +4064,22 @@ async function fetchMaidBoard(env) {
   if (!res.ok) throw new Error(`maid board http ${res.status}`);
   const data = await res.json();
   if (!data || data.ok !== true) throw new Error(`maid board error ${data && data.error}`);
-  return Array.isArray(data.rooms) ? data.rooms : [];
+  return data;
+}
+
+/**
+ * The next 7 days from the board's agenda, counted by kind. Shown on the card so
+ * that a quiet "nothing open" still says what is coming, and so the board has a
+ * reason to be opened before the work lands.
+ */
+function summariseMaidWeek(data) {
+  const agenda = Array.isArray(data && data.agenda) ? data.agenda : [];
+  const today = String((data && data.today) || '');
+  if (!today) return null;
+  const end = new Date(Date.parse(`${today}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
+  const inWeek = agenda.filter(item => item && item.date >= today && item.date < end);
+  const count = kind => inWeek.filter(item => item.kind === kind).length;
+  return { moveout: count('moveout'), signing: count('signing'), movein: count('movein') };
 }
 
 function summariseMaidRooms(rooms) {
@@ -4090,8 +4105,11 @@ async function buildMaidBoardMessage(env) {
   const boardUrl = getMaidBoardUrl(env);
 
   let summary;
+  let week = null;
   try {
-    summary = summariseMaidRooms(await fetchMaidBoard(env));
+    const data = await fetchMaidBoard(env);
+    summary = summariseMaidRooms(Array.isArray(data.rooms) ? data.rooms : []);
+    week = data.outlookOk === false ? null : summariseMaidWeek(data);
   } catch (err) {
     console.log('maid_board_fetch_failed', { message: String(err) });
     return {
@@ -4100,15 +4118,19 @@ async function buildMaidBoardMessage(env) {
     };
   }
 
-  if (summary.total === 0) {
-    return { type: 'text', text: '✅ ตอนนี้ไม่มีงานค้างค่ะ' };
-  }
-
   const shown = summary.rows.slice(0, MAID_BOARD_MAX_ROOMS);
   const hiddenRooms = summary.rows.length - shown.length;
 
   const bodyContents = [
-    { type: 'text', text: `ค้างทั้งหมด ${summary.total} งาน · ${summary.rows.length} ห้อง`, size: 'sm', color: '#666666', wrap: true },
+    {
+      type: 'text',
+      text: summary.total === 0
+        ? '✅ ตอนนี้ไม่มีงานค้างค่ะ'
+        : `ค้างทั้งหมด ${summary.total} งาน · ${summary.rows.length} ห้อง`,
+      size: 'sm',
+      color: '#666666',
+      wrap: true
+    },
     { type: 'separator', margin: 'md' }
   ];
 
@@ -4136,9 +4158,38 @@ async function buildMaidBoardMessage(env) {
     });
   }
 
+  if (week) {
+    bodyContents.push(
+      { type: 'separator', margin: 'md' },
+      {
+        type: 'box',
+        layout: 'vertical',
+        margin: 'md',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: '7 วันข้างหน้า', weight: 'bold', size: 'sm' },
+          {
+            type: 'text',
+            text: `ย้ายออก ${week.moveout} · นัดเซ็น ${week.signing} · เข้าใหม่ ${week.movein}`,
+            size: 'xs',
+            color: '#888888',
+            wrap: true
+          }
+        ]
+      }
+    );
+  }
+
+  // ?src= tells the board's open log which message got it opened.
+  const withParams = (params) => {
+    const url = new URL(boardUrl);
+    new URLSearchParams(params).forEach((value, key) => url.searchParams.set(key, value));
+    return url.toString();
+  };
+
   return {
     type: 'flex',
-    altText: `งานค้าง ${summary.total} งาน`,
+    altText: summary.total === 0 ? 'ไม่มีงานค้าง' : `งานค้าง ${summary.total} งาน`,
     contents: {
       type: 'bubble',
       header: {
@@ -4150,11 +4201,19 @@ async function buildMaidBoardMessage(env) {
       footer: {
         type: 'box',
         layout: 'vertical',
-        contents: [{
-          type: 'button',
-          style: 'primary',
-          action: { type: 'uri', label: 'เปิดบอร์ดงาน', uri: boardUrl }
-        }]
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            action: { type: 'uri', label: 'เปิดบอร์ดงาน', uri: withParams('src=line') }
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            action: { type: 'uri', label: 'ดูเดือนหน้า', uri: withParams('view=month&src=line') }
+          }
+        ]
       }
     }
   };
