@@ -1003,6 +1003,21 @@ describe('Worker routes', () => {
 		});
 	});
 
+	it('accepts maid board deposit records only when complete', () => {
+		const base = { taskId: 'RTP-A207-RI-A207-2026-11-03', by: 'นิด' };
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'CASH' })).toMatchObject({
+			ok: true, payload: { action: 'CASH', source: 'MAID_WEB', roomId: 'A207', inquiryId: 'RI-A207-2026-11-03', by: 'นิด' }
+		});
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'UNPAID' })).toMatchObject({ ok: false });
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'UNPAID', note: 'ขอโอนพรุ่งนี้' })).toMatchObject({ ok: true, payload: { action: 'UNPAID' } });
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'TRANSFER' })).toMatchObject({ ok: false });
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'TRANSFER', imageBase64: 'data:image/jpeg;base64,QUJD' })).toMatchObject({
+			ok: true, payload: { action: 'SLIP', imageBase64: 'QUJD' }
+		});
+		expect(__testables.buildMaidDepositPayload({ ...base, method: 'CASH', by: '' })).toMatchObject({ ok: false });
+		expect(__testables.buildMaidDepositPayload({ ...base, taskId: 'RTI-A207-RI-A207-2026-11-03', method: 'CASH' })).toMatchObject({ ok: false });
+	});
+
 	it('uses bill-manual n8n webhook URL by default and env override when provided', () => {
 		expect(__testables.getN8nBillManualWebhookUrl({} as any)).toBe(
 			'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received'

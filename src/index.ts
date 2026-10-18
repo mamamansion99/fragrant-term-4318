@@ -4627,6 +4627,11 @@ const worker = {
     }
 
 
+    // Maid board: how the renewal deposit was settled at the signing (โอน / เงินสด / ยังไม่จ่าย).
+    if (request.method === 'POST' && url.pathname === '/maid/deposit-payment') {
+      return handleMaidDepositPayment(request, env);
+    }
+
     // Custom callback for tenant ID change completion
     if (request.method === 'POST' && url.pathname === '/tenant-change-complete') {
       const secret = env.WORKER_SECRET || '';
@@ -9448,6 +9453,64 @@ async function getActiveRenewalDepositState(env, lineUserId) {
   return state;
 }
 
+const MAID_DEPOSIT_METHODS = { TRANSFER: 'SLIP', CASH: 'CASH', UNPAID: 'UNPAID' };
+/** A shrunk phone photo is ~300 kB; anything far past that is not a slip from the board. */
+const MAID_DEPOSIT_MAX_IMAGE_CHARS = 6 * 1024 * 1024;
+
+/**
+ * Check what the maid board sent and turn it into a Renewal_Deposit request. The board is
+ * open to anyone with the link, the same as its Apps Script API, so this only accepts a
+ * well-formed deposit task id and leaves "is it already paid" to n8n.
+ */
+function buildMaidDepositPayload(body) {
+  const task = parseRenewalDepositTaskId(body?.taskId);
+  if (!task) return { ok: false, message: 'ไม่ใช่งานค่าประกัน' };
+  const method = String(body?.method || '').trim().toUpperCase();
+  const action = MAID_DEPOSIT_METHODS[method];
+  if (!action) return { ok: false, message: 'เลือกวิธีจ่ายก่อน' };
+  const by = String(body?.by || '').trim().slice(0, 60);
+  if (!by) return { ok: false, message: 'ใส่ชื่อคนบันทึกก่อน' };
+  const note = String(body?.note || '').trim().slice(0, 500);
+  if (method === 'UNPAID' && !note) return { ok: false, message: 'ใส่เหตุผลที่ยังไม่จ่าย' };
+  const payload = {
+    action,
+    source: 'MAID_WEB',
+    taskId: task.taskId,
+    inquiryId: task.inquiryId,
+    roomId: task.roomId,
+    by,
+    note
+  };
+  if (method === 'TRANSFER') {
+    const imageBase64 = String(body?.imageBase64 || '').replace(/^data:[^;]+;base64,/, '');
+    if (!imageBase64) return { ok: false, message: 'ถ่ายรูปสลิปก่อน' };
+    if (imageBase64.length > MAID_DEPOSIT_MAX_IMAGE_CHARS) return { ok: false, message: 'รูปใหญ่เกินไป ลองถ่ายใหม่' };
+    payload.imageBase64 = imageBase64;
+    payload.mimeType = 'image/jpeg';
+  }
+  return { ok: true, payload, method };
+}
+
+async function handleMaidDepositPayment(request, env) {
+  // Sent as text/plain from the browser so it needs no preflight; answer any origin.
+  const respond = (status, data) => new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+  });
+  let body = {};
+  try { body = JSON.parse(await request.text()); } catch (_) { return respond(400, { ok: false, message: 'ข้อมูลผิดรูปแบบ' }); }
+  const built = buildMaidDepositPayload(body);
+  if (!built.ok) return respond(400, built);
+  const ok = await notifyN8nRenewalDeposit(env, built.payload);
+  if (!ok) return respond(502, { ok: false, message: 'ส่งเข้าระบบไม่สำเร็จ ลองใหม่อีกครั้ง' });
+  const messages = {
+    TRANSFER: 'ส่งสลิปแล้ว ระบบกำลังตรวจ ผลจะแจ้งในกลุ่มสัญญา',
+    CASH: 'บันทึกรับเงินสดแล้ว',
+    UNPAID: 'แจ้งผู้จัดการแล้วว่ายังไม่จ่าย'
+  };
+  return respond(200, { ok: true, message: messages[built.method] });
+}
+
 async function notifyN8nRenewalDeposit(env, payload) {
   const url = env.N8N_RENEWAL_DEPOSIT_URL || DEFAULT_N8N_RENEWAL_DEPOSIT_URL;
   const secret = String(env.RENEWAL_DEPOSIT_SECRET || '').trim();
@@ -12990,6 +13053,7 @@ export const __testables = {
   buildRenewalDepositState,
   buildRenewalDepositSlipPayload,
   RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS,
+  buildMaidDepositPayload,
   parseKeyRent,
   parseKeyKeyword,
   normalizeCommandText,
