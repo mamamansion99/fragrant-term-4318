@@ -599,6 +599,7 @@ function getPaymentStateKeys(event) {
     `${stateKey}:keyrent_flow`,
     `${stateKey}:checkout_cash_flow`,
     lineUserId ? getBillManualPaymentStateKey(lineUserId) : '',
+    lineUserId ? getRenewalDepositStateKey(lineUserId) : '',
     getCheckout2GroupWaitingSlipKey(event)
   ].filter(Boolean);
 }
@@ -1161,6 +1162,21 @@ const DEFAULT_N8N_BILL_MANUAL_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/
 const BILL_MANUAL_PAY_CLICK_ACTION = 'BILL_PAY_CLICK';
 const BILL_MANUAL_PAYMENT_TTL_SECONDS = 10 * 60;
 const BILL_MANUAL_PAYMENT_KEY_PREFIX = 'bill-manual:payment:';
+
+// Renewal deposit top-up (ค่าประกันส่วนต่าง). n8n Renewal_Deposit sends the tenant a card with
+// action=RENEWAL_DEPOSIT_PAY; tapping it opens a window for the next image, which goes to the
+// same workflow for EasySlip + ledger. A slip it cannot pass reaches the contract group with
+// action=RENEWAL_DEPOSIT_APPROVE.
+const DEFAULT_N8N_RENEWAL_DEPOSIT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/renewal-deposit';
+const RENEWAL_DEPOSIT_PAY_ACTION = 'RENEWAL_DEPOSIT_PAY';
+const RENEWAL_DEPOSIT_APPROVE_ACTION = 'RENEWAL_DEPOSIT_APPROVE';
+const RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS = 30 * 60;
+const RENEWAL_DEPOSIT_KEY_PREFIX = 'renewal-deposit:payment:';
+// Who may approve a held slip: the contract group, and Ma's own chat (test runs land there).
+const RENEWAL_DEPOSIT_APPROVER_CHATS = [
+  'C07e625728aee936d59df1bca18bed149',
+  'Ue90558b73d62863e2287ac32e69541a3'
+];
 const CLEANING_TENANT_CONFIRM_ACT = 'CLEANING_TENANT_CONFIRM';
 const CO_ADMIN_OUTCOME_SET = new Set(['no', 'forfeit', 'waive']);
 const CO_MOVE_OUT_REASON_MAX = 200;
@@ -4776,6 +4792,56 @@ const worker = {
 
         const cleaningPostback = Object.keys(data).length > 0 ? data : parseQueryString(postbackDataString);
 
+        const renewalDeposit = getRenewalDepositAction(cleaningPostback);
+        if (renewalDeposit) {
+          tagEventLog('renewal_deposit');
+          const rdChatId = getChatId(ev);
+          const rdReply = async (text) => {
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text }]).catch(console.error);
+            } else if (rdChatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, rdChatId, text).catch(console.error));
+            }
+          };
+
+          if (renewalDeposit.action === RENEWAL_DEPOSIT_PAY_ACTION) {
+            const rdUserId = String(ev?.source?.userId || '').trim();
+            // The window is keyed by the person, so it only opens in a 1:1 chat.
+            if (ev?.source?.type !== 'user' || !rdUserId || !hasKV(env)) {
+              await rdReply('กรุณากดปุ่มนี้ในแชทส่วนตัวกับหอครับ');
+              continue;
+            }
+            await clearPaymentStatesForEvent(env, ev);
+            await kvPut(
+              env,
+              getRenewalDepositStateKey(rdUserId),
+              buildRenewalDepositState(ev, renewalDeposit),
+              RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS
+            );
+            await rdReply(`ส่งรูปสลิปค่าประกันส่วนต่าง ห้อง ${renewalDeposit.roomId} ในแชทนี้ได้เลยครับ (ภายใน 30 นาที)`);
+            continue;
+          }
+
+          if (!RENEWAL_DEPOSIT_APPROVER_CHATS.includes(rdChatId)) {
+            await rdReply('ปุ่มนี้ใช้ได้เฉพาะในกลุ่มสัญญาครับ');
+            continue;
+          }
+          const approverName = await getLineDisplayName(env, ev);
+          const ok = await notifyN8nRenewalDeposit(env, {
+            action: 'APPROVE',
+            source: 'LINE_GROUP',
+            taskId: renewalDeposit.taskId,
+            inquiryId: renewalDeposit.inquiryId,
+            roomId: renewalDeposit.roomId,
+            by: approverName || String(ev?.source?.userId || ''),
+            chatId: rdChatId
+          });
+          await rdReply(ok
+            ? `กำลังลงบัญชีค่าประกัน ห้อง ${renewalDeposit.roomId} ครับ`
+            : 'ส่งเข้าระบบไม่สำเร็จ กรุณากดใหม่อีกครั้งครับ');
+          continue;
+        }
+
         // ผู้เช่า/คนนอกกดเลือกวิธีจ่ายจากการ์ดที่ส่งให้หลังกรอกทะเบียนในฟอร์ม
         //
         // โอน  → ยิงเข้า car-sticker เส้นเดียวกับที่เจ้าหน้าที่พิมพ์ "ออกสติกเกอร์ <เลข> โอน"
@@ -8353,6 +8419,23 @@ const worker = {
             continue;
           }
 
+          const renewalDepositState = (imageUserId && ev?.source?.type === 'user')
+            ? await getActiveRenewalDepositState(env, imageUserId)
+            : null;
+          if (renewalDepositState) {
+            const ok = await notifyN8nRenewalDeposit(env, buildRenewalDepositSlipPayload(ev, renewalDepositState));
+            if (ok) ctx.waitUntil(kvDel(env, getRenewalDepositStateKey(imageUserId)));
+            const ackText = ok
+              ? `ได้รับสลิปค่าประกันส่วนต่าง ห้อง ${renewalDepositState.roomId} แล้วครับ กำลังตรวจสอบ`
+              : 'ได้รับรูปแล้ว แต่ส่งเข้าระบบไม่สำเร็จ กรุณาส่งรูปสลิปอีกครั้งครับ';
+            if (replyToken) {
+              await lineReply(env.LINE_ACCESS_TOKEN, replyToken, [{ type: 'text', text: ackText }]).catch(console.error);
+            } else if (chatId) {
+              ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
+            }
+            continue;
+          }
+
           const billManualState = imageUserId ? await getActiveBillManualPaymentState(env, imageUserId) : null;
           if (billManualState) {
             const slipPayload = buildBillManualSlipPayload(ev, billManualState);
@@ -9303,6 +9386,90 @@ async function getActiveBillManualPaymentState(env, lineUserId) {
   }
 
   return state;
+}
+
+function getRenewalDepositStateKey(lineUserId) {
+  const userId = String(lineUserId || '').trim();
+  return userId ? `${RENEWAL_DEPOSIT_KEY_PREFIX}${userId}` : '';
+}
+
+/** RTP-<room>-RI-<room>-<date>; anything else is not a deposit task id. */
+function parseRenewalDepositTaskId(value) {
+  const taskId = String(value || '').trim();
+  const match = taskId.match(/^RTP-([A-Z0-9]+)-(RI-[A-Z0-9]+-\d{4}-\d{2}-\d{2})$/i);
+  if (!match) return null;
+  return { taskId, roomId: match[1].toUpperCase(), inquiryId: match[2] };
+}
+
+function getRenewalDepositAction(parsed) {
+  const action = String(parsed?.action || '').trim();
+  if (action !== RENEWAL_DEPOSIT_PAY_ACTION && action !== RENEWAL_DEPOSIT_APPROVE_ACTION) return null;
+  const task = parseRenewalDepositTaskId(parsed?.task);
+  return task ? { action, ...task } : null;
+}
+
+function buildRenewalDepositState(event, task, nowMs = Date.now()) {
+  return {
+    stateType: 'renewal_deposit_payment',
+    taskId: task.taskId,
+    roomId: task.roomId,
+    inquiryId: task.inquiryId,
+    lineUserId: String(event?.source?.userId || '').trim(),
+    chatId: getChatId(event),
+    clickedAt: new Date(nowMs).toISOString(),
+    expiresAt: new Date(nowMs + RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS * 1000).toISOString()
+  };
+}
+
+function buildRenewalDepositSlipPayload(event, state, receivedAt = new Date().toISOString()) {
+  return {
+    action: 'SLIP',
+    source: 'LINE',
+    taskId: String(state?.taskId || ''),
+    inquiryId: String(state?.inquiryId || ''),
+    roomId: String(state?.roomId || ''),
+    lineUserId: String(event?.source?.userId || ''),
+    chatId: getChatId(event),
+    imageMessageId: String(event?.message?.id || ''),
+    receivedAt
+  };
+}
+
+async function getActiveRenewalDepositState(env, lineUserId) {
+  const key = getRenewalDepositStateKey(lineUserId);
+  if (!key) return null;
+  const state = await kvGet(env, key);
+  if (!state) return null;
+  const expiresAtMs = Date.parse(String(state?.expiresAt || ''));
+  if (Number.isFinite(expiresAtMs) && expiresAtMs <= Date.now()) {
+    await kvDel(env, key);
+    return null;
+  }
+  return state;
+}
+
+async function notifyN8nRenewalDeposit(env, payload) {
+  const url = env.N8N_RENEWAL_DEPOSIT_URL || DEFAULT_N8N_RENEWAL_DEPOSIT_URL;
+  const secret = String(env.RENEWAL_DEPOSIT_SECRET || '').trim();
+  if (!secret) {
+    console.error('notifyN8nRenewalDeposit: RENEWAL_DEPOSIT_SECRET is not set');
+    return false;
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-rd-secret': secret },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      console.error('notifyN8nRenewalDeposit: non-200 response', res.status, text.slice(0, 200));
+    }
+    return res.ok;
+  } catch (err) {
+    console.error('notifyN8nRenewalDeposit error', err);
+    return false;
+  }
 }
 
 function buildCleaningBillingPostbackPayload(event, parsed, postbackData, receivedAt = new Date().toISOString()) {
@@ -12817,6 +12984,12 @@ export const __testables = {
   buildBillManualPaymentState,
   buildBillManualSlipPayload,
   getN8nBillManualWebhookUrl,
+  getRenewalDepositStateKey,
+  parseRenewalDepositTaskId,
+  getRenewalDepositAction,
+  buildRenewalDepositState,
+  buildRenewalDepositSlipPayload,
+  RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS,
   parseKeyRent,
   parseKeyKeyword,
   normalizeCommandText,

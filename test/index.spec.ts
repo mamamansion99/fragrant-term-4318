@@ -973,6 +973,36 @@ describe('Worker routes', () => {
 		expect(payload.event.message.id).toBe('image-message-id');
 	});
 
+	it('recognises renewal deposit buttons only with a well-formed task id', () => {
+		const pay = __testables.getRenewalDepositAction({ action: 'RENEWAL_DEPOSIT_PAY', task: 'RTP-A204-RI-A204-2026-11-30' }) as Record<string, any>;
+		expect(pay).toMatchObject({ action: 'RENEWAL_DEPOSIT_PAY', taskId: 'RTP-A204-RI-A204-2026-11-30', roomId: 'A204', inquiryId: 'RI-A204-2026-11-30' });
+		expect(__testables.getRenewalDepositAction({ action: 'RENEWAL_DEPOSIT_APPROVE', task: 'RTP-B104-RI-B104-2026-11-30' })).toMatchObject({ roomId: 'B104' });
+		expect(__testables.getRenewalDepositAction({ action: 'RENEWAL_DEPOSIT_PAY', task: 'RTI-A204-RI-A204-2026-11-30' })).toBeNull();
+		expect(__testables.getRenewalDepositAction({ action: 'BILL_PAY_CLICK', task: 'RTP-A204-RI-A204-2026-11-30' })).toBeNull();
+	});
+
+	it('opens a 30-minute renewal deposit window and forwards the next image', () => {
+		const task = __testables.parseRenewalDepositTaskId('RTP-A204-RI-A204-2026-11-30');
+		const state = __testables.buildRenewalDepositState(
+			{ source: { type: 'user', userId: 'Utenant' } } as any,
+			task,
+			Date.parse('2026-10-18T10:00:00.000Z')
+		) as Record<string, any>;
+		expect(__testables.getRenewalDepositStateKey('Utenant')).toBe('renewal-deposit:payment:Utenant');
+		expect(__testables.RENEWAL_DEPOSIT_PAYMENT_TTL_SECONDS).toBe(1800);
+		expect(state).toMatchObject({ taskId: 'RTP-A204-RI-A204-2026-11-30', roomId: 'A204', lineUserId: 'Utenant', chatId: 'Utenant', expiresAt: '2026-10-18T10:30:00.000Z' });
+
+		const payload = __testables.buildRenewalDepositSlipPayload(
+			{ source: { type: 'user', userId: 'Utenant' }, message: { type: 'image', id: 'img-1' } } as any,
+			state,
+			'2026-10-18T10:05:00.000Z'
+		);
+		expect(payload).toEqual({
+			action: 'SLIP', source: 'LINE', taskId: 'RTP-A204-RI-A204-2026-11-30', inquiryId: 'RI-A204-2026-11-30',
+			roomId: 'A204', lineUserId: 'Utenant', chatId: 'Utenant', imageMessageId: 'img-1', receivedAt: '2026-10-18T10:05:00.000Z'
+		});
+	});
+
 	it('uses bill-manual n8n webhook URL by default and env override when provided', () => {
 		expect(__testables.getN8nBillManualWebhookUrl({} as any)).toBe(
 			'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received'
