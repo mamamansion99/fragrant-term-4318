@@ -613,10 +613,10 @@ describe('Worker routes', () => {
 		expect(wifi.fastReply[0].text).toContain('WiFi');
 
 		for (const t of ['มีว่างไหมครับ', 'หอพักเต็มรึยังครับ', 'ยังมีก้องว่างไหมคะ', 'เต็มยังครับ', 'ห้องว่างตอนนี้มีอยู่มั้ยครับ']) {
-			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('ห้องเต็มแต่มีคนออกเรื่อยๆ');
+			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('ตอนนี้มีห้องว่างครับ');
 		}
 		for (const t of ['พี่ก้อยว่างวันไหนบ้างคะ', 'ว่างค่ะ', 'พรุ่งนี้ไม่ว่างค่ะ']) {
-			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('ห้องเต็มแต่มีคนออกเรื่อยๆ');
+			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('ตอนนี้มีห้องว่างครับ');
 		}
 
 		for (const t of ['ราคาเท่าไหร่คะ', 'เดือนละเท่าไหร่คะ', 'ขอทราบราคาด้วยครับ', 'ราคาห้อง']) {
@@ -2820,9 +2820,9 @@ describe('Worker routes', () => {
 
 		expect(messages).toHaveLength(2);
 		expect(messages[0].text).toContain('Standard (เฟอร์ครบ): 4,000 บ./ด.');
-		expect(messages[1].text).toContain('ตอนนี้ห้องเต็มแต่มีคนออกเรื่อยๆ');
-		// The live link comes from PREBOOK_URL in wrangler.jsonc (the LIFF entry since f84d738).
-		expect(messages[1].text).toContain(String(env.PREBOOK_URL));
+		expect(messages[1].text).toContain('ตอนนี้มีห้องว่างครับ');
+		expect(messages[1].text).toContain('ทำอาชีพอะไรอยู่');
+		expect(messages[1].text).not.toContain(String(env.PREBOOK_URL));
 	});
 
 	it('sends the new rate sheet first from the ภาพ + เรทราคา button', () => {
