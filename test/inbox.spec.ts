@@ -42,6 +42,12 @@ describe('inbox', () => {
 			['OUT', 'staff:Ma', 'ว่างธันวาครับ']
 		]);
 
+		// Searching a room finds the tenant from any tab.
+		await e.INBOX_DB.prepare("UPDATE contacts SET contact_type = 'TENANT', room_id = 'A102' WHERE user_id = ?1").bind(CUSTOMER).run();
+		const found = (await get('/inbox/api/chats?f=lead&q=a102', token)).body.chats;
+		expect(found.map((c: any) => c.u)).toContain(CUSTOMER);
+		expect((await get('/inbox/api/chats?f=lead', token)).body.chats.some((c: any) => c.u === CUSTOMER)).toBe(false);
+
 		await recordInboxEvent(e, inbound('ขอบคุณค่ะ', 'log-2', '2026-10-24T10:07:00.000Z'));
 		const waiting = (await get('/inbox/api/chats?f=waiting', token)).body.chats;
 		expect(waiting.some((c: any) => c.u === CUSTOMER)).toBe(true);

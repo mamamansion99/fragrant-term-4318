@@ -163,9 +163,11 @@ async function listChats(env, url) {
   const q = (url.searchParams.get('q') || '').trim();
   const where = [];
   const binds = [];
-  if (filter === 'lead') where.push("COALESCE(contact_type, 'NON_TENANT') = 'NON_TENANT'");
-  if (filter === 'tenant') where.push("contact_type = 'TENANT'");
-  if (filter === 'waiting') where.push("last_author = 'customer'");
+  // A search looks through every chat; staff type a room like a102 from the
+  // default ลูกค้าใหม่ tab, where tenants are not listed.
+  if (!q && filter === 'lead') where.push("COALESCE(contact_type, 'NON_TENANT') = 'NON_TENANT'");
+  if (!q && filter === 'tenant') where.push("contact_type = 'TENANT'");
+  if (!q && filter === 'waiting') where.push("last_author = 'customer'");
   if (q) {
     binds.push(`%${q}%`);
     where.push(`(display_name LIKE ?${binds.length} OR room_id LIKE ?${binds.length} OR tenant_name LIKE ?${binds.length} OR last_text LIKE ?${binds.length})`);
