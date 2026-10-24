@@ -10341,8 +10341,9 @@ async function quickKeywordReply(text, env, userId) {
   }
 
   if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
+    // The photo cards answer most of it; the other topics stay one tap away
+    // on the rate sheet. 162 leads tapped this in a month and saw no photos.
     const quickItems = [
-      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' },
       { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
       { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
       { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
@@ -10363,13 +10364,8 @@ async function quickKeywordReply(text, env, userId) {
         }
       }));
 
-    return [
-      {
-        type: 'text',
-        text: 'เลือกหัวข้อรายละเอียดห้องที่อยากดูได้เลยค่ะ 👇',
-        quickReply: { items: quickItems }
-      }
-    ];
+    const [cards, priceSheet] = buildRoomPhotoReply();
+    return [cards, { ...priceSheet, quickReply: { items: quickItems } }];
   }
 
   const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'โลเคชั่น', 'โลเคชัน', 'โลเคชั้น', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];

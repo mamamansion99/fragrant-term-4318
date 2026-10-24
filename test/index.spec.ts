@@ -594,6 +594,18 @@ describe('Worker routes', () => {
 			expect(photo.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image']);
 			expect(visitHours(photo), t).toBe(false);
 		}
+		// The rich menu's "รายละเอียดห้อง" answers with the cards; the other
+		// topics ride on the rate sheet, which stays unmodified for photo asks.
+		for (const t of ['รายละเอียดห้อง', 'ขอรายละเอียดหน่อยนะครับ']) {
+			const detail = await kind(t);
+			expect(detail.route, t).toBe('quick_keyword');
+			expect(detail.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image']);
+			expect(photoCarousel(detail).contents.contents).toHaveLength(4);
+			const topics = detail.fastReply[1].quickReply.items.map((i: any) => i.action.data);
+			expect(topics, t).toContain('act=ROOM_UTIL');
+			expect(topics, t).not.toContain('act=ROOM_RENT_IMG');
+		}
+		expect((await kind('ขอดูรูปห้องหน่อย')).fastReply[1].quickReply).toBeUndefined();
 		// Chat "ขอดูห้อง" could mean either; a date or coming-over word means a visit.
 		for (const t of ['ขอดูห้องหน่อยค่ะ', 'ขอดูห้องโดยประมาณได้มั้ยคะ', 'ขอดูตัวอย่างห้องค่ะ']) {
 			const r = await kind(t);
