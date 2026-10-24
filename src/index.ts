@@ -8923,6 +8923,19 @@ function roomDetailByKey(key) {
   };
   return map[key] || 'เลือกรายละเอียดหัวข้อจาก Quick Reply ได้ค่ะ';
 }
+
+const ROOM_DETAIL_MENU_TEXT = 'รายละเอียดห้อง';
+const ROOM_DETAIL_ALL_KEYS = [
+  'ROOM_RENT', 'ROOM_UTIL', 'ROOM_SIZE', 'ROOM_FURNITURE',
+  'ROOM_APPLIANCE', 'ROOM_DEPOSIT', 'ROOM_PARKING', 'ROOM_EARLIEST'
+];
+
+function buildRoomDetailAllText() {
+  return ROOM_DETAIL_ALL_KEYS
+    .map((key) => roomDetailByKey(key).split('\n').map((line) => line.trim()).join('\n'))
+    .join('\n\n');
+}
+
 function fixDetailByKey(key) {
   const map = {
     FIX_WATER: '[น้ำ/ท่อรั่ว]\nปิดวาล์วน้ำชั่วคราว (ถ้าเข้าถึงได้) และถ่ายรูปจุดรั่ว แจ้งเลขห้อง+เวลาสะดวก ทีมช่างจะนัดเข้าซ่อมครับ/ค่ะ',
@@ -10340,10 +10353,16 @@ async function quickKeywordReply(text, env, userId) {
     ];
   }
 
+  // The rich menu button always sends exactly this text. Leads tapped it 162
+  // times in a month and got a topic picker with no photos, so answer
+  // everything in one go: the cards, the rate sheet and every topic.
+  if (normalized.replace(/\s+/g, '') === ROOM_DETAIL_MENU_TEXT) {
+    return [...buildRoomPhotoReply(), { type: 'text', text: buildRoomDetailAllText() }];
+  }
+
   if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
-    // The photo cards answer most of it; the other topics stay one tap away
-    // on the rate sheet. 162 leads tapped this in a month and saw no photos.
     const quickItems = [
+      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' },
       { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
       { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
       { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
@@ -10364,8 +10383,13 @@ async function quickKeywordReply(text, env, userId) {
         }
       }));
 
-    const [cards, priceSheet] = buildRoomPhotoReply();
-    return [cards, { ...priceSheet, quickReply: { items: quickItems } }];
+    return [
+      {
+        type: 'text',
+        text: 'เลือกหัวข้อรายละเอียดห้องที่อยากดูได้เลยค่ะ 👇',
+        quickReply: { items: quickItems }
+      }
+    ];
   }
 
   const locationThaiTriggers = ['ที่ตั้ง', 'แผนที่', 'โลเคชั่น', 'โลเคชัน', 'โลเคชั้น', 'อยู่แถว', 'อยู่ตรงไหน', 'อยู่ไหน', 'แถวไหน', 'ซอยไหน', 'พิกัด', 'ไปยังไง', 'ไปยังไหน', 'เดินทางยังไง', 'เดินทางไป', 'ทางไป'];
