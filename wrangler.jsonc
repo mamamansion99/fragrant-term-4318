@@ -69,6 +69,14 @@
     "N8N_CONTINUE_TERM_REPLY_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/CONTINUE_TERM_REPLY",
     "N8N_RENEWAL_POSTBACK_URL": "https://n8n.srv1112305.hstgr.cloud/webhook/renewal-postback"
   },
+  "d1_databases": [
+    {
+      "binding": "INBOX_DB",
+      "database_name": "mm-inbox",
+      "database_id": "117809ad-1ffe-4940-a855-76c19f2d8768",
+      "migrations_dir": "migrations"
+    }
+  ],
   "kv_namespaces": [
     {
       "binding": "KV",

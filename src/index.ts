@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, recordInboxEvent, recordInboxOutbound } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -4509,6 +4510,10 @@ const worker = {
       return serveSignedLineMedia(request, env, url);
     }
 
+    if (isInboxPath(url.pathname)) {
+      return handleInboxRequest(request, env, url, { linePush, repairMediaUrl, chatLogContext });
+    }
+
     // Frontend API → proxy to GAS #2
     if (url.pathname.startsWith('/api/moveout')) {
       // base GAS #2 URL (must be your Web App /exec)
@@ -6980,6 +6985,20 @@ const worker = {
             });
             ctx.waitUntil(keyForgotTask);
             await keyForgotStateReady;
+            continue;
+          }
+
+          // Staff ask for their personal inbox link in a 1:1 chat with the OA.
+          if (ev.source?.type === 'user' && /^(inbox|อินบ็อกซ์|อินบอกซ์)$/i.test(textIn.trim()) && inboxStaff(env)[userId]) {
+            tagEventLog('inbox_link');
+            const inboxToken = await issueInboxToken(env, userId);
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              `Mama Inbox ของ ${inboxStaff(env)[userId]} (ลิงก์ส่วนตัว ใช้ได้ 30 วัน ห้ามส่งต่อ)\n${currentWorkerOrigin() || 'https://fragrant-term-4318.mamamansion99.workers.dev'}/inbox?t=${inboxToken}`,
+              'inbox_link_reply_failed'
+            );
             continue;
           }
 
@@ -12372,6 +12391,9 @@ function flushEventLog(env, ctx, log) {
   ctx.waitUntil(
     notifyN8nChatLog(env, payload).catch((err) => console.error('chat_log_inbound_failed', err))
   );
+  ctx.waitUntil(
+    recordInboxEvent(env, payload).catch((err) => console.error('inbox_inbound_failed', err))
+  );
 }
 
 function summarizeOutboundMessages(messages) {
@@ -12410,10 +12432,14 @@ function logOutboundMessages(kind, to, messages) {
     logId: inbound ? `${inbound.logId}:out${seq}` : `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     inReplyTo: inbound?.logId || '',
     contactHint: userId && chatLogStaffIds(store.env).has(userId) ? 'STAFF' : '',
-    handler: inbound?.handler || defaultEventHandler({ type: inbound?.eventType, message: { type: inbound?.messageType } }) || 'worker'
+    handler: store.handler || inbound?.handler || defaultEventHandler({ type: inbound?.eventType, message: { type: inbound?.messageType } }) || 'worker'
   };
   store.ctx.waitUntil(
     notifyN8nChatLog(store.env, payload).catch((err) => console.error('chat_log_outbound_failed', err))
+  );
+  // store.author is set by the inbox when a staff member sends.
+  store.ctx.waitUntil(
+    recordInboxOutbound(store.env, payload, store.author || 'bot').catch((err) => console.error('inbox_outbound_failed', err))
   );
 }
 
