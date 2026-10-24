@@ -4062,9 +4062,9 @@ function parseMaidRoomRelay(text) {
   return { building, roomId: `${building}${match[2]}`, message: match[3].trim() };
 }
 
-function isMaidRelayGroup(env, chatId) {
-  const extra = String(env.MAID_RELAY_GROUP_ID || '').trim();
-  return MAID_RELAY_GROUP_IDS.includes(chatId) || (extra !== '' && extra === chatId);
+// Only the MM เจ้าหน้าที่ group may send room relays. 1:1 chats and other groups never match.
+function isMaidRelayGroup(ev, chatId) {
+  return ev?.source?.type === 'group' && MAID_RELAY_GROUP_IDS.includes(String(ev.source.groupId || ''));
 }
 
 async function lookupRoomOccupant(env, roomId) {
@@ -7230,7 +7230,7 @@ const worker = {
             continue;
           }
 
-          const maidRelay = isMaidRelayGroup(env, chatId) ? parseMaidRoomRelay(textIn) : null;
+          const maidRelay = isMaidRelayGroup(ev, chatId) ? parseMaidRoomRelay(textIn) : null;
           if (maidRelay) {
             await relayRoomMessageToTenant(env, replyToken, chatId, maidRelay);
             continue;
@@ -13236,6 +13236,7 @@ export const __testables = {
   buildParkingOutsiderPhonePayload,
   parseRoomToken,
   parseMaidRoomRelay,
+  isMaidRelayGroup,
   parseVehicleToken,
   parseCarCommand,
   parseCheckinHorganiceCommand,

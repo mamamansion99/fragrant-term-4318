@@ -3819,3 +3819,16 @@ describe('maid room relay parser', () => {
 		expect(__testables.parseMaidRoomRelay('งาน')).toBeNull();
 	});
 });
+
+describe('maid room relay group gate', () => {
+	it('accepts only the MM เจ้าหน้าที่ group', () => {
+		const groupEv = { source: { type: 'group', groupId: 'C355d5b5c8a01d88bf61296b4e10f1575', userId: 'U1' } };
+		expect(__testables.isMaidRelayGroup(groupEv, groupEv.source.groupId)).toBe(true);
+
+		const otherGroup = { source: { type: 'group', groupId: 'Cdf017804cb8d6f4a8e02c831d700e4b5' } };
+		expect(__testables.isMaidRelayGroup(otherGroup, otherGroup.source.groupId)).toBe(false);
+
+		const oneToOne = { source: { type: 'user', userId: 'U1' } };
+		expect(__testables.isMaidRelayGroup(oneToOne, 'U1')).toBe(false);
+	});
+});
