@@ -4046,6 +4046,78 @@ export class ActiveFlowOwner {
 }
 
 /* =========================
+ * Room relay: a staff member types "B214 <message>" in the staff group and the
+ * message goes 1:1 to the tenant who lives in that room. n8n (MM_Maid_Relay_Lookup)
+ * finds the occupant in MM_V2 Overview; the worker pushes it and posts a receipt.
+ * ========================= */
+const MAID_RELAY_GROUP_IDS = ['C355d5b5c8a01d88bf61296b4e10f1575']; // MM เจ้าหน้าที่
+const DEFAULT_N8N_MAID_RELAY_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/maid_relay';
+const MAID_RELAY_LOOKUP_TIMEOUT_MS = 15 * 1000;
+const MAID_ROOM_RELAY_RE = /^([AB])\s*-?\s*(\d{3})\s+([\s\S]+)$/i;
+
+function parseMaidRoomRelay(text) {
+  const match = MAID_ROOM_RELAY_RE.exec(String(text || '').trim());
+  if (!match) return null;
+  const building = match[1].toUpperCase();
+  return { building, roomId: `${building}${match[2]}`, message: match[3].trim() };
+}
+
+function isMaidRelayGroup(env, chatId) {
+  const extra = String(env.MAID_RELAY_GROUP_ID || '').trim();
+  return MAID_RELAY_GROUP_IDS.includes(chatId) || (extra !== '' && extra === chatId);
+}
+
+async function lookupRoomOccupant(env, roomId) {
+  const url = env.N8N_MAID_RELAY_WEBHOOK_URL || DEFAULT_N8N_MAID_RELAY_WEBHOOK_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ roomId }),
+    signal: AbortSignal.timeout(MAID_RELAY_LOOKUP_TIMEOUT_MS)
+  });
+  if (!res.ok) throw new Error(`maid relay lookup http ${res.status}`);
+  return res.json();
+}
+
+async function relayRoomMessageToTenant(env, replyToken, chatId, relay) {
+  let occupant;
+  try {
+    occupant = await lookupRoomOccupant(env, relay.roomId);
+  } catch (err) {
+    console.error('maid_relay_lookup_failed', { roomId: relay.roomId, error: String(err?.message || err) });
+    return replyOrPushText(env, replyToken, chatId, `ค้นข้อมูลห้อง ${relay.roomId} ไม่สำเร็จค่ะ ลองใหม่อีกครั้ง`, 'maid_relay_lookup_reply_failed');
+  }
+
+  if (!occupant || occupant.ok !== true || !occupant.lineUserId) {
+    return replyOrPushText(
+      env,
+      replyToken,
+      chatId,
+      `ส่งไม่ได้ค่ะ ห้อง ${relay.roomId} ยังไม่มีผู้เช่าที่ผูก LINE`,
+      'maid_relay_no_tenant_reply_failed'
+    );
+  }
+
+  let delivered = true;
+  try {
+    await linePush(env.LINE_ACCESS_TOKEN, occupant.lineUserId, [
+      { type: 'text', text: `📢 แจ้งจาก Mama Mansion (ห้อง ${relay.roomId})\n${relay.message}` }
+    ]);
+  } catch (err) {
+    delivered = false;
+    console.error('maid_relay_push_failed', { roomId: relay.roomId, error: String(err?.message || err) });
+  }
+
+  const receipt = delivered
+    ? `ส่งถึงห้อง ${relay.roomId} (${occupant.tenantName || 'ผู้เช่า'}) แล้วค่ะ`
+    : `ส่งถึงห้อง ${relay.roomId} ไม่สำเร็จค่ะ ลองใหม่อีกครั้ง`;
+  return replyOrPushText(env, replyToken, chatId, receipt, 'maid_relay_receipt_failed');
+}
+
+/* =========================
  * Maid task board
  *
  * A group chat cannot carry a LINE rich menu, so the board is reached by
@@ -7155,6 +7227,12 @@ const worker = {
           if (isMaidBoardCommand(textIn)) {
             const boardMsg = await buildMaidBoardMessage(env);
             await replyOrPushMessages(env, replyToken, chatId, [boardMsg], 'maid_board_reply_failed');
+            continue;
+          }
+
+          const maidRelay = isMaidRelayGroup(env, chatId) ? parseMaidRoomRelay(textIn) : null;
+          if (maidRelay) {
+            await relayRoomMessageToTenant(env, replyToken, chatId, maidRelay);
             continue;
           }
 
@@ -13157,6 +13235,7 @@ export const __testables = {
   isValidParkingPhone,
   buildParkingOutsiderPhonePayload,
   parseRoomToken,
+  parseMaidRoomRelay,
   parseVehicleToken,
   parseCarCommand,
   parseCheckinHorganiceCommand,

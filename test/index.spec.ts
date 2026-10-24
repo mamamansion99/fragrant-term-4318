@@ -3802,3 +3802,20 @@ describe('ID card window opened by the customer', () => {
 		}
 	});
 });
+
+describe('maid room relay parser', () => {
+	it('parses building + room + message from a staff group line', () => {
+		expect(__testables.parseMaidRoomRelay('B214 ขอให้เช็ดห้องน้ำก่อนบ่ายสอง')).toEqual({
+			building: 'B',
+			roomId: 'B214',
+			message: 'ขอให้เช็ดห้องน้ำก่อนบ่ายสอง'
+		});
+		expect(__testables.parseMaidRoomRelay('a-101   ลูกค้าขอเปลี่ยนผ้า')?.roomId).toBe('A101');
+	});
+
+	it('ignores lines without a message or outside buildings A/B', () => {
+		expect(__testables.parseMaidRoomRelay('B214')).toBeNull();
+		expect(__testables.parseMaidRoomRelay('C301 ข้อความ')).toBeNull();
+		expect(__testables.parseMaidRoomRelay('งาน')).toBeNull();
+	});
+});
