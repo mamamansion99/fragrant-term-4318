@@ -8924,7 +8924,26 @@ function roomDetailByKey(key) {
   return map[key] || 'เลือกรายละเอียดหัวข้อจาก Quick Reply ได้ค่ะ';
 }
 
-const ROOM_DETAIL_MENU_TEXT = 'รายละเอียดห้อง';
+// Phrasings below come from LINE_CHAT_LOGS (Apr–Oct 2026).
+const ROOM_DETAIL_WORD_RE = /(รายละเอียด|ข้อมูล(?:ห้อง|หอ|ที่พัก)|room\s*details?|more\s*info|information)/i;
+const ROOM_DETAIL_ASK_RE = /(ขอ|ทราบ|ถาม|อยาก|ดู|ห้อง|หอ|ที่พัก|room|dorm|would\s*like|know)/i;
+// "สอบถามห้องพักค่ะ", "ขออนุญาตสอบถามห้องค่ะ", "สนใจห้องมาตรฐานค่ะ",
+// "สนใจหอพักรายเดือนครับ". A bare "สนใจค่ะ" answers whatever was offered last.
+const ROOM_DETAIL_OPENER_RE = /(สอบถาม(?:เรื่อง)?(?:ห้อง|หอ|ที่พัก)|สนใจ(?:ห้อง|หอ|ที่พัก|เช่า|พัก))/;
+const ROOM_DETAIL_OPENER_MAX_LENGTH = 60;
+// Tenants and finished conversations: "ช่วยแจ้งรายละเอียดการแจ้งออก",
+// "กรอกข้อมูลเรียบร้อยแล้ว", "ขอบคุณสำหรับรายละเอียด", "ขอรายละเอียดที่อยู่".
+const ROOM_DETAIL_EXCLUDE_RE = /(แจ้งออก|ย้ายออก|การตรวจ|ตรวจสอบ|ที่อยู่|บิล|ขอบคุณ(?:มาก)?สำหรับ|กรอก|ฝาก|ลงชื่อ|แจ้งรายละเอียด|ประวัติ|รหัส|ซ่อม|(?<!ค่า)จอง|ที่จอด|จอดรถ|ตู้เย็น|การ์ด|กุญแจ)/;
+
+function isRoomDetailAsk(text) {
+  const compact = String(text || '').replace(/\s+/g, '');
+  if (!compact || ROOM_DETAIL_EXCLUDE_RE.test(compact)) return false;
+  if (ROOM_DETAIL_WORD_RE.test(text) || ROOM_DETAIL_WORD_RE.test(compact)) {
+    return ROOM_DETAIL_ASK_RE.test(text) || compact.length <= 15;
+  }
+  return compact.length <= ROOM_DETAIL_OPENER_MAX_LENGTH && ROOM_DETAIL_OPENER_RE.test(compact);
+}
+
 const ROOM_DETAIL_ALL_KEYS = [
   'ROOM_RENT', 'ROOM_UTIL', 'ROOM_SIZE', 'ROOM_FURNITURE',
   'ROOM_APPLIANCE', 'ROOM_DEPOSIT', 'ROOM_PARKING', 'ROOM_EARLIEST'
@@ -10132,6 +10151,14 @@ async function quickKeywordReply(text, env, userId) {
   // canned answer that happens to share a word ("ช่วยดูหน่อย" is not a visit).
   if (detectRepairIntent(normalized) || isUrgentRepairText(normalized)) return null;
 
+  // One reply answers everything: the cards, the rate sheet and every topic.
+  // The rich menu sends "รายละเอียดห้อง"; leads also type their own version.
+  // It goes first so "ขอดูรายละเอียดห้องพัก" is not taken as a visit, but a
+  // question about free rooms keeps its own flow.
+  if (isRoomDetailAsk(normalized) && !isAvailabilityQuestion(normalized) &&
+      (/รายละเอียด/.test(normalized) || !isRoomVisitIntent(normalized))) {
+    return [...buildRoomPhotoReply(), { type: 'text', text: buildRoomDetailAllText() }];
+  }
   if (isRoomPhotoIntent(normalized)) {
     return buildRoomPhotoReply();
   }
@@ -10350,45 +10377,6 @@ async function quickKeywordReply(text, env, userId) {
     return [
       { type: 'text', text: templateAddress },
       { type: 'text', text: 'โปรดระบุเลขตึกและเลขห้องจริงของคุณทุกครั้ง เพื่อให้พัสดุส่งถึงอย่างถูกต้องนะคะ' }
-    ];
-  }
-
-  // The rich menu button always sends exactly this text. Leads tapped it 162
-  // times in a month and got a topic picker with no photos, so answer
-  // everything in one go: the cards, the rate sheet and every topic.
-  if (normalized.replace(/\s+/g, '') === ROOM_DETAIL_MENU_TEXT) {
-    return [...buildRoomPhotoReply(), { type: 'text', text: buildRoomDetailAllText() }];
-  }
-
-  if (normalized.includes('รายละเอียด') || includesAny(lower, ['room detail', 'room details', 'details', 'detail'])) {
-    const quickItems = [
-      { label: 'ภาพ + เรทราคา', act: 'ROOM_RENT_IMG' },
-      { label: 'ค่าน้ำ-ไฟ/เน็ต', act: 'ROOM_UTIL' },
-      { label: 'ที่จอดรถ', act: 'ROOM_PARKING' },
-      { label: 'ขนาด/เลย์เอาต์', act: 'ROOM_SIZE' },
-      { label: 'เฟอร์นิเจอร์', act: 'ROOM_FURNITURE' },
-      { label: 'เครื่องใช้ไฟฟ้า', act: 'ROOM_APPLIANCE' },
-      { label: 'ค่าเช่า', act: 'ROOM_RENT' },
-      { label: 'เงินประกัน/สัญญา', act: 'ROOM_DEPOSIT' },
-      { label: 'เข้าอยู่เร็วสุด', act: 'ROOM_EARLIEST' }
-    ]
-      .filter(Boolean)
-      .map(({ label, act }) => ({
-        type: 'action',
-        action: {
-          type: 'postback',
-          label,
-          data: `act=${act}`,
-          displayText: label
-        }
-      }));
-
-    return [
-      {
-        type: 'text',
-        text: 'เลือกหัวข้อรายละเอียดห้องที่อยากดูได้เลยค่ะ 👇',
-        quickReply: { items: quickItems }
-      }
     ];
   }
 

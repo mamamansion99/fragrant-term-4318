@@ -594,21 +594,33 @@ describe('Worker routes', () => {
 			expect(photo.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image']);
 			expect(visitHours(photo), t).toBe(false);
 		}
-		// The rich menu's "รายละเอียดห้อง" answers everything in one reply.
-		const detail = await kind('รายละเอียดห้อง');
-		expect(detail.route).toBe('quick_keyword');
-		expect(detail.fastReply.map((m: any) => m.type)).toEqual(['flex', 'image', 'text']);
-		expect(photoCarousel(detail).contents.contents).toHaveLength(4);
-		const info = detail.fastReply[2].text;
+		// The rich menu's "รายละเอียดห้อง" and leads' own versions of it get
+		// everything in one reply.
+		const isDetailPack = (r: any) => r.fastReply?.length === 3 &&
+			r.fastReply[2].type === 'text' && String(r.fastReply[2].text).startsWith('[ค่าเช่า]');
+		for (const t of ['รายละเอียดห้อง', 'ขอรายละเอียดหน่อยนะครับ', 'ขอดูรายละเอียดห้องพักหน่อยครับ',
+			'สอบถามห้องพักค่ะ', 'ขออนุญาตสอบถามห้องค่ะ', 'สนใจห้องมาตรฐานค่ะ', 'อยากทราบข้อมูลหอพักคะ',
+			'เพื่อนสนใจหอเลยรบกวนถามรายละเอียดค่าใช้จ่ายต่างๆค่ะ ขอบคุณค่ะ',
+			'I am finding the room to rent per month and i would like to know more information.']) {
+			const detail = await kind(t);
+			expect(detail.route, t).toBe('quick_keyword');
+			expect(detail.fastReply.map((m: any) => m.type), t).toEqual(['flex', 'image', 'text']);
+			expect(photoCarousel(detail).contents.contents, t).toHaveLength(4);
+			expect(isDetailPack(detail), t).toBe(true);
+		}
+		const info = (await kind('รายละเอียดห้อง')).fastReply[2].text;
 		for (const heading of ['[ค่าเช่า]', '[ค่าน้ำ-ไฟ/เน็ต]', '[ขนาด/เลย์เอาต์]', '[เฟอร์นิเจอร์]',
 			'[เครื่องใช้ไฟฟ้า]', '[เงินประกัน/สัญญา]', '[ที่จอดรถ]', '[เข้าอยู่เร็วสุด]']) {
 			expect(info).toContain(heading);
 		}
 		expect(info).not.toMatch(/\n +\S/);
-		// Typed variants keep the topic picker.
-		const typed = await kind('ขอรายละเอียดหน่อยนะครับ');
-		expect(typed.fastReply.map((m: any) => m.type)).toEqual(['text']);
-		expect(typed.fastReply[0].quickReply.items.map((i: any) => i.action.data)).toContain('act=ROOM_RENT_IMG');
+		// Tenants, finished conversations, free-room and booking asks are not it.
+		for (const t of ['ช่วยแจ้งรายละเอียดการแจ้งออกหน่อยค่ะ', 'กรอกข้อมูลเรียบร้อยแล้วค่ะ',
+			'โอเคครับขอบคุณสำหรับรายละเอียดยังไงค่อยแจ้งผมอีกทีครับ', 'หนูขอรายละเอียดที่อยู่ได้มั้ยคะ',
+			'สนใจค่ะ', 'สนใจจองห้องค่ะ', 'สนใจที่จอดรถครับ', 'สอบถามห้องพักค่ะ มีห้องว่างไหมคะ',
+			'สนใจครับ การ์ดกับกุญแจ ครับ', 'พวกรายละเอียดการตรวจสอบ']) {
+			expect(isDetailPack(await kind(t)), t).toBe(false);
+		}
 		// Chat "ขอดูห้อง" could mean either; a date or coming-over word means a visit.
 		for (const t of ['ขอดูห้องหน่อยค่ะ', 'ขอดูห้องโดยประมาณได้มั้ยคะ', 'ขอดูตัวอย่างห้องค่ะ']) {
 			const r = await kind(t);
