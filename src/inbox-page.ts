@@ -68,7 +68,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .b{max-width:80%;padding:8px 12px;border-radius:18px;white-space:pre-wrap;word-break:break-word;font-size:14.5px}
 .b .w{display:block;font-size:11px;color:var(--mute);margin-bottom:1px}
 .in{align-self:flex-start;background:var(--surface);border-top-left-radius:6px}
-.out{align-self:flex-end;background:var(--bot);border-top-right-radius:6px}.out.ai{background:var(--ai)}.out.me{background:var(--mine)}
+.out{align-self:flex-end;background:var(--bot);border-top-right-radius:6px}.out.ai{background:var(--ai)}.out.mine{background:var(--mine)}
 .b img{max-width:100%;border-radius:10px;display:block}
 .stk{max-width:120px;padding:2px}.stk img{width:110px;height:auto;display:block}
 .stk.in{background:none;border:0}.stk.out{background:none}
@@ -240,7 +240,7 @@ function renderThread(d) {
   for (const m of d.messages) {
     const dd = new Date(m.at).toLocaleDateString('th-TH', { weekday: 'short', day: 'numeric', month: 'short' });
     if (dd !== day) { html += '<div class="day">' + dd + '</div>'; day = dd; }
-    const me = m.author.startsWith('staff:'), side = m.dir === 'IN' ? 'in' : 'out ' + (me ? 'me' : m.author === 'ai' ? 'ai' : '');
+    const me = m.author.startsWith('staff:'), side = m.dir === 'IN' ? 'in' : 'out ' + (me ? 'mine' : m.author === 'ai' ? 'ai' : '');
     const label = m.dir === 'IN' ? '' : (me ? m.author.slice(6) : m.author === 'ai' ? 'AI' : 'บอท');
     const stk = stickerImg(m.text);
     if (stk) { html += '<div class="b stk ' + side + '"><img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'; continue; }
