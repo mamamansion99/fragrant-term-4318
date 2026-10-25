@@ -224,7 +224,8 @@ async function loadMe() {
   $('sAi').textContent = t.aiChats ? 'AI ช่วยตอบ ' + t.aiChats + ' แชท' : (t.myChats ? 'คุณตอบ ' + t.myChats + ' แชท' : '');
 }
 const FACTS = [['job', (v) => v, 'อาชีพ ?'], ['move_in', (v) => 'เข้าอยู่ ' + v, 'เข้าอยู่ ?'], ['people', (v) => v + ' คน', 'จำนวนคน ?'],
-  ['pets', (v) => v === true || v === 'ใช่' ? 'มีสัตว์เลี้ยง' : 'ไม่มีสัตว์เลี้ยง', 'สัตว์เลี้ยง ?'], ['contract_months', (v) => 'สัญญา ' + v + ' เดือน', '']];
+  ['pets', (v) => v === true || v === 'ใช่' ? 'มีสัตว์เลี้ยง' : 'ไม่มีสัตว์เลี้ยง', 'สัตว์เลี้ยง ?'], ['contract_months', (v) => 'สัญญา ' + v + ' เดือน', ''],
+  ['gender', (v) => v === 'female' ? 'ผู้หญิง (เดาจากคำพิมพ์)' : 'ผู้ชาย (เดาจากคำพิมพ์)', 'เพศ ?']];
 function renderThread(d) {
   thread = d;
   const c = d.contact || { u: current, type: 'NON_TENANT' };
