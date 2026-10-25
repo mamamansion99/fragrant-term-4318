@@ -127,6 +127,10 @@ describe('what counts as waiting for a reply', () => {
 		expect(needsReply('follow', '(follow)')).toBe(false);
 		expect(needsReply('postback', 'act=X')).toBe(false);
 		expect(needsReply('image', '(image)')).toBe(true);
+		// A rent slip goes to PAY_RENT, which answers by push outside the inbox.
+		expect(needsReply('image', '(image)', 'image:pay_rent')).toBe(false);
+		expect(needsReply('image', '(image)', 'message:image')).toBe(false);
+		expect(needsReply('image', '(image)', 'image:unclaimed')).toBe(true);
 	});
 
 	it('keeps a question waiting when a sticker follows it, and drops chats older than three days', async () => {

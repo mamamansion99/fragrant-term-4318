@@ -8784,6 +8784,7 @@ const worker = {
           if (payRentActive) {
             if (m.type === 'image') {
               // When slip arrives, forward to n8n payrent with context
+              tagEventLog('image:pay_rent');
               const rentUrl = getN8nPayRentUrl(env);
               if (rentUrl) {
                 const payload = {

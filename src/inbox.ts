@@ -73,8 +73,13 @@ async function staffFromRequest(env, request) {
 const ACK_RE = /^(?:ขอบคุณ(?:มาก)?(?:ๆ|นะ)?|ขอบใจ|thank(?:s| you)?|ok(?:ay)?|โอเค?|โอเคร|เค|ได้(?:เลย)?|รับทราบ|เรียบร้อย(?:แล้ว)?|ตกลง|ครับผม|ครับ|คับ|ค่ะ|คะ|ค่า|จ้า|จ้ะ|นะ|แล้ว|ไม่เป็นไร|[\s.!~^_]|[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}])+$/iu;
 const QUESTION_RE = /[?？]|ไหม|มั้ย|มัย|อะไร|ยังไง|อย่างไร|เท่าไ|กี่|ที่ไหน|เมื่อไ|ทำไม|หรือเปล่า|รึเปล่า|ได้ไหม|ช่วย/;
 
-export function needsReply(kind, text) {
+// A photo the worker handed to a flow (rent slip → PAY_RENT, deposit slip,
+// ID card, OCR) is that flow's to answer, and n8n answers by push, which never
+// reaches the inbox. Only a photo nothing picked up (the worker tags it
+// image:unclaimed) waits for a person. Videos and files have no such flows.
+export function needsReply(kind, text, handler = '') {
   if (['sticker', 'follow', 'unfollow', 'postback', 'join', 'leave', 'event'].includes(kind)) return false;
+  if (kind === 'image') return !handler || handler === 'image:unclaimed';
   if (kind !== 'text') return true;
   const t = String(text || '').trim();
   if (!t) return false;
@@ -112,7 +117,7 @@ async function touchContact(db, userId, ts, text, author, actionable) {
 }
 
 async function insertMessage(db, m) {
-  const actionable = m.direction === 'IN' ? (needsReply(m.kind, m.text) ? 1 : 0) : 0;
+  const actionable = m.direction === 'IN' ? (needsReply(m.kind, m.text, m.handler) ? 1 : 0) : 0;
   const res = await db.prepare(
     `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable)
      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
