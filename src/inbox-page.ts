@@ -202,7 +202,7 @@ function preview(c) {
 }
 async function loadList() {
   const d = await api('/inbox/api/chats?f=' + filter + '&q=' + encodeURIComponent($('q').value));
-  if (filter === 'waiting' && !$('q').value) { $('waitN').textContent = d.chats.length; $('waitN').hidden = !d.chats.length; }
+  $('waitN').textContent = d.waitingCount; $('waitN').hidden = !d.waitingCount;
   $('list').innerHTML = d.chats.length ? d.chats.map((c) => {
     const st = state(c);
     const av = c.pic ? '<div class="av" style="background:url(' + esc(JSON.stringify(c.pic)) + ') center/cover">' : '<div class="av" style="background:' + colorOf(c.u) + '">' + esc(initial(c.name, c.u));

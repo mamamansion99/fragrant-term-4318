@@ -48,7 +48,7 @@ describe('inbox', () => {
 		expect(found.map((c: any) => c.u)).toContain(CUSTOMER);
 		expect((await get('/inbox/api/chats?f=lead', token)).body.chats.some((c: any) => c.u === CUSTOMER)).toBe(false);
 
-		await recordInboxEvent(e, inbound('ขอบคุณค่ะ', 'log-2', '2026-10-24T10:07:00.000Z'));
+		await recordInboxEvent(e, inbound('แล้วค่ามัดจำเท่าไหร่คะ', 'log-2', new Date().toISOString()));
 		const waiting = (await get('/inbox/api/chats?f=waiting', token)).body.chats;
 		expect(waiting.some((c: any) => c.u === CUSTOMER)).toBe(true);
 	});
@@ -115,6 +115,39 @@ describe('inbox drafts and facts', () => {
 		await e.INBOX_DB.prepare('INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, 0)')
 			.bind(U2, 'k-in-1', now - 30000, 'ห้องมาตรฐาน 4,000 บาทครับ', 'NEED_INFO').run();
 		expect((await get(`/inbox/api/messages?u=${U2}`, token)).body.draft).toBeNull();
+	});
+});
+
+describe('what counts as waiting for a reply', () => {
+	it('tells questions from stickers, thanks and button taps', async () => {
+		const { needsReply } = await import('../src/inbox');
+		for (const t of ['ขอบคุณค่ะ', 'ok ค่ะ', 'โอเคครับ', 'รับทราบครับ', 'ได้ครับผม', 'ขอบคุณมากๆ ครับ 🙏', 'ครับ']) expect(needsReply('text', t), t).toBe(false);
+		for (const t of ['ห้องว่างไหมคะ', 'ok แล้วค่าน้ำเท่าไหร่ครับ', 'ขอบคุณค่ะ แต่ช่วยเช็คบิลให้หน่อย', 'เช็นสัญญาเรียบร้อยแล้วค่ะ พรุ่งนี้ส่งกุญแจที่ไหน', 'แอร์ไม่เย็นค่ะ']) expect(needsReply('text', t), t).toBe(true);
+		expect(needsReply('sticker', '(sticker 1/2)')).toBe(false);
+		expect(needsReply('follow', '(follow)')).toBe(false);
+		expect(needsReply('postback', 'act=X')).toBe(false);
+		expect(needsReply('image', '(image)')).toBe(true);
+	});
+
+	it('keeps a question waiting when a sticker follows it, and drops chats older than three days', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const U = 'Uinboxwait000000000000000000000005';
+		const old = 'Uinboxwait000000000000000000000006';
+		const now = Date.now();
+		const ev = (u: string, text: string, ts: number, kind = 'text', logId = `${u}-${ts}`) => recordInboxEvent(e, {
+			timestamp: new Date(ts).toISOString(), direction: 'IN', eventType: 'message', messageType: kind, text, userId: u, sourceType: 'user', logId, handler: 'unhandled' });
+		await ev(U, 'ค่าส่วนกลางจ่ายทุกเดือนไหมคะ', now - 60000);
+		await ev(U, '(sticker 1/2)', now - 30000, 'sticker');
+		await ev(old, 'ห้องว่างไหม', now - 4 * 24 * 3600 * 1000);
+		const d = (await get('/inbox/api/chats?f=waiting', token)).body;
+		expect(d.chats.map((c: any) => c.u)).toContain(U);
+		expect(d.chats.map((c: any) => c.u)).not.toContain(old);
+		expect(d.waitingCount).toBe(d.chats.length);
+
+		const thanks = 'Uinboxwait000000000000000000000007';
+		await recordInboxOutbound(e, { timestamp: new Date(now - 90000).toISOString(), userId: thanks, sourceType: 'user', text: 'ได้ครับ', logId: 'th-out', handler: 'inbox' }, 'staff:Ma');
+		await ev(thanks, 'ขอบคุณค่ะ', now - 10000);
+		expect((await get('/inbox/api/chats?f=waiting', token)).body.chats.map((c: any) => c.u)).not.toContain(thanks);
 	});
 });
 

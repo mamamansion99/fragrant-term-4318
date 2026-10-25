@@ -65,33 +65,70 @@ async function staffFromRequest(env, request) {
 
 /* ---------- recording ---------- */
 
+// A customer message that needs nobody to answer: stickers, follow/unfollow,
+// button taps (the bot or n8n handles those), and short acknowledgements like
+// ขอบคุณค่ะ / ok ครับ / รับทราบ. Only the rest make a chat wait for a reply,
+// so a sticker sent after a question does not hide the question. A bare
+// สวัสดีค่ะ still waits: it is how many new leads open.
+const ACK_RE = /^(?:ขอบคุณ(?:มาก)?(?:ๆ|นะ)?|ขอบใจ|thank(?:s| you)?|ok(?:ay)?|โอเค?|โอเคร|เค|ได้(?:เลย)?|รับทราบ|เรียบร้อย(?:แล้ว)?|ตกลง|ครับผม|ครับ|คับ|ค่ะ|คะ|ค่า|จ้า|จ้ะ|นะ|แล้ว|ไม่เป็นไร|[\s.!~^_]|[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}])+$/iu;
+const QUESTION_RE = /[?？]|ไหม|มั้ย|มัย|อะไร|ยังไง|อย่างไร|เท่าไ|กี่|ที่ไหน|เมื่อไ|ทำไม|หรือเปล่า|รึเปล่า|ได้ไหม|ช่วย/;
+
+export function needsReply(kind, text) {
+  if (['sticker', 'follow', 'unfollow', 'postback', 'join', 'leave', 'event'].includes(kind)) return false;
+  if (kind !== 'text') return true;
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (QUESTION_RE.test(t)) return true;
+  return !(t.length <= 30 && ACK_RE.test(t));
+}
+
+// Unanswered for longer than this probably got an answer in LINE OA Manager
+// before the inbox existed, so it leaves รอตอบ (still visible in its tab).
+export const WAIT_WINDOW_MS = 3 * 24 * 3600 * 1000;
+
+function isWaiting(r, now = Date.now()) {
+  return (r.status || 'open') === 'open' && (r.last_ask_at || 0) > (r.last_reply_at || 0) && (r.last_ask_at || 0) > now - WAIT_WINDOW_MS;
+}
+
 function kindOf(eventType, messageType) {
   if (eventType === 'message') return messageType || 'message';
   return eventType || 'event';
 }
 
-async function touchContact(db, userId, ts, text, author) {
+async function touchContact(db, userId, ts, text, author, actionable) {
   const isCustomer = author === 'customer';
   await db.prepare(
-    `INSERT INTO contacts (user_id, last_message_at, last_text, last_author, last_customer_at, last_reply_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `INSERT INTO contacts (user_id, last_message_at, last_text, last_author, last_customer_at, last_reply_at, last_ask_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
      ON CONFLICT(user_id) DO UPDATE SET
        last_message_at = MAX(contacts.last_message_at, ?2),
        last_text = CASE WHEN ?2 >= contacts.last_message_at THEN ?3 ELSE contacts.last_text END,
        last_author = CASE WHEN ?2 >= contacts.last_message_at THEN ?4 ELSE contacts.last_author END,
        last_customer_at = MAX(contacts.last_customer_at, ?5),
        last_reply_at = MAX(contacts.last_reply_at, ?6),
-       status = CASE WHEN ?4 = 'customer' AND contacts.status = 'closed' THEN 'open' ELSE contacts.status END`
-  ).bind(userId, ts, String(text || '').slice(0, 200), author, isCustomer ? ts : 0, isCustomer ? 0 : ts).run();
+       last_ask_at = MAX(COALESCE(contacts.last_ask_at, 0), ?7),
+       status = CASE WHEN ?7 > 0 AND contacts.status = 'closed' THEN 'open' ELSE contacts.status END`
+  ).bind(userId, ts, String(text || '').slice(0, 200), author, isCustomer ? ts : 0, isCustomer ? 0 : ts, isCustomer && actionable ? ts : 0).run();
 }
 
 async function insertMessage(db, m) {
+  const actionable = m.direction === 'IN' ? (needsReply(m.kind, m.text) ? 1 : 0) : 0;
   const res = await db.prepare(
-    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)`
+    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
   ).bind(m.userId, m.ts, m.direction, m.author, m.kind || '', String(m.text || '').slice(0, 4000),
-    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '').run();
-  if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author);
+    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable).run();
+  if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author, actionable);
+}
+
+// The AI read a customer message and judged that it needs no answer.
+async function markNoReply(db, userId, logId) {
+  if (!logId) return;
+  await db.prepare('UPDATE messages SET actionable = 0 WHERE user_id = ?1 AND log_id = ?2').bind(userId, logId).run();
+  await db.prepare(
+    `UPDATE contacts SET last_ask_at = COALESCE((SELECT MAX(ts) FROM messages WHERE user_id = ?1 AND direction = 'IN' AND actionable = 1), 0)
+     WHERE user_id = ?1`
+  ).bind(userId).run();
 }
 
 // Called with the same payload the worker sends to MM_LOG.
@@ -169,7 +206,10 @@ async function listChats(env, url) {
   // Closed chats leave รอตอบ; muted ones only show under ปิดแล้ว or a search.
   if (!q && filter === 'lead') where.push("COALESCE(contact_type, 'NON_TENANT') = 'NON_TENANT'", "COALESCE(status, 'open') <> 'muted'");
   if (!q && filter === 'tenant') where.push("contact_type = 'TENANT'", "COALESCE(status, 'open') <> 'muted'");
-  if (!q && filter === 'waiting') where.push("last_author = 'customer'", "COALESCE(status, 'open') = 'open'");
+  if (!q && filter === 'waiting') {
+    binds.push(Date.now() - WAIT_WINDOW_MS);
+    where.push("COALESCE(status, 'open') = 'open'", 'COALESCE(last_ask_at, 0) > COALESCE(last_reply_at, 0)', `last_ask_at > ?${binds.length}`);
+  }
   if (!q && filter === 'closed') where.push("status IN ('closed', 'muted')");
   if (q) {
     binds.push(`%${q}%`);
@@ -190,8 +230,8 @@ async function listChats(env, url) {
     author: r.last_author || '',
     status: r.status || 'open',
     statusReason: r.status_reason || '',
-    waiting: r.last_author === 'customer' && (r.status || 'open') === 'open',
-    waitedMin: r.last_author === 'customer' ? Math.max(0, Math.round((Date.now() - (r.last_customer_at || r.last_message_at)) / 60000)) : 0,
+    waiting: isWaiting(r),
+    waitedMin: isWaiting(r) ? Math.max(0, Math.round((Date.now() - r.last_ask_at) / 60000)) : 0,
     human: (r.human_until || 0) > Date.now() ? r.human_by || 'staff' : ''
   }));
 }
@@ -233,10 +273,13 @@ async function todayStats(env, staff) {
        COUNT(DISTINCT CASE WHEN author LIKE 'staff:%' THEN user_id END) AS staffChats,
        COUNT(DISTINCT CASE WHEN author = ?2 THEN user_id END) AS myChats,
        COUNT(DISTINCT CASE WHEN author = 'ai' THEN user_id END) AS aiChats,
-       AVG(CASE WHEN author LIKE 'staff:%' THEN ts - (
-         SELECT MAX(i.ts) FROM messages i WHERE i.user_id = messages.user_id AND i.direction = 'IN' AND i.ts < messages.ts
-       ) END) AS avgMs
-     FROM messages WHERE ts >= ?1 AND direction = 'OUT'`
+       AVG(CASE WHEN author LIKE 'staff:%' AND gap BETWEEN 0 AND 43200000 THEN gap END) AS avgMs
+     FROM (
+       SELECT user_id, author, ts - (
+         SELECT MAX(i.ts) FROM messages i WHERE i.user_id = o.user_id AND i.direction = 'IN' AND i.actionable = 1 AND i.ts < o.ts
+       ) AS gap
+       FROM messages o WHERE o.ts >= ?1 AND o.direction = 'OUT'
+     )`
   ).bind(since, `staff:${staff.name}`).first();
   return {
     staffChats: row?.staffChats || 0,
@@ -266,12 +309,12 @@ async function listMessages(env, url, deps) {
       type: contact.contact_type || 'NON_TENANT',
       human: (contact.human_until || 0) > Date.now() ? contact.human_by || 'staff' : '',
       humanUntil: contact.human_until || 0,
-      waiting: contact.last_author === 'customer' && (contact.status || 'open') === 'open',
+      waiting: isWaiting(contact),
       status: contact.status || 'open',
       statusReason: contact.status_reason || '',
       statusBy: contact.status_by || '',
       statusAt: contact.status_at || 0,
-      lastCustomerAt: contact.last_customer_at || 0,
+      lastCustomerAt: contact.last_ask_at || contact.last_customer_at || 0,
       facts: parseFacts(contact.facts)
     } : null,
     // An ended chat offers no draft; a new customer message reopens it.
@@ -361,6 +404,7 @@ async function ingest(env, request) {
       'INSERT INTO contacts (user_id, facts) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET facts = ?2'
     ).bind(userId, JSON.stringify(merged)).run();
   }
+  if (body.verdict === 'NO_REPLY' && body.inLogId) await markNoReply(env.INBOX_DB, userId, String(body.inLogId));
   if (body.draft) {
     await env.INBOX_DB.prepare(
       'INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, meta, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
@@ -439,7 +483,12 @@ export async function handleInboxRequest(request, env, url, deps) {
   if (!staff) return json({ ok: false, error: 'auth' }, 401);
 
   if (request.method === 'GET' && path === '/inbox/api/me') return json({ ok: true, name: staff.name, today: await todayStats(env, staff) });
-  if (request.method === 'GET' && path === '/inbox/api/chats') return json({ ok: true, chats: await listChats(env, url) });
+  if (request.method === 'GET' && path === '/inbox/api/chats') {
+    const waiting = await env.INBOX_DB.prepare(
+      "SELECT COUNT(*) AS n FROM contacts WHERE COALESCE(status, 'open') = 'open' AND COALESCE(last_ask_at, 0) > COALESCE(last_reply_at, 0) AND last_ask_at > ?1"
+    ).bind(Date.now() - WAIT_WINDOW_MS).first();
+    return json({ ok: true, chats: await listChats(env, url), waitingCount: waiting?.n || 0 });
+  }
   if (request.method === 'GET' && path === '/inbox/api/messages') {
     const data = await listMessages(env, url, deps);
     if (!url.searchParams.get('before')) await logAccess(env, staff, 'open', url.searchParams.get('u'));
