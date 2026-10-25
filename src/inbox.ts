@@ -382,6 +382,82 @@ async function logAccess(env, staff, action, userId) {
     .bind(Date.now(), staff.name, action, userId || '').run().catch(() => {});
 }
 
+/* ---------- what the AI reads before drafting ---------- */
+
+// Thai has no spaces, so similarity is the overlap of character pairs after
+// dropping polite particles and punctuation.
+const FILLER_RE = /ครับผม|ครับ|คับ|ค่ะ|คะ|ค่า|นะคะ|นะครับ|นะ|จ้า|หน่อย|รบกวน|สอบถาม|สวัสดี|[\s\p{P}\p{S}]/gu;
+function bigrams(text) {
+  const t = String(text || '').toLowerCase().replace(FILLER_RE, '');
+  const out = new Set();
+  for (let i = 0; i < t.length - 1; i++) out.add(t.slice(i, i + 2));
+  return out;
+}
+export function similarity(a, b) {
+  const x = bigrams(a), y = bigrams(b);
+  if (!x.size || !y.size) return 0;
+  let common = 0;
+  for (const g of x) if (y.has(g)) common++;
+  return common / (x.size + y.size - common);
+}
+
+const EXAMPLE_POOL = 400;
+const EXAMPLE_COUNT = 5;
+const EDITED_BONUS = 0.15;
+
+// Real staff answers to new customers, each paired with the customer message
+// it answered. Answers staff wrote over an AI draft come first at equal
+// similarity: they say exactly what the AI got wrong.
+export async function staffExamples(env, query, excludeUserId) {
+  const db = env.INBOX_DB;
+  const pairs = ((await db.prepare(
+    `SELECT o.user_id, o.text AS answer, o.ts,
+       (SELECT i.text FROM messages i WHERE i.user_id = o.user_id AND i.direction = 'IN' AND i.actionable = 1
+          AND i.ts < o.ts AND i.ts > o.ts - 86400000 ORDER BY i.ts DESC LIMIT 1) AS question
+     FROM messages o JOIN contacts c ON c.user_id = o.user_id
+     WHERE o.author LIKE 'staff:%' AND o.kind = 'text' AND COALESCE(c.contact_type, 'NON_TENANT') = 'NON_TENANT'
+     ORDER BY o.ts DESC LIMIT ?1`
+  ).bind(EXAMPLE_POOL).all()).results || []).map((r) => ({ ...r, edited: false }));
+  const edited = ((await db.prepare(
+    `SELECT d.user_id, d.final_text AS answer, d.draft, d.sent_at AS ts, m.text AS question
+     FROM drafts d LEFT JOIN messages m ON m.user_id = d.user_id AND m.log_id = d.in_log_id
+     WHERE d.edited = 1 AND d.final_text IS NOT NULL ORDER BY d.sent_at DESC LIMIT 200`
+  ).all()).results || []).map((r) => ({ ...r, edited: true }));
+  const seen = new Set();
+  return [...edited, ...pairs]
+    .filter((p) => p.question && p.answer && p.user_id !== excludeUserId && String(p.answer).trim().length > 3)
+    .map((p) => ({ ...p, score: similarity(query, p.question) + (p.edited ? EDITED_BONUS : 0) }))
+    .filter((p) => p.score > 0.05)
+    .sort((a, b) => b.score - a.score || b.ts - a.ts)
+    .filter((p) => { const k = String(p.answer).trim(); if (seen.has(k)) return false; seen.add(k); return true; })
+    .slice(0, EXAMPLE_COUNT)
+    .map((p) => ({ question: p.question, answer: p.answer, aiDraft: p.edited ? p.draft || '' : '', edited: p.edited, score: Math.round(p.score * 100) / 100 }));
+}
+
+// The conversation as the inbox has it: unlike n8n's own history, this
+// includes what staff typed, so the AI does not repeat or contradict them.
+async function threadForAi(env, userId) {
+  const rows = ((await env.INBOX_DB.prepare(
+    'SELECT ts, direction, author, kind, text FROM messages WHERE user_id = ?1 ORDER BY ts DESC, id DESC LIMIT 30'
+  ).bind(userId).all()).results || []).reverse();
+  return rows.map((r) => ({
+    who: r.direction === 'IN' ? 'customer' : r.author.startsWith('staff:') ? 'staff' : r.author,
+    text: r.kind === 'text' ? r.text : `(${r.kind})`
+  }));
+}
+
+async function aiContext(env, request, url) {
+  const secret = String(env.INBOX_INGEST_SECRET || '');
+  if (!secret || request.headers.get('x-inbox-secret') !== secret) return json({ ok: false }, 401);
+  const userId = url.searchParams.get('u') || '';
+  const query = url.searchParams.get('q') || '';
+  return json({
+    ok: true,
+    thread: userId.startsWith('U') ? await threadForAi(env, userId) : [],
+    examples: query ? await staffExamples(env, query, userId) : []
+  });
+}
+
 // n8n posts here: contact facts from MM_LOG (room, tenant) and the live AI's
 // replies, which it sends to LINE itself.
 async function ingest(env, request) {
@@ -478,6 +554,7 @@ export async function handleInboxRequest(request, env, url, deps) {
   }
   if (!env.INBOX_DB) return json({ ok: false, error: 'no_db' }, 500);
   if (request.method === 'POST' && path === '/inbox/api/ingest') return ingest(env, request);
+  if (request.method === 'GET' && path === '/inbox/api/ai-context') return aiContext(env, request, url);
 
   const staff = await staffFromRequest(env, request);
   if (!staff) return json({ ok: false, error: 'auth' }, 401);

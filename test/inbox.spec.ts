@@ -199,3 +199,37 @@ describe('ending chats and shortcuts', () => {
 		expect(after.body.shortcuts.some((x: any) => x.id === id)).toBe(false);
 	});
 });
+
+describe('staff answers the AI learns from', () => {
+	it('ranks similar questions first, prefers answers staff rewrote over an AI draft, and skips the same customer', async () => {
+		const { staffExamples, similarity } = await import('../src/inbox');
+		expect(similarity('ค่าส่วนกลางต้องจ่ายทุกเดือนไหมคะ', 'ค่าส่วนกลางจ่ายรายเดือนไหมครับ')).toBeGreaterThan(similarity('ค่าส่วนกลางต้องจ่ายทุกเดือนไหมคะ', 'มีที่จอดรถไหมครับ'));
+
+		const now = Date.now();
+		let n = 0;
+		const pair = async (u: string, q: string, a: string) => {
+			n++;
+			await recordInboxEvent(e, { timestamp: new Date(now - 100000 + n * 10).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: q, userId: u, sourceType: 'user', logId: `ex-in-${n}`, handler: 'unhandled' });
+			await recordInboxOutbound(e, { timestamp: new Date(now - 100000 + n * 10 + 5).toISOString(), userId: u, sourceType: 'user', text: a, logId: `ex-out-${n}`, handler: 'inbox' }, 'staff:KP');
+		};
+		await pair('Uexample00000000000000000000000001', 'ค่าส่วนกลางจ่ายรายเดือนไหมครับ', 'ค่าส่วนกลาง 200 บาท/เดือนครับ');
+		await pair('Uexample00000000000000000000000002', 'มีที่จอดรถยนต์ไหมครับ', 'มีครับ เดือนละ 800');
+		await pair('Uexample00000000000000000000000003', 'ค่าส่วนกลางต้องจ่ายทุกเดือนไหมคะ', 'จ่ายทุกเดือนค่ะ 200 บาท');
+
+		const ex = await staffExamples(e, 'ค่าส่วนกลางต้องจ่ายทุกเดือนไหมคะ', 'Uexample00000000000000000000000003');
+		expect(ex[0].answer).toBe('ค่าส่วนกลาง 200 บาท/เดือนครับ');
+		expect(ex.some((x: any) => x.answer === 'จ่ายทุกเดือนค่ะ 200 บาท')).toBe(false); // same customer
+		expect(ex.some((x: any) => x.answer === 'มีครับ เดือนละ 800')).toBe(false); // unrelated
+
+		// A staff rewrite of an AI draft outranks a plain answer of equal similarity.
+		await e.INBOX_DB.prepare('INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, final_text, final_author, sent_at, edited) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)')
+			.bind('Uexample00000000000000000000000001', 'ex-in-1', now, 'ค่าส่วนกลางรวมในค่าเช่าแล้วครับ', 'NEED_INFO', 'ค่าส่วนกลางแยกจากค่าเช่า 200 บาทครับ', 'KP', now).run();
+		const ex2 = await staffExamples(e, 'ค่าส่วนกลางจ่ายรายเดือนไหมครับ', 'Uother');
+		expect(ex2[0]).toMatchObject({ answer: 'ค่าส่วนกลางแยกจากค่าเช่า 200 บาทครับ', edited: true, aiDraft: 'ค่าส่วนกลางรวมในค่าเช่าแล้วครับ' });
+	});
+
+	it('does not hand the AI context to callers without the n8n key', async () => {
+		const res = await SELF.fetch('https://example.com/inbox/api/ai-context?u=Uexample00000000000000000000000001&q=test');
+		expect(res.status).toBe(401);
+	});
+});
