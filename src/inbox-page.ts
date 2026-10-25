@@ -22,7 +22,7 @@ export const INBOX_PAGE_HTML = `<!doctype html>
 @media (prefers-color-scheme:dark){:root{
   --ground:#0c110e;--surface:#151b17;--raised:#1c241f;--ink:#e8efe9;--mute:#93a198;--line:#26302a;
   --mine:#17482a;--bot:#212a24;--ai:#1b2747;--ai-ink:#9db4ff;--wait-soft:#3a1a1c;--human-soft:#16264a;--idle:#4a554e;color-scheme:dark}}
-*{box-sizing:border-box}html,body{height:100%;margin:0}
+*{box-sizing:border-box}html,body{height:100%;margin:0}[hidden]{display:none!important}
 body{background:var(--ground);color:var(--ink);font:15px/1.5 var(--body)}
 button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;padding:0}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--green);outline-offset:2px}
@@ -87,6 +87,20 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .compose textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:20px;padding:9px 14px;font:inherit;background:var(--raised);color:var(--ink);max-height:120px}
 .send{width:42px;height:42px;border-radius:50%;background:var(--green);color:var(--green-ink);font-size:18px;display:grid;place-items:center;flex:none}
 .send:disabled{opacity:.5}
+.endbtn{padding:6px 12px;border-radius:999px;font-weight:600;font-size:13px;background:var(--raised);flex:none}
+.closed{display:flex;gap:10px;align-items:center;padding:8px 16px;font-size:13px;background:var(--raised);border-bottom:1px solid var(--line);color:var(--mute)}
+.closed span{flex:1}.closed button{padding:5px 12px;border-radius:999px;background:var(--surface);font-weight:600;font-size:13px;color:var(--ink)}
+.row.dim{opacity:.6}.c-closed{background:var(--raised);color:var(--mute)}
+.more{display:block;margin:4px auto 0;padding:8px 14px;border-radius:999px;font-size:13px;color:var(--mute);background:var(--raised)}
+.sheet{position:absolute;inset:0;z-index:30;background:rgba(0,0,0,.35);display:flex;align-items:flex-end}
+.sheet .pane{width:100%;max-height:85%;overflow-y:auto;background:var(--surface);border-radius:20px 20px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px))}
+.pane h3{font:600 17px var(--display);margin:0 0 4px}.pane p.hint{margin:0 0 12px;font-size:13px;color:var(--mute)}
+.opt{display:flex;gap:12px;align-items:flex-start;width:100%;text-align:left;padding:12px;border-radius:14px;background:var(--raised);margin-bottom:8px}
+.opt b{display:block;font-weight:600}.opt small{color:var(--mute);font-size:12.5px}.opt .ic{font-size:20px;line-height:1.3}
+.sc{display:flex;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.sc .t{flex:1;min-width:0}.sc .t small{display:block;color:var(--mute);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sc button{padding:5px 10px;border-radius:999px;background:var(--raised);font-size:13px}
+.form{display:grid;gap:8px;margin-top:12px}.form input,.form select,.form textarea{width:100%;font:inherit;border:1px solid var(--line);border-radius:10px;padding:9px 11px;background:var(--raised);color:var(--ink)}
 .toast{position:absolute;left:50%;bottom:150px;z-index:20;transform:translate(-50%,20px);opacity:0;transition:.25s;background:var(--ink);color:var(--surface);
   padding:10px 16px;border-radius:999px;font-size:14px;font-weight:500;white-space:nowrap;pointer-events:none}
 .toast.show{opacity:1;transform:translate(-50%,0)}
@@ -116,22 +130,37 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
       <button class="back" id="back" aria-label="กลับ">‹</button>
       <div class="av" id="tav"></div>
       <div style="flex:1;min-width:0"><h2 id="tname"></h2><p id="tsub"></p></div>
+      <button class="endbtn" id="endbtn">จบแชท</button>
     </div>
+    <div class="closed" id="closedbar" hidden><span id="closedtxt"></span><button id="reopen">เปิดแชทอีกครั้ง</button></div>
     <div class="facts" id="facts" hidden></div>
     <div class="msgs" id="msgs"></div>
     <div class="hold"><div class="st" id="hst"></div><button id="hbtn"></button></div>
     <div id="sugg"></div>
-    <div class="quick" id="quick">
-      <button data-t="จองห้องผ่านลิงก์นี้ได้เลยครับ https://liff.line.me/2011657200-OBxvsBpn">🔗 ลิงก์จอง</button>
-      <button data-t="เข้าชมห้องตัวอย่างได้ทุกวัน 08:00–17:00 น. ครับ">🕗 เวลาเข้าชม</button>
-      <button data-kind="roomcard">🖼️ การ์ดรูปห้อง</button>
-      <button data-t="📍 มามา แมนชั่น 45 ซอยฉลองกรุง 37 ลาดกระบัง&#10;https://maps.app.goo.gl/Qktm2mDGPappQ8EZA">📍 แผนที่</button>
-    </div>
+    <div class="quick" id="quick"></div>
     <div class="compose">
       <textarea id="text" rows="1" placeholder="พิมพ์ตอบลูกค้า"></textarea>
       <button class="send" id="send" aria-label="ส่ง">➤</button>
     </div>
   </section>
+  <div class="sheet" id="endsheet" hidden><div class="pane">
+    <h3>จบแชทนี้</h3><p class="hint">แชทจะออกจากรอตอบ ไม่ต้องตอบทุกแชท</p>
+    <button class="opt" data-st="closed" data-r="done"><span class="ic">✅</span><span><b>ตอบครบแล้ว</b><small>ลูกค้าพิมพ์มาใหม่ แชทจะกลับมารอตอบ</small></span></button>
+    <button class="opt" data-st="closed" data-r="unfit"><span class="ic">🚫</span><span><b>ไม่ผ่านเกณฑ์</b><small>ไม่ตอบต่อ ลูกค้าพิมพ์มาใหม่จะกลับมาให้เห็น</small></span></button>
+    <button class="opt" data-st="closed" data-r="skip"><span class="ic">💤</span><span><b>ไม่ต้องตอบ</b><small>เช่น ขอบคุณ/สติกเกอร์ ลูกค้าพิมพ์มาใหม่จะกลับมา</small></span></button>
+    <button class="opt" data-st="muted" data-r="mute"><span class="ic">🔕</span><span><b>ซ่อนถาวร</b><small>ไม่ขึ้นอีกแม้ลูกค้าพิมพ์มา และ AI จะไม่ตอบคนนี้</small></span></button>
+    <button class="opt" id="endcancel" style="justify-content:center"><b>ยกเลิก</b></button>
+  </div></div>
+  <div class="sheet" id="scsheet" hidden><div class="pane">
+    <h3>ปุ่มด่วน</h3><p class="hint">ทุกคนในทีมเห็นชุดเดียวกัน ข้อความจะขึ้นในช่องพิมพ์ให้แก้ก่อนส่ง ส่วนรูปและการ์ดส่งทันที</p>
+    <div id="sclist"></div>
+    <div class="form">
+      <input id="scLabel" placeholder="ชื่อปุ่ม เช่น 🔗 ลิงก์จอง" maxlength="40">
+      <select id="scKind"><option value="text">ข้อความ</option><option value="image">รูป (ลิงก์ .jpg/.png)</option><option value="roomcard">การ์ดรูปห้อง</option></select>
+      <textarea id="scBody" rows="5" placeholder="ข้อความ หรือ ลิงก์รูป https://…jpg"></textarea>
+      <div class="acts"><button class="btn go" id="scSave">บันทึก</button><button class="btn" id="scNew">ล้างฟอร์ม</button><button class="btn" id="scClose" style="margin-left:auto">ปิด</button></div>
+    </div>
+  </div></div>
   <div class="toast" id="toast"></div>
 </div>
 <script>
@@ -153,7 +182,7 @@ async function api(path, opt = {}) {
   return res.json();
 }
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200); }
-function state(c) { if (c.waiting) return 'wait'; if (c.human) return 'human'; return c.type === 'NON_TENANT' ? 'ai' : 'idle'; }
+function state(c) { if (c.status === 'muted') return 'idle'; if (c.waiting) return 'wait'; if (c.human) return 'human'; return c.type === 'NON_TENANT' ? 'ai' : 'idle'; }
 const DOT = { wait: 'var(--wait)', ai: 'var(--ai-dot)', human: 'var(--human)', idle: 'var(--idle)' };
 function chipFor(c) {
   const s = state(c);
@@ -177,10 +206,14 @@ async function loadList() {
   $('list').innerHTML = d.chats.length ? d.chats.map((c) => {
     const st = state(c);
     const av = c.pic ? '<div class="av" style="background:url(' + esc(JSON.stringify(c.pic)) + ') center/cover">' : '<div class="av" style="background:' + colorOf(c.u) + '">' + esc(initial(c.name, c.u));
-    return '<button class="row" data-u="' + c.u + '">' + av + '<i style="background:' + DOT[st] + '"></i></div>' +
-      '<div class="mid"><div class="top"><span class="nm">' + esc(c.name || 'ลูกค้า') + (c.room ? '<span class="chip c-room">' + esc(c.room) + '</span>' : '') + chipFor(c) +
+    const closed = c.status && c.status !== 'open';
+    return '<button class="row' + (closed ? ' dim' : '') + '" data-u="' + c.u + '">' + av + '<i style="background:' + DOT[st] + '"></i></div>' +
+      '<div class="mid"><div class="top"><span class="nm">' + esc(c.name || 'ลูกค้า') + (c.room ? '<span class="chip c-room">' + esc(c.room) + '</span>' : '') + (closed ? '<span class="chip c-closed">' + esc(c.statusReason || 'ปิดแล้ว') + '</span>' : chipFor(c)) +
       '</span><span class="tm">' + t2(c.at) + '</span></div><div class="pv">' + preview(c) + '</div></div></button>';
   }).join('') : '<div class="empty">' + (filter === 'waiting' ? 'ไม่มีแชทรอตอบ เยี่ยมมาก 🎉' : 'ไม่มีแชท') + '</div>';
+  $('list').insertAdjacentHTML('beforeend', filter === 'closed'
+    ? '<button class="more" id="moreBtn" data-f="waiting">‹ กลับไปแชทที่รอตอบ</button>'
+    : '<button class="more" id="moreBtn" data-f="closed">ดูแชทที่จบ/ซ่อนไว้</button>');
 }
 async function loadMe() {
   const d = await api('/inbox/api/me');
@@ -216,6 +249,10 @@ function renderThread(d) {
   const box = $('msgs'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   box.innerHTML = html || '<div class="empty">ยังไม่มีข้อความ</div>';
   if (atBottom || !box.dataset.ready) { box.scrollTop = box.scrollHeight; box.dataset.ready = '1'; }
+  const closed = c.status && c.status !== 'open';
+  $('closedbar').hidden = !closed;
+  if (closed) $('closedtxt').textContent = (c.status === 'muted' ? '🔕 ซ่อนถาวร' : '✓ จบแชทแล้ว · ' + (c.statusReason || '')) + (c.statusBy ? ' โดย ' + c.statusBy : '');
+  $('endbtn').hidden = !!closed;
   const st = state(c), waited = c.waiting ? Math.round((Date.now() - c.lastCustomerAt) / 60000) : 0;
   $('hst').innerHTML = '<i style="background:' + DOT[st] + '"></i><span>' + (st === 'human' ? esc(c.human) + ' ดูแลแชทนี้ · AI หยุดถึง ' +
     new Date(c.humanUntil).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) : st === 'wait' ? 'ลูกค้ารอ ' + mins(waited) : st === 'ai' ? 'AI ดูแลแชทนี้อยู่' : 'บอทตอบอัตโนมัติ') + '</span>';
@@ -253,7 +290,11 @@ async function send(text, draftId, kind) {
   } finally { $('send').disabled = false; }
 }
 function grow() { const t = $('text'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px'; }
-$('list').addEventListener('click', (e) => { const r = e.target.closest('.row'); if (r) openThread(r.dataset.u); });
+$('list').addEventListener('click', (e) => {
+  const m = e.target.closest('#moreBtn');
+  if (m) { filter = m.dataset.f; [...$('tabs').children].forEach((x) => x.classList.toggle('on', x.dataset.f === filter)); loadList(); return; }
+  const r = e.target.closest('.row'); if (r) openThread(r.dataset.u);
+});
 $('tabs').addEventListener('click', (e) => { const b = e.target.closest('.tab'); if (!b) return;
   filter = b.dataset.f; [...$('tabs').children].forEach((x) => x.classList.toggle('on', x === b)); loadList(); });
 let qt; $('q').addEventListener('input', () => { clearTimeout(qt); qt = setTimeout(loadList, 300); });
@@ -261,16 +302,62 @@ $('back').onclick = () => history.back();
 window.onpopstate = () => { if (current) closeThread(); };
 $('text').addEventListener('input', grow);
 $('send').onclick = () => send($('text').value);
+let shortcuts = [];
+function renderQuick() {
+  $('quick').innerHTML = shortcuts.map((x) => '<button data-id="' + x.id + '">' + esc(x.label) + '</button>').join('') + '<button data-edit="1">✏️ แก้ปุ่ม</button>';
+}
+async function loadShortcuts() { const d = await api('/inbox/api/shortcuts'); shortcuts = d.shortcuts || []; renderQuick(); }
 $('quick').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
-  if (b.dataset.kind === 'roomcard') {
-    // Two taps: the card set is four messages the customer cannot unsee.
-    if (!b.classList.contains('arm')) { b.classList.add('arm'); b.dataset.label = b.textContent; b.textContent = 'แตะอีกครั้งเพื่อส่ง';
-      setTimeout(() => { b.classList.remove('arm'); b.textContent = b.dataset.label; }, 3000); return; }
-    b.classList.remove('arm'); b.textContent = b.dataset.label; send('', null, 'roomcard'); return;
-  }
-  $('text').value = b.dataset.t; grow(); $('text').focus();
+  if (b.dataset.edit) { openScSheet(); return; }
+  const x = shortcuts.find((s) => String(s.id) === b.dataset.id); if (!x) return;
+  if (x.kind === 'text') { $('text').value = x.body; grow(); $('text').focus(); return; }
+  // Two taps for cards and images: they go out at once and cannot be edited.
+  if (!b.classList.contains('arm')) { b.classList.add('arm'); b.textContent = 'แตะอีกครั้งเพื่อส่ง';
+    setTimeout(() => { b.classList.remove('arm'); b.textContent = x.label; }, 3000); return; }
+  b.classList.remove('arm'); b.textContent = x.label; sendShortcut(x);
 });
+async function sendShortcut(x) {
+  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) });
+  toast(d.ok ? 'ส่ง ' + x.label + ' แล้ว ✓' : 'ส่งไม่สำเร็จ ลองอีกครั้ง'); lastSig = ''; loadThread();
+}
+let editing = null;
+function renderScList() {
+  $('sclist').innerHTML = shortcuts.map((x) => '<div class="sc"><div class="t">' + esc(x.label) + '<small>' +
+    esc(x.kind === 'roomcard' ? 'การ์ดรูปห้อง + ข้อมูลทุกหัวข้อ' : x.kind === 'image' ? 'รูป: ' + x.body : x.body) + '</small></div>' +
+    '<button data-ed="' + x.id + '">แก้</button><button data-del="' + x.id + '">ลบ</button></div>').join('');
+}
+function fillForm(x) { editing = x ? x.id : null; $('scLabel').value = x ? x.label : ''; $('scKind').value = x ? x.kind : 'text'; $('scBody').value = x ? x.body || '' : ''; }
+function openScSheet() { renderScList(); fillForm(null); $('scsheet').hidden = false; }
+$('sclist').addEventListener('click', async (e) => {
+  const ed = e.target.closest('[data-ed]'), del = e.target.closest('[data-del]');
+  if (ed) fillForm(shortcuts.find((s) => String(s.id) === ed.dataset.ed));
+  if (del) {
+    if (del.dataset.armed !== '1') { del.dataset.armed = '1'; del.textContent = 'ยืนยันลบ'; return; }
+    const d = await api('/inbox/api/shortcuts/delete', { method: 'POST', body: JSON.stringify({ id: Number(del.dataset.del) }) });
+    shortcuts = d.shortcuts || []; renderScList(); renderQuick(); toast('ลบปุ่มแล้ว');
+  }
+});
+$('scSave').onclick = async () => {
+  const d = await api('/inbox/api/shortcuts', { method: 'POST', body: JSON.stringify({ id: editing, label: $('scLabel').value, kind: $('scKind').value, body: $('scBody').value }) });
+  if (!d.ok) { toast(d.error === 'image_url' ? 'ลิงก์รูปต้องเป็น https และลงท้าย .jpg หรือ .png' : 'กรอกชื่อปุ่มและข้อความก่อน'); return; }
+  shortcuts = d.shortcuts || []; renderScList(); renderQuick(); fillForm(null); toast('บันทึกปุ่มแล้ว');
+};
+$('scNew').onclick = () => fillForm(null);
+$('scClose').onclick = () => { $('scsheet').hidden = true; };
+$('endbtn').onclick = () => { $('endsheet').hidden = false; };
+$('endcancel').onclick = () => { $('endsheet').hidden = true; };
+$('endsheet').addEventListener('click', async (e) => {
+  if (e.target === $('endsheet')) { $('endsheet').hidden = true; return; }
+  const o = e.target.closest('[data-st]'); if (!o) return;
+  await api('/inbox/api/status', { method: 'POST', body: JSON.stringify({ u: current, status: o.dataset.st, reason: o.dataset.r }) });
+  $('endsheet').hidden = true; toast(o.dataset.st === 'muted' ? 'ซ่อนแชทนี้แล้ว AI จะไม่ตอบ' : 'จบแชทแล้ว');
+  history.back();
+});
+$('reopen').onclick = async () => {
+  await api('/inbox/api/status', { method: 'POST', body: JSON.stringify({ u: current, status: 'open' }) });
+  toast('เปิดแชทอีกครั้งแล้ว'); lastSig = ''; loadThread();
+};
 $('hbtn').onclick = async () => {
   const on = $('hbtn').dataset.on === '1';
   await api('/inbox/api/hold', { method: 'POST', body: JSON.stringify({ u: current, on }) });
@@ -280,6 +367,7 @@ function tick() { (current ? loadThread() : loadList()).catch(() => {}); }
 if (!token) { document.body.innerHTML = '<div class="empty">พิมพ์ <b>inbox</b> ในแชท LINE กับมามา แมนชั่น เพื่อรับลิงก์เข้าใช้</div>'; }
 else {
   loadMe().catch(() => {});
+  loadShortcuts().catch(() => {});
   if (location.hash.length > 2) openThread(location.hash.slice(1)); else loadList();
   setInterval(tick, 5000); setInterval(() => { if (!current) loadMe().catch(() => {}); }, 60000);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(); });

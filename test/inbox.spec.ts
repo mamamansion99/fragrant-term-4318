@@ -117,3 +117,52 @@ describe('inbox drafts and facts', () => {
 		expect((await get(`/inbox/api/messages?u=${U2}`, token)).body.draft).toBeNull();
 	});
 });
+
+describe('ending chats and shortcuts', () => {
+	const U = 'Uinboxstatus0000000000000000000004';
+	const post = async (path: string, token: string, body: unknown) => {
+		const res = await SELF.fetch(`https://example.com${path}`, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+		return { status: res.status, body: await res.json() as any };
+	};
+	const ids = (chats: any[]) => chats.map((c) => c.u);
+
+	it('takes an ended chat out of รอตอบ, brings a closed one back on a new message, keeps a muted one hidden', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const t0 = Date.now() - 120000;
+		await recordInboxEvent(e, { timestamp: new Date(t0).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: 'ห้องว่างไหม', userId: U, sourceType: 'user', logId: 's-1', handler: 'unhandled' });
+		expect(ids((await get('/inbox/api/chats?f=waiting', token)).body.chats)).toContain(U);
+
+		await post('/inbox/api/status', token, { u: U, status: 'closed', reason: 'unfit' });
+		expect(ids((await get('/inbox/api/chats?f=waiting', token)).body.chats)).not.toContain(U);
+		const closed = (await get('/inbox/api/chats?f=closed', token)).body.chats.find((c: any) => c.u === U);
+		expect(closed.statusReason).toBe('ไม่ผ่านเกณฑ์');
+
+		await recordInboxEvent(e, { timestamp: new Date(t0 + 1000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: 'ยังว่างอยู่ไหม', userId: U, sourceType: 'user', logId: 's-2', handler: 'unhandled' });
+		expect(ids((await get('/inbox/api/chats?f=waiting', token)).body.chats)).toContain(U);
+
+		await post('/inbox/api/status', token, { u: U, status: 'muted' });
+		await recordInboxEvent(e, { timestamp: new Date(t0 + 2000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: 'ตอบหน่อย', userId: U, sourceType: 'user', logId: 's-3', handler: 'unhandled' });
+		expect(ids((await get('/inbox/api/chats?f=waiting', token)).body.chats)).not.toContain(U);
+		expect(ids((await get('/inbox/api/chats?f=lead', token)).body.chats)).not.toContain(U);
+		const thread = (await get(`/inbox/api/messages?u=${U}`, token)).body;
+		expect(thread.contact.status).toBe('muted');
+		expect(thread.contact.human).toBe('Ma');
+
+		await post('/inbox/api/status', token, { u: U, status: 'open' });
+		expect((await get(`/inbox/api/messages?u=${U}`, token)).body.contact.human).toBe('');
+	});
+
+	it('lets staff edit the shortcut buttons and rejects image links LINE cannot show', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const seeded = (await get('/inbox/api/shortcuts', token)).body.shortcuts;
+		expect(seeded.map((x: any) => x.kind)).toEqual(expect.arrayContaining(['roomcard', 'image', 'text']));
+		expect(seeded.find((x: any) => x.label.includes('ข้อมูลหอ')).body).toContain('10,200-10,700');
+
+		const bad = await post('/inbox/api/shortcuts', token, { label: 'รูป', kind: 'image', body: 'http://example.com/a.webp' });
+		expect(bad.body.error).toBe('image_url');
+		const added = await post('/inbox/api/shortcuts', token, { label: 'โปร', kind: 'text', body: 'ลด 500 บาทเดือนแรก' });
+		const id = added.body.shortcuts.find((x: any) => x.label === 'โปร').id;
+		const after = await post('/inbox/api/shortcuts/delete', token, { id });
+		expect(after.body.shortcuts.some((x: any) => x.id === id)).toBe(false);
+	});
+});

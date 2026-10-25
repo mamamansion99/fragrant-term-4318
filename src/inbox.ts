@@ -80,7 +80,8 @@ async function touchContact(db, userId, ts, text, author) {
        last_text = CASE WHEN ?2 >= contacts.last_message_at THEN ?3 ELSE contacts.last_text END,
        last_author = CASE WHEN ?2 >= contacts.last_message_at THEN ?4 ELSE contacts.last_author END,
        last_customer_at = MAX(contacts.last_customer_at, ?5),
-       last_reply_at = MAX(contacts.last_reply_at, ?6)`
+       last_reply_at = MAX(contacts.last_reply_at, ?6),
+       status = CASE WHEN ?4 = 'customer' AND contacts.status = 'closed' THEN 'open' ELSE contacts.status END`
   ).bind(userId, ts, String(text || '').slice(0, 200), author, isCustomer ? ts : 0, isCustomer ? 0 : ts).run();
 }
 
@@ -165,9 +166,11 @@ async function listChats(env, url) {
   const binds = [];
   // A search looks through every chat; staff type a room like a102 from the
   // default ลูกค้าใหม่ tab, where tenants are not listed.
-  if (!q && filter === 'lead') where.push("COALESCE(contact_type, 'NON_TENANT') = 'NON_TENANT'");
-  if (!q && filter === 'tenant') where.push("contact_type = 'TENANT'");
-  if (!q && filter === 'waiting') where.push("last_author = 'customer'");
+  // Closed chats leave รอตอบ; muted ones only show under ปิดแล้ว or a search.
+  if (!q && filter === 'lead') where.push("COALESCE(contact_type, 'NON_TENANT') = 'NON_TENANT'", "COALESCE(status, 'open') <> 'muted'");
+  if (!q && filter === 'tenant') where.push("contact_type = 'TENANT'", "COALESCE(status, 'open') <> 'muted'");
+  if (!q && filter === 'waiting') where.push("last_author = 'customer'", "COALESCE(status, 'open') = 'open'");
+  if (!q && filter === 'closed') where.push("status IN ('closed', 'muted')");
   if (q) {
     binds.push(`%${q}%`);
     where.push(`(display_name LIKE ?${binds.length} OR room_id LIKE ?${binds.length} OR tenant_name LIKE ?${binds.length} OR last_text LIKE ?${binds.length})`);
@@ -185,7 +188,9 @@ async function listChats(env, url) {
     at: r.last_message_at,
     text: r.last_text || '',
     author: r.last_author || '',
-    waiting: r.last_author === 'customer',
+    status: r.status || 'open',
+    statusReason: r.status_reason || '',
+    waiting: r.last_author === 'customer' && (r.status || 'open') === 'open',
     waitedMin: r.last_author === 'customer' ? Math.max(0, Math.round((Date.now() - (r.last_customer_at || r.last_message_at)) / 60000)) : 0,
     human: (r.human_until || 0) > Date.now() ? r.human_by || 'staff' : ''
   }));
@@ -261,11 +266,16 @@ async function listMessages(env, url, deps) {
       type: contact.contact_type || 'NON_TENANT',
       human: (contact.human_until || 0) > Date.now() ? contact.human_by || 'staff' : '',
       humanUntil: contact.human_until || 0,
-      waiting: contact.last_author === 'customer',
+      waiting: contact.last_author === 'customer' && (contact.status || 'open') === 'open',
+      status: contact.status || 'open',
+      statusReason: contact.status_reason || '',
+      statusBy: contact.status_by || '',
+      statusAt: contact.status_at || 0,
       lastCustomerAt: contact.last_customer_at || 0,
       facts: parseFacts(contact.facts)
     } : null,
-    draft: await pendingDraft(env, userId),
+    // An ended chat offers no draft; a new customer message reopens it.
+    draft: (contact?.status || 'open') === 'open' ? await pendingDraft(env, userId) : null,
     messages: out,
     more: rows.length === PAGE_SIZE
   };
@@ -278,7 +288,7 @@ async function setHuman(env, userId, staff, holdMs) {
   // The live AI (n8n MM_AI_Shadow) still reads its own pause table.
   const pauseUrl = String(env.AI_PAUSE_URL || '').trim();
   if (pauseUrl) {
-    const m = holdMs > 0 ? 'pause' : 'resume';
+    const m = holdMs > 30 * 24 * 3600 * 1000 ? 'forever' : holdMs > 0 ? 'pause' : 'resume';
     await fetch(`${pauseUrl}&u=${encodeURIComponent(userId)}&m=${m}`).catch((err) => console.error('inbox_ai_pause_failed', err));
   }
   return until;
@@ -288,10 +298,22 @@ async function sendReply(env, request, staff, deps) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.u || '');
   const text = String(body.text || '').trim();
-  const kind = body.kind === 'roomcard' ? 'roomcard' : 'text';
+  let kind = body.kind === 'roomcard' ? 'roomcard' : 'text';
+  let imageUrl = '';
+  if (body.shortcutId) {
+    const sc = await env.INBOX_DB.prepare('SELECT * FROM shortcuts WHERE id = ?1').bind(Number(body.shortcutId)).first();
+    if (!sc) return json({ ok: false, error: 'shortcut' }, 404);
+    kind = sc.kind;
+    imageUrl = sc.kind === 'image' ? String(sc.body || '') : '';
+  }
   if (!userId.startsWith('U') || (kind === 'text' && !text)) return json({ ok: false, error: 'missing' }, 400);
   if (text.length > 4900) return json({ ok: false, error: 'too_long' }, 400);
-  const messages = kind === 'roomcard' ? deps.roomDetailMessages() : [{ type: 'text', text }];
+  if (kind === 'image' && !/^https:\/\/\S+\.(jpe?g|png)(\?\S*)?$/i.test(imageUrl)) return json({ ok: false, error: 'image_url' }, 400);
+  const messages = kind === 'roomcard'
+    ? deps.roomDetailMessages()
+    : kind === 'image'
+      ? [{ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl }]
+      : [{ type: 'text', text }];
   const store = deps.chatLogContext.getStore();
   if (store) {
     store.author = `staff:${staff.name}`;
@@ -308,7 +330,7 @@ async function sendReply(env, request, staff, deps) {
       'UPDATE drafts SET final_text = ?2, final_author = ?3, sent_at = ?4, edited = CASE WHEN draft = ?2 THEN 0 ELSE 1 END WHERE id = ?1'
     ).bind(Number(body.draftId), text, staff.name, Date.now()).run();
   }
-  await logAccess(env, staff, kind === 'roomcard' ? 'send_roomcard' : 'send', userId);
+  await logAccess(env, staff, kind === 'text' ? 'send' : `send_${kind}`, userId);
   return json({ ok: true, humanUntil: until });
 }
 
@@ -361,6 +383,48 @@ async function ingest(env, request) {
   return json({ ok: true });
 }
 
+const STATUS_REASONS = { done: 'ตอบครบแล้ว', unfit: 'ไม่ผ่านเกณฑ์', skip: 'ไม่ต้องตอบ', mute: 'ซ่อนถาวร' };
+const MUTE_HOLD_MS = 3650 * 24 * 3600 * 1000;
+
+async function setStatus(env, request, staff) {
+  const body = await request.json().catch(() => ({}));
+  const userId = String(body.u || '');
+  const status = ['open', 'closed', 'muted'].includes(body.status) ? body.status : '';
+  if (!userId.startsWith('U') || !status) return json({ ok: false }, 400);
+  const reason = status === 'open' ? '' : STATUS_REASONS[body.reason] || (status === 'muted' ? STATUS_REASONS.mute : STATUS_REASONS.done);
+  const prev = await env.INBOX_DB.prepare('SELECT status FROM contacts WHERE user_id = ?1').bind(userId).first();
+  await env.INBOX_DB.prepare('UPDATE contacts SET status = ?2, status_reason = ?3, status_by = ?4, status_at = ?5 WHERE user_id = ?1')
+    .bind(userId, status, reason, staff.name, Date.now()).run();
+  // A muted chat keeps the AI quiet for good; un-muting hands it back.
+  if (status === 'muted') await setHuman(env, userId, staff, MUTE_HOLD_MS);
+  else if (prev?.status === 'muted') await setHuman(env, userId, staff, 0);
+  await logAccess(env, staff, `status_${status}`, userId);
+  return json({ ok: true });
+}
+
+async function listShortcuts(env) {
+  return ((await env.INBOX_DB.prepare('SELECT id, label, kind, body, sort FROM shortcuts ORDER BY sort, id').all()).results || []);
+}
+
+async function saveShortcut(env, request, staff) {
+  const body = await request.json().catch(() => ({}));
+  const label = String(body.label || '').trim().slice(0, 40);
+  const kind = ['text', 'roomcard', 'image'].includes(body.kind) ? body.kind : 'text';
+  const text = String(body.body || '').trim().slice(0, 4900);
+  if (!label || (kind !== 'roomcard' && !text)) return json({ ok: false, error: 'missing' }, 400);
+  if (kind === 'image' && !/^https:\/\/\S+\.(jpe?g|png)(\?\S*)?$/i.test(text)) return json({ ok: false, error: 'image_url' }, 400);
+  if (body.id) {
+    await env.INBOX_DB.prepare('UPDATE shortcuts SET label = ?2, kind = ?3, body = ?4, updated_by = ?5, updated_at = ?6 WHERE id = ?1')
+      .bind(Number(body.id), label, kind, text, staff.name, Date.now()).run();
+  } else {
+    await env.INBOX_DB.prepare(
+      'INSERT INTO shortcuts (label, kind, body, sort, updated_by, updated_at) VALUES (?1, ?2, ?3, (SELECT COALESCE(MAX(sort), 0) + 10 FROM shortcuts), ?4, ?5)'
+    ).bind(label, kind, text, staff.name, Date.now()).run();
+  }
+  await logAccess(env, staff, 'shortcut_save', '');
+  return json({ ok: true, shortcuts: await listShortcuts(env) });
+}
+
 export async function handleInboxRequest(request, env, url, deps) {
   const path = url.pathname;
   if (request.method === 'GET' && (path === '/inbox' || path === '/inbox/')) {
@@ -382,6 +446,15 @@ export async function handleInboxRequest(request, env, url, deps) {
     return json({ ok: true, ...data });
   }
   if (request.method === 'POST' && path === '/inbox/api/send') return sendReply(env, request, staff, deps);
+  if (request.method === 'POST' && path === '/inbox/api/status') return setStatus(env, request, staff);
+  if (request.method === 'GET' && path === '/inbox/api/shortcuts') return json({ ok: true, shortcuts: await listShortcuts(env) });
+  if (request.method === 'POST' && path === '/inbox/api/shortcuts') return saveShortcut(env, request, staff);
+  if (request.method === 'POST' && path === '/inbox/api/shortcuts/delete') {
+    const body = await request.json().catch(() => ({}));
+    await env.INBOX_DB.prepare('DELETE FROM shortcuts WHERE id = ?1').bind(Number(body.id)).run();
+    await logAccess(env, staff, 'shortcut_delete', '');
+    return json({ ok: true, shortcuts: await listShortcuts(env) });
+  }
   if (request.method === 'POST' && path === '/inbox/api/hold') {
     const body = await request.json().catch(() => ({}));
     const userId = String(body.u || '');
