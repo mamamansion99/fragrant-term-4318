@@ -247,9 +247,12 @@ function renderThread(d) {
     const body = m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text);
     html += '<div class="b ' + side + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + body + '</div>';
   }
-  const box = $('msgs'), atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
+  const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
+  stickToBottom = false;
   box.innerHTML = html || '<div class="empty">ยังไม่มีข้อความ</div>';
-  if (atBottom || !box.dataset.ready) { box.scrollTop = box.scrollHeight; box.dataset.ready = '1'; }
+  box.dataset.ready = '1';
+  holdPosition(box, stick, fromBottom);
   const closed = c.status && c.status !== 'open';
   $('closedbar').hidden = !closed;
   if (closed) $('closedtxt').textContent = (c.status === 'muted' ? '🔕 ซ่อนถาวร' : '✓ จบแชทแล้ว · ' + (c.statusReason || '')) + (c.statusBy ? ' โดย ' + c.statusBy : '');
@@ -266,6 +269,28 @@ function renderThread(d) {
     $('useDraft').onclick = () => send(d.draft.text, d.draft.id);
     $('editDraft').onclick = () => { $('text').value = d.draft.text; $('text').dataset.draft = d.draft.id; grow(); $('text').focus(); };
   }
+}
+// Re-rendering rebuilds every image and sticker; each one grows when it loads
+// and pushes the conversation down, which looked like the chat jumping up.
+// Keep the same distance from the bottom (the latest message, when the user
+// was there) until the images have settled.
+let stickToBottom = false, settleObserver = null;
+function holdPosition(box, stick, fromBottom) {
+  const apply = () => { box.scrollTop = stick ? box.scrollHeight : Math.max(0, box.scrollHeight - box.clientHeight - fromBottom); };
+  apply();
+  box.querySelectorAll('img').forEach((img) => { if (!img.complete) img.addEventListener('load', apply, { once: true }); });
+  if (settleObserver) settleObserver.disconnect();
+  if (window.ResizeObserver) {
+    settleObserver = new ResizeObserver(apply);
+    [...box.children].forEach((el) => settleObserver.observe(el));
+    const stop = () => { if (settleObserver) { settleObserver.disconnect(); settleObserver = null; } };
+    setTimeout(stop, 2000);
+    // Never fight the user's own scrolling.
+    box.addEventListener('wheel', stop, { once: true, passive: true });
+    box.addEventListener('touchstart', stop, { once: true, passive: true });
+  }
+  // The composer and AI card below can change height after this render too.
+  requestAnimationFrame(apply);
 }
 async function loadThread() {
   if (!current) return;
@@ -285,7 +310,7 @@ async function send(text, draftId, kind) {
   try {
     const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, text, draftId: draftId || $('text').dataset.draft || undefined, kind }) });
     if (!d.ok) { toast('ส่งไม่สำเร็จ ลองอีกครั้ง'); return; }
-    $('text').value = ''; delete $('text').dataset.draft; grow(); lastSig = '';
+    $('text').value = ''; delete $('text').dataset.draft; grow(); lastSig = ''; stickToBottom = true;
     toast('ส่งแล้ว ✓' + (waited ? ' ตอบใน ' + mins(waited) : '') + (draftId ? ' · ใช้คำแนะนำ AI' : ''));
     await loadThread();
   } finally { $('send').disabled = false; }
@@ -320,7 +345,7 @@ $('quick').addEventListener('click', (e) => {
 });
 async function sendShortcut(x) {
   const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) });
-  toast(d.ok ? 'ส่ง ' + x.label + ' แล้ว ✓' : 'ส่งไม่สำเร็จ ลองอีกครั้ง'); lastSig = ''; loadThread();
+  toast(d.ok ? 'ส่ง ' + x.label + ' แล้ว ✓' : 'ส่งไม่สำเร็จ ลองอีกครั้ง'); lastSig = ''; stickToBottom = true; loadThread();
 }
 let editing = null;
 function renderScList() {
