@@ -186,8 +186,59 @@ async function listChats(env, url) {
     text: r.last_text || '',
     author: r.last_author || '',
     waiting: r.last_author === 'customer',
+    waitedMin: r.last_author === 'customer' ? Math.max(0, Math.round((Date.now() - (r.last_customer_at || r.last_message_at)) / 60000)) : 0,
     human: (r.human_until || 0) > Date.now() ? r.human_by || 'staff' : ''
   }));
+}
+
+function parseFacts(raw) {
+  try { return raw ? JSON.parse(raw) : {}; } catch (_) { return {}; }
+}
+
+// The newest AI draft nobody has used yet, offered above the composer. A draft
+// older than the last reply in the chat is stale: someone already answered.
+async function pendingDraft(env, userId) {
+  const d = await env.INBOX_DB.prepare(
+    'SELECT * FROM drafts WHERE user_id = ?1 ORDER BY created_at DESC LIMIT 1'
+  ).bind(userId).first();
+  if (!d || d.sent_at || d.ai_sent || !d.draft) return null;
+  const lastOut = await env.INBOX_DB.prepare(
+    "SELECT MAX(ts) AS t FROM messages WHERE user_id = ?1 AND direction = 'OUT'"
+  ).bind(userId).first();
+  if ((lastOut?.t || 0) > d.created_at) return null;
+  // The keyword bot may already have answered the message this draft is for.
+  if (d.in_log_id) {
+    const answered = await env.INBOX_DB.prepare(
+      "SELECT 1 FROM messages WHERE user_id = ?1 AND direction = 'OUT' AND in_reply_to = ?2 LIMIT 1"
+    ).bind(userId, d.in_log_id).first();
+    if (answered) return null;
+  }
+  return { id: d.id, text: d.draft, verdict: d.verdict || '' };
+}
+
+function bangkokDayStart() {
+  const now = Date.now() + 7 * 3600 * 1000;
+  return now - (now % (24 * 3600 * 1000)) - 7 * 3600 * 1000;
+}
+
+async function todayStats(env, staff) {
+  const since = bangkokDayStart();
+  const row = await env.INBOX_DB.prepare(
+    `SELECT
+       COUNT(DISTINCT CASE WHEN author LIKE 'staff:%' THEN user_id END) AS staffChats,
+       COUNT(DISTINCT CASE WHEN author = ?2 THEN user_id END) AS myChats,
+       COUNT(DISTINCT CASE WHEN author = 'ai' THEN user_id END) AS aiChats,
+       AVG(CASE WHEN author LIKE 'staff:%' THEN ts - (
+         SELECT MAX(i.ts) FROM messages i WHERE i.user_id = messages.user_id AND i.direction = 'IN' AND i.ts < messages.ts
+       ) END) AS avgMs
+     FROM messages WHERE ts >= ?1 AND direction = 'OUT'`
+  ).bind(since, `staff:${staff.name}`).first();
+  return {
+    staffChats: row?.staffChats || 0,
+    myChats: row?.myChats || 0,
+    aiChats: row?.aiChats || 0,
+    avgMin: row?.avgMs ? Math.max(1, Math.round(row.avgMs / 60000)) : null
+  };
 }
 
 async function listMessages(env, url, deps) {
@@ -209,8 +260,12 @@ async function listMessages(env, url, deps) {
       u: contact.user_id, name: contact.display_name || '', room: contact.room_id || '', tenant: contact.tenant_name || '',
       type: contact.contact_type || 'NON_TENANT',
       human: (contact.human_until || 0) > Date.now() ? contact.human_by || 'staff' : '',
-      humanUntil: contact.human_until || 0
+      humanUntil: contact.human_until || 0,
+      waiting: contact.last_author === 'customer',
+      lastCustomerAt: contact.last_customer_at || 0,
+      facts: parseFacts(contact.facts)
     } : null,
+    draft: await pendingDraft(env, userId),
     messages: out,
     more: rows.length === PAGE_SIZE
   };
@@ -233,15 +288,17 @@ async function sendReply(env, request, staff, deps) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.u || '');
   const text = String(body.text || '').trim();
-  if (!userId.startsWith('U') || !text) return json({ ok: false, error: 'missing' }, 400);
+  const kind = body.kind === 'roomcard' ? 'roomcard' : 'text';
+  if (!userId.startsWith('U') || (kind === 'text' && !text)) return json({ ok: false, error: 'missing' }, 400);
   if (text.length > 4900) return json({ ok: false, error: 'too_long' }, 400);
+  const messages = kind === 'roomcard' ? deps.roomDetailMessages() : [{ type: 'text', text }];
   const store = deps.chatLogContext.getStore();
   if (store) {
     store.author = `staff:${staff.name}`;
     store.handler = 'inbox';
   }
   try {
-    await deps.linePush(env.LINE_ACCESS_TOKEN, userId, [{ type: 'text', text }]);
+    await deps.linePush(env.LINE_ACCESS_TOKEN, userId, messages);
   } catch (err) {
     return json({ ok: false, error: String(err?.message || err).slice(0, 200) }, 502);
   }
@@ -251,7 +308,7 @@ async function sendReply(env, request, staff, deps) {
       'UPDATE drafts SET final_text = ?2, final_author = ?3, sent_at = ?4, edited = CASE WHEN draft = ?2 THEN 0 ELSE 1 END WHERE id = ?1'
     ).bind(Number(body.draftId), text, staff.name, Date.now()).run();
   }
-  await logAccess(env, staff, 'send', userId);
+  await logAccess(env, staff, kind === 'roomcard' ? 'send_roomcard' : 'send', userId);
   return json({ ok: true, humanUntil: until });
 }
 
@@ -273,6 +330,20 @@ async function ingest(env, request) {
       `INSERT INTO contacts (user_id, room_id, tenant_name, contact_type) VALUES (?1, ?2, ?3, ?4)
        ON CONFLICT(user_id) DO UPDATE SET room_id = ?2, tenant_name = ?3, contact_type = ?4`
     ).bind(userId, String(body.roomId || ''), String(body.tenantName || ''), String(body.contactType)).run();
+  }
+  if (body.facts && typeof body.facts === 'object') {
+    const row = await env.INBOX_DB.prepare('SELECT facts FROM contacts WHERE user_id = ?1').bind(userId).first();
+    const merged = { ...parseFacts(row?.facts) };
+    for (const [k, v] of Object.entries(body.facts)) if (v !== null && v !== undefined && v !== '') merged[k] = v;
+    await env.INBOX_DB.prepare(
+      'INSERT INTO contacts (user_id, facts) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET facts = ?2'
+    ).bind(userId, JSON.stringify(merged)).run();
+  }
+  if (body.draft) {
+    await env.INBOX_DB.prepare(
+      'INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, meta, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
+    ).bind(userId, String(body.inLogId || ''), Date.now(), String(body.draft).slice(0, 4000), String(body.verdict || ''),
+      JSON.stringify(body.facts || {}), body.aiSent ? 1 : 0).run();
   }
   if (body.text && body.direction === 'OUT') {
     await insertMessage(env.INBOX_DB, {
@@ -303,7 +374,7 @@ export async function handleInboxRequest(request, env, url, deps) {
   const staff = await staffFromRequest(env, request);
   if (!staff) return json({ ok: false, error: 'auth' }, 401);
 
-  if (request.method === 'GET' && path === '/inbox/api/me') return json({ ok: true, name: staff.name });
+  if (request.method === 'GET' && path === '/inbox/api/me') return json({ ok: true, name: staff.name, today: await todayStats(env, staff) });
   if (request.method === 'GET' && path === '/inbox/api/chats') return json({ ok: true, chats: await listChats(env, url) });
   if (request.method === 'GET' && path === '/inbox/api/messages') {
     const data = await listMessages(env, url, deps);

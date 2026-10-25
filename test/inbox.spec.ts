@@ -73,3 +73,47 @@ describe('inbox', () => {
 		expect(res.status).toBe(400);
 	});
 });
+
+describe('inbox drafts and facts', () => {
+	const U = 'Uinboxdraft00000000000000000000002';
+	it('offers the newest unused AI draft until someone replies, and shows screening facts', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const now = Date.now();
+		await recordInboxEvent(e, { timestamp: new Date(now - 60000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text',
+			text: 'นักศึกษาค่ะ เข้า ธ.ค.', userId: U, sourceType: 'user', logId: 'd-in-1', handler: 'unhandled' });
+		await e.INBOX_DB.prepare("UPDATE contacts SET facts = ?2 WHERE user_id = ?1").bind(U, JSON.stringify({ job: 'นักศึกษา', move_in: 'ธ.ค.' })).run();
+		await e.INBOX_DB.prepare('INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, 0)')
+			.bind(U, 'd-in-1', now - 30000, 'พักกี่คนและมีสัตว์เลี้ยงไหมครับ', 'NEED_INFO').run();
+
+		let t = (await get(`/inbox/api/messages?u=${U}`, token)).body;
+		expect(t.draft.text).toBe('พักกี่คนและมีสัตว์เลี้ยงไหมครับ');
+		expect(t.contact.facts).toEqual({ job: 'นักศึกษา', move_in: 'ธ.ค.' });
+		expect(t.contact.waiting).toBe(true);
+
+		// A draft the live AI already sent is not offered again.
+		await e.INBOX_DB.prepare('UPDATE drafts SET ai_sent = 1 WHERE user_id = ?1').bind(U).run();
+		expect((await get(`/inbox/api/messages?u=${U}`, token)).body.draft).toBeNull();
+		await e.INBOX_DB.prepare('UPDATE drafts SET ai_sent = 0 WHERE user_id = ?1').bind(U).run();
+
+		// Once anyone replies after the draft, it is stale.
+		await recordInboxOutbound(e, { timestamp: new Date(now).toISOString(), userId: U, sourceType: 'user', text: 'ได้ครับ', logId: 'd-out-1', handler: 'inbox' }, 'staff:Ma');
+		t = (await get(`/inbox/api/messages?u=${U}`, token)).body;
+		expect(t.draft).toBeNull();
+
+		const me = (await get('/inbox/api/me', token)).body;
+		expect(me.today.staffChats).toBeGreaterThanOrEqual(1);
+		expect(me.today.myChats).toBeGreaterThanOrEqual(1);
+	});
+
+	it('does not offer a draft for a message the keyword bot already answered', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const U2 = 'Uinboxdraft00000000000000000000003';
+		const now = Date.now();
+		await recordInboxEvent(e, { timestamp: new Date(now - 60000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text',
+			text: 'รายละเอียดห้อง', userId: U2, sourceType: 'user', logId: 'k-in-1', handler: 'quick_keyword' });
+		await recordInboxOutbound(e, { timestamp: new Date(now - 59000).toISOString(), userId: U2, sourceType: 'user', text: '[flex]', logId: 'k-in-1:out1', inReplyTo: 'k-in-1', handler: 'quick_keyword' }, 'bot');
+		await e.INBOX_DB.prepare('INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, 0)')
+			.bind(U2, 'k-in-1', now - 30000, 'ห้องมาตรฐาน 4,000 บาทครับ', 'NEED_INFO').run();
+		expect((await get(`/inbox/api/messages?u=${U2}`, token)).body.draft).toBeNull();
+	});
+});

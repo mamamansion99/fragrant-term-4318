@@ -4511,7 +4511,12 @@ const worker = {
     }
 
     if (isInboxPath(url.pathname)) {
-      return handleInboxRequest(request, env, url, { linePush, repairMediaUrl, chatLogContext });
+      return handleInboxRequest(request, env, url, {
+        linePush,
+        repairMediaUrl,
+        chatLogContext,
+        roomDetailMessages: () => [...buildRoomPhotoReply(), { type: 'text', text: buildRoomDetailAllText() }]
+      });
     }
 
     // Frontend API → proxy to GAS #2
