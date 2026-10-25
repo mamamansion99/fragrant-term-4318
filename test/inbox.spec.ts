@@ -237,3 +237,35 @@ describe('staff answers the AI learns from', () => {
 		expect(res.status).toBe(401);
 	});
 });
+
+describe('home-screen app and LINE login', () => {
+	it('serves the manifest and icon for adding to the home screen', async () => {
+		const m = await (await SELF.fetch('https://example.com/inbox/manifest.webmanifest')).json() as any;
+		expect(m).toMatchObject({ name: 'Mama Inbox', start_url: '/inbox', display: 'standalone' });
+		const icon = await SELF.fetch('https://example.com/inbox/icon-180.png');
+		expect(icon.headers.get('content-type')).toBe('image/png');
+		expect((await icon.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+	});
+
+	it('hands a finished login to the polling app exactly once, and rejects bad or stale states', async () => {
+		const s = 'a'.repeat(32);
+		const poll = async (st: string) => (await (await SELF.fetch(`https://example.com/inbox/auth/poll?s=${st}`)).json()) as any;
+		expect((await SELF.fetch('https://example.com/inbox/auth/poll?s=nope')).status).toBe(400);
+		await e.INBOX_DB.prepare('INSERT INTO auth_states (state, created_at) VALUES (?1, ?2)').bind(s, Date.now()).run();
+		expect(await poll(s)).toMatchObject({ ok: false, pending: true });
+		const token = await issueInboxToken(e, STAFF);
+		await e.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(s, token, 'Ma').run();
+		expect(await poll(s)).toMatchObject({ ok: true, token, name: 'Ma' });
+		expect(await poll(s)).toMatchObject({ ok: false, expired: true });
+
+		const old = 'b'.repeat(32);
+		await e.INBOX_DB.prepare('INSERT INTO auth_states (state, created_at, token) VALUES (?1, ?2, ?3)').bind(old, Date.now() - 11 * 60 * 1000, token).run();
+		expect(await poll(old)).toMatchObject({ ok: false, expired: true });
+	});
+
+	it('says LINE Login is not set up instead of sending staff to a broken LINE page', async () => {
+		const res = await SELF.fetch(`https://example.com/inbox/auth/start?s=${'c'.repeat(32)}`, { redirect: 'manual' });
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain('ยังไม่ได้ตั้งค่า LINE Login');
+	});
+});

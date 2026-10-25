@@ -12,6 +12,7 @@
  * read and reply. Group chats are not part of the inbox.
  * ----------------------------------------------------- */
 import { INBOX_PAGE_HTML } from './inbox-page';
+import { INBOX_ICON_180, INBOX_ICON_512 } from './inbox-assets';
 
 const TOKEN_DAYS = 30;
 const HUMAN_HOLD_MS = 24 * 3600 * 1000;
@@ -550,8 +551,118 @@ async function saveShortcut(env, request, staff) {
   return json({ ok: true, shortcuts: await listShortcuts(env) });
 }
 
+/* ---------- home-screen app + เข้าสู่ระบบด้วย LINE ---------- */
+
+const MANIFEST = JSON.stringify({
+  name: 'Mama Inbox',
+  short_name: 'Mama Inbox',
+  start_url: '/inbox',
+  scope: '/inbox',
+  display: 'standalone',
+  background_color: '#0c110e',
+  theme_color: '#06b54c',
+  icons: [
+    { src: '/inbox/icon-180.png', sizes: '180x180', type: 'image/png' },
+    { src: '/inbox/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' }
+  ]
+});
+
+function pngResponse(b64) {
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return new Response(bytes, { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=604800' } });
+}
+
+const LOGIN_STATE_TTL_MS = 10 * 60 * 1000;
+const STATE_RE = /^[a-f0-9]{32}$/;
+
+function htmlPage(title, body, script = '') {
+  return new Response(`<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${title}</title><style>body{font-family:-apple-system,"Noto Sans Thai",sans-serif;margin:0;padding:40px 24px;text-align:center;background:#0c110e;color:#e8efe9}
+a{display:inline-block;margin-top:16px;padding:12px 20px;border-radius:999px;background:#06b54c;color:#fff;text-decoration:none;font-weight:600}</style></head>
+<body>${body}${script ? `<script>${script}</script>` : ''}</body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' } });
+}
+
+function lineLoginConfigured(env) {
+  return !!(String(env.LINE_LOGIN_CHANNEL_ID || '').trim() && String(env.LINE_LOGIN_CHANNEL_SECRET || '').trim());
+}
+
+async function loginStart(env, url) {
+  const state = url.searchParams.get('s') || '';
+  if (!STATE_RE.test(state)) return htmlPage('Mama Inbox', '<p>ลิงก์เข้าสู่ระบบไม่ถูกต้อง เปิดแอปแล้วกดเข้าสู่ระบบอีกครั้ง</p>');
+  if (!lineLoginConfigured(env)) return htmlPage('Mama Inbox', '<p>ยังไม่ได้ตั้งค่า LINE Login</p>');
+  await env.INBOX_DB.prepare('INSERT OR IGNORE INTO auth_states (state, created_at) VALUES (?1, ?2)').bind(state, Date.now()).run();
+  const auth = new URL('https://access.line.me/oauth2/v2.1/authorize');
+  auth.searchParams.set('response_type', 'code');
+  auth.searchParams.set('client_id', String(env.LINE_LOGIN_CHANNEL_ID).trim());
+  auth.searchParams.set('redirect_uri', `${url.origin}/inbox/auth/callback`);
+  auth.searchParams.set('state', state);
+  auth.searchParams.set('scope', 'profile openid');
+  return Response.redirect(auth.toString(), 302);
+}
+
+// LINE returns here with a code. The LINE user id in the verified ID token
+// has to be on the staff list, the same check as the "inbox" command.
+async function loginCallback(env, url) {
+  const state = url.searchParams.get('state') || '';
+  const code = url.searchParams.get('code') || '';
+  const row = STATE_RE.test(state)
+    ? await env.INBOX_DB.prepare('SELECT * FROM auth_states WHERE state = ?1').bind(state).first()
+    : null;
+  if (!row || row.token || Date.now() - row.created_at > LOGIN_STATE_TTL_MS || !code) {
+    return htmlPage('Mama Inbox', '<p>การเข้าสู่ระบบหมดเวลาหรือถูกใช้แล้ว เปิดแอปแล้วกดเข้าสู่ระบบอีกครั้ง</p><a href="/inbox">เปิด Mama Inbox</a>');
+  }
+  const clientId = String(env.LINE_LOGIN_CHANNEL_ID).trim();
+  const tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'authorization_code', code, redirect_uri: `${url.origin}/inbox/auth/callback`,
+      client_id: clientId, client_secret: String(env.LINE_LOGIN_CHANNEL_SECRET).trim()
+    })
+  });
+  const tok = tokenRes.ok ? await tokenRes.json() : null;
+  const verifyRes = tok?.id_token ? await fetch('https://api.line.me/oauth2/v2.1/verify', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ id_token: tok.id_token, client_id: clientId })
+  }) : null;
+  const claims = verifyRes?.ok ? await verifyRes.json() : null;
+  const lineUserId = String(claims?.sub || '');
+  const name = inboxStaff(env)[lineUserId];
+  if (!name) {
+    console.warn('inbox_login_refused', { lineUserId, tokenOk: !!tok, verifyOk: !!claims });
+    return htmlPage('Mama Inbox', `<p>บัญชี LINE นี้ไม่มีสิทธิ์เข้า Mama Inbox</p><p style="opacity:.6;font-size:13px">${lineUserId ? 'ID: ' + lineUserId : 'ยืนยันกับ LINE ไม่สำเร็จ'}</p>`);
+  }
+  const token = await issueInboxToken(env, lineUserId);
+  await env.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(state, token, name).run();
+  await logAccess(env, { name }, 'login_line', '');
+  // Finished in the app itself: keep the token and go straight in. Finished in
+  // Safari or LINE: the home-screen app picks the token up by polling.
+  return htmlPage('Mama Inbox', `<p>✅ เข้าสู่ระบบแล้ว (${name})</p><p>กลับไปที่แอป Mama Inbox ได้เลย</p><a href="/inbox">เปิด Mama Inbox</a>`,
+    `try{localStorage.setItem('inboxToken',${JSON.stringify(token)});localStorage.removeItem('pendingLogin')}catch(e){}`);
+}
+
+async function loginPoll(env, url) {
+  const state = url.searchParams.get('s') || '';
+  if (!STATE_RE.test(state)) return json({ ok: false }, 400);
+  const row = await env.INBOX_DB.prepare('SELECT * FROM auth_states WHERE state = ?1').bind(state).first();
+  if (!row || Date.now() - row.created_at > LOGIN_STATE_TTL_MS || row.used) return json({ ok: false, expired: true });
+  if (!row.token) return json({ ok: false, pending: true });
+  await env.INBOX_DB.prepare('UPDATE auth_states SET used = 1 WHERE state = ?1').bind(state).run();
+  return json({ ok: true, token: row.token, name: row.staff });
+}
+
 export async function handleInboxRequest(request, env, url, deps) {
   const path = url.pathname;
+  if (request.method === 'GET' && path === '/inbox/manifest.webmanifest') {
+    return new Response(MANIFEST, { headers: { 'content-type': 'application/manifest+json', 'cache-control': 'public, max-age=3600' } });
+  }
+  if (request.method === 'GET' && path === '/inbox/icon-180.png') return pngResponse(INBOX_ICON_180);
+  if (request.method === 'GET' && path === '/inbox/icon-512.png') return pngResponse(INBOX_ICON_512);
+  if (request.method === 'GET' && path === '/inbox/auth/start') return loginStart(env, url);
+  if (request.method === 'GET' && path === '/inbox/auth/callback') return loginCallback(env, url);
+  if (request.method === 'GET' && path === '/inbox/auth/poll') return loginPoll(env, url);
+  if (request.method === 'GET' && path === '/inbox/api/login-config') return json({ ok: true, lineLogin: lineLoginConfigured(env) });
   if (request.method === 'GET' && (path === '/inbox' || path === '/inbox/')) {
     return new Response(INBOX_PAGE_HTML, {
       headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }

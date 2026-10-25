@@ -10,6 +10,12 @@ export const INBOX_PAGE_HTML = `<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#06b54c">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Mama Inbox">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/inbox/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/inbox/icon-180.png">
+<link rel="icon" href="/inbox/icon-180.png">
 <title>Mama Inbox</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anuphan:wght@500;600;700&family=IBM+Plex+Sans+Thai:wght@400;500;600&display=swap">
@@ -178,7 +184,7 @@ const t2 = (ms) => { const d = new Date(ms), n = new Date(); return d.toDateStri
 const mins = (m) => m < 60 ? m + ' นาที' : Math.floor(m / 60) + ' ชม.';
 async function api(path, opt = {}) {
   const res = await fetch(path, { ...opt, headers: { ...(opt.headers || {}), Authorization: 'Bearer ' + token, 'content-type': 'application/json' } });
-  if (res.status === 401) { document.body.innerHTML = '<div class="empty">ลิงก์หมดอายุหรือไม่ถูกต้อง<br>พิมพ์ <b>inbox</b> ในแชท LINE กับมามา แมนชั่น เพื่อรับลิงก์ใหม่</div>'; throw new Error('auth'); }
+  if (res.status === 401) { try { localStorage.removeItem('inboxToken'); } catch (_) {} showLogin('การเข้าสู่ระบบหมดอายุ'); throw new Error('auth'); }
   return res.json();
 }
 function toast(t) { const el = $('toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove('show'), 2200); }
@@ -390,7 +396,43 @@ $('hbtn').onclick = async () => {
   toast(on ? 'AI หยุดตอบแชทนี้ 24 ชม.' : 'ให้ AI ตอบต่อแล้ว'); lastSig = ''; loadThread();
 };
 function tick() { (current ? loadThread() : loadList()).catch(() => {}); }
-if (!token) { document.body.innerHTML = '<div class="empty">พิมพ์ <b>inbox</b> ในแชท LINE กับมามา แมนชั่น เพื่อรับลิงก์เข้าใช้</div>'; }
+// Login. On iPhone a home-screen app does not share storage with Safari, so
+// it signs in on its own: "เข้าสู่ระบบด้วย LINE" sends a random state through
+// LINE Login and the app polls for the token, wherever LINE finished the login.
+function showLogin(note) {
+  let pending = ''; try { pending = localStorage.getItem('pendingLogin') || ''; } catch (_) {}
+  document.body.innerHTML = '<div class="empty" style="padding-top:80px">' +
+    '<img src="/inbox/icon-180.png" width="88" height="88" style="border-radius:20px" alt=""><h2 style="font:700 22px var(--display);color:var(--ink)">Mama Inbox</h2>' +
+    (note ? '<p>' + esc(note) + '</p>' : '') +
+    '<p id="lgmsg">' + (pending ? 'กำลังรอยืนยันใน LINE…' : 'สำหรับเจ้าหน้าที่มามา แมนชั่น') + '</p>' +
+    '<button id="lgbtn" style="margin-top:12px;padding:13px 22px;border-radius:999px;background:#06c755;color:#fff;font-weight:600;font-size:16px">เข้าสู่ระบบด้วย LINE</button>' +
+    '<p style="margin-top:24px;font-size:13px">หรือพิมพ์ <b>inbox</b> ในแชท LINE กับมามา แมนชั่น เพื่อรับลิงก์</p></div>';
+  document.getElementById('lgbtn').onclick = () => {
+    const s = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+    try { localStorage.setItem('pendingLogin', s); } catch (_) {}
+    location.href = '/inbox/auth/start?s=' + s;
+  };
+  if (pending) pollLogin(pending);
+}
+function pollLogin(s) {
+  let tries = 0;
+  const t = setInterval(async () => {
+    tries++;
+    try {
+      const d = await (await fetch('/inbox/auth/poll?s=' + s, { cache: 'no-store' })).json();
+      if (d.ok && d.token) {
+        clearInterval(t);
+        try { localStorage.setItem('inboxToken', d.token); localStorage.removeItem('pendingLogin'); } catch (_) {}
+        location.replace('/inbox');
+      } else if (d.expired || tries > 300) {
+        clearInterval(t);
+        try { localStorage.removeItem('pendingLogin'); } catch (_) {}
+        const m = document.getElementById('lgmsg'); if (m) m.textContent = 'หมดเวลา กดเข้าสู่ระบบอีกครั้ง';
+      }
+    } catch (_) {}
+  }, 2000);
+}
+if (!token) { showLogin(''); }
 else {
   loadMe().catch(() => {});
   loadShortcuts().catch(() => {});
