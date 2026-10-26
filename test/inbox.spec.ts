@@ -1,6 +1,6 @@
 import { env, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
-import { issueInboxToken, recordInboxEvent, recordInboxOutbound } from '../src/inbox';
+import { issueInboxToken, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from '../src/inbox';
 
 const STAFF = 'Ue90558b73d62863e2287ac32e69541a3';
 const CUSTOMER = 'Uinboxtest000000000000000000000001';
@@ -267,5 +267,18 @@ describe('home-screen app and LINE login', () => {
 		const res = await SELF.fetch(`https://example.com/inbox/auth/start?s=${'c'.repeat(32)}`, { redirect: 'manual' });
 		expect(res.status).toBe(200);
 		expect(await res.text()).toContain('ยังไม่ได้ตั้งค่า LINE Login');
+	});
+});
+
+describe('pay-rent flow recovery', () => {
+	const U = 'Upayrenttest0000000000000000000001';
+	const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
+	it('sees a recent ชำระค่าเช่า until a slip has been forwarded', async () => {
+		expect(await payRentCommandInWindow(e, U, 15 * 60 * 1000)).toBeNull();
+		await recordInboxEvent(e, { timestamp: at(14000), direction: 'IN', eventType: 'message', messageType: 'text', text: 'ชำระค่าเช่า', userId: U, sourceType: 'user', logId: 'pr-cmd', handler: 'pay_rent' });
+		expect(await payRentCommandInWindow(e, U, 15 * 60 * 1000)).not.toBeNull();
+		expect(await payRentCommandInWindow(e, U, 5000)).toBeNull(); // older than the window
+		await recordInboxEvent(e, { timestamp: at(1000), direction: 'IN', eventType: 'message', messageType: 'image', text: '(image)', userId: U, sourceType: 'user', logId: 'pr-img', handler: 'image:pay_rent' });
+		expect(await payRentCommandInWindow(e, U, 15 * 60 * 1000)).toBeNull(); // slip already used the flow
 	});
 });

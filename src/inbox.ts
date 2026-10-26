@@ -154,6 +154,23 @@ export async function recordInboxEvent(env, log) {
   });
 }
 
+// KV is eventually consistent, so a slip sent seconds after "ชำระค่าเช่า" can
+// reach the worker before the payrent_flow key is visible and be bounced as an
+// unexpected image. D1 is read-your-writes: if this user typed the command in
+// the last `windowMs` and no slip has been forwarded since, the flow is still on.
+export async function payRentCommandInWindow(env, userId, windowMs) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return null;
+  const cmd = await db.prepare(
+    "SELECT ts FROM messages WHERE user_id = ?1 AND direction = 'IN' AND handler = 'pay_rent' AND ts > ?2 ORDER BY ts DESC LIMIT 1"
+  ).bind(userId, Date.now() - windowMs).first();
+  if (!cmd?.ts) return null;
+  const used = await db.prepare(
+    "SELECT 1 AS x FROM messages WHERE user_id = ?1 AND direction = 'IN' AND handler = 'image:pay_rent' AND ts > ?2 LIMIT 1"
+  ).bind(userId, cmd.ts).first();
+  return used ? null : { ts: cmd.ts };
+}
+
 export async function recordInboxOutbound(env, payload, author) {
   const db = env?.INBOX_DB;
   if (!db || !payload || payload.sourceType !== 'user' || !String(payload.userId || '').startsWith('U')) return;

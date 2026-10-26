@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, recordInboxEvent, recordInboxOutbound } from './inbox';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -8774,7 +8774,14 @@ const worker = {
             continue;
           }
 
-          const payRentFlow = await kvGet(env, stateKey + ':payrent_flow');
+          let payRentFlow = await kvGet(env, stateKey + ':payrent_flow');
+          if (!payRentFlow && m.type === 'image' && String(ev?.source?.type || '') === 'user') {
+            const recovered = await payRentCommandInWindow(env, String(ev?.source?.userId || ''), 15 * 60 * 1000).catch(() => null);
+            if (recovered) {
+              payRentFlow = { ts: recovered.ts, chatId, userId: String(ev?.source?.userId || '') };
+              console.log('payrent_flow_recovered_from_log', { userId: payRentFlow.userId, cmdTs: recovered.ts });
+            }
+          }
           const payRentActive = !!(
             payRentFlow &&
             payRentFlow.ts &&
