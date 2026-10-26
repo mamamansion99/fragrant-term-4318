@@ -158,6 +158,19 @@ export async function recordInboxEvent(env, log) {
 // reach the worker before the payrent_flow key is visible and be bounced as an
 // unexpected image. D1 is read-your-writes: if this user typed the command in
 // the last `windowMs` and no slip has been forwarded since, the flow is still on.
+// TENANT / NON_TENANT as MM_LOG last reported it, or '' when unknown.
+export async function inboxContactType(env, userId) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return '';
+  try {
+    const row = await db.prepare('SELECT contact_type FROM contacts WHERE user_id = ?1').bind(userId).first();
+    return String(row?.contact_type || '');
+  } catch (err) {
+    console.error('inbox_contact_type_failed', { userId, error: String(err?.message || err) });
+    return '';
+  }
+}
+
 export async function payRentCommandInWindow(env, userId, windowMs) {
   const db = env?.INBOX_DB;
   if (!db || !String(userId || '').startsWith('U')) return null;

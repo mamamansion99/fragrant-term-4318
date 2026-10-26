@@ -2867,6 +2867,31 @@ describe('Worker routes', () => {
 		expect(messages[0].previewImageUrl).toBe('https://mm-v2.pages.dev/images/line/price-sheet-v2-preview.jpg');
 	});
 
+	it('answers ค่าน้ำ/ค่าไฟ with the rate card but leaves tenants\' bill questions to staff', async () => {
+		const tenant = 'Uutiltenant0000000000000000000001';
+		const lead = 'Uutillead00000000000000000000001';
+		const db = (env as any).INBOX_DB;
+		await db.prepare('INSERT INTO contacts (user_id, contact_type) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET contact_type = ?2')
+			.bind(tenant, 'TENANT').run();
+		await db.prepare('INSERT INTO contacts (user_id, contact_type) VALUES (?1, ?2) ON CONFLICT(user_id) DO UPDATE SET contact_type = ?2')
+			.bind(lead, 'NON_TENANT').run();
+		const reply = (t: string, u: string) => __testables.quickKeywordReply(t, env, u) as Promise<Array<Record<string, any>> | null>;
+
+		const card = await reply('ค่าน้ำค่าไฟเท่าไหร่คะ', tenant);
+		expect(card?.[0].text).toContain('[ค่าน้ำ-ไฟ/เน็ต]');
+		expect(card?.[0].text).toContain('น้ำขั้นต่ำ 50 บาท');
+		for (const t of ['ค่าน้ำค่าไฟ', 'สอบถามค่าไฟหน่อยครับ', 'ค่าไฟหน่วยละกี่บาทครับ', 'ค่าน้ำขั้นต่ำเท่าไหร่คะ']) {
+			expect(await reply(t, tenant), t).not.toBeNull();
+		}
+		for (const t of ['ขอโทษนะคะ ปกติค่าน้ำขั้นต่ำ50บาทใช่มั้ยคะ', 'ค่าไฟเดือนนี้ทำไมเยอะจังคะ',
+			'ค่าน้ำค่าไฟเท่าไหร่คะ ยอดเดือนนี้', 'โอนค่าน้ำค่าไฟแล้วค่ะ']) {
+			expect(await reply(t, tenant), t).toBeNull();
+		}
+		// Leads and people the inbox does not know yet still get the card.
+		expect(await reply('ขอโทษนะคะ ปกติค่าน้ำขั้นต่ำ50บาทใช่มั้ยคะ', lead)).not.toBeNull();
+		expect(await reply('ขอโทษนะคะ ปกติค่าน้ำขั้นต่ำ50บาทใช่มั้ยคะ', 'Uutilunknown000000000000000000001')).not.toBeNull();
+	});
+
 	it('replies to วิธีจอง with the plain screening question', async () => {
 		const messages = await __testables.quickKeywordReply('วิธีจอง', env, '') as Array<Record<string, any>>;
 

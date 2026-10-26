@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from './inbox';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -2548,6 +2548,20 @@ function isUtilityInquiry(text) {
   if (UTILITY_EN_KEYWORDS.some((kw) => lower.includes(kw))) return true;
   const englishPair = lower.includes('water') && (lower.includes('electric') || lower.includes('electricity'));
   return englishPair;
+}
+
+const UTILITY_RATE_ASK_RE = /(เท่าไ|กี่บาท|คิดยังไง|คิดอย่างไร|คิดแบบไหน|หน่วยละ|ต่อหน่วย|เรท|เรต|อัตรา|ราคา|rate|how much)/i;
+// Words that make a utility message about a bill, not the rate.
+const UTILITY_BILL_TOPIC_RE = /(บิล|ยอด|เดือนนี้|เดือนก่อน|เดือนที่แล้ว|ทำไม|แพง|เยอะ|เกิน|มิเตอร์|จ่าย|โอน|สลิป|ค้าง|หัก|ผิด|ใบแจ้ง|bill|meter)/i;
+const UTILITY_FILLER_RE = /(ค่าน้ำ|ค่าไฟฟ้า|ค่าไฟ|ค่าน้ำประปา|น้ำ|ไฟ|ค่า|สอบถาม|ขอ|ทราบ|หน่อย|ด้วย|ครับผม|ครับ|คับ|ค่ะ|คะ|ค่า|นะ|จ้า|และ|กับ|utilities|utility|[\s\-\/&?.!,ๆ])/gi;
+
+// The canned rate card only answers the rate: "ค่าน้ำค่าไฟเท่าไหร่" or the bare
+// keyword. Anything else that mentions ค่าน้ำ/ค่าไฟ is a different question.
+function isUtilityRateAsk(text) {
+  const normalized = String(text || '').trim();
+  if (UTILITY_BILL_TOPIC_RE.test(normalized)) return false;
+  if (UTILITY_RATE_ASK_RE.test(normalized)) return true;
+  return normalized.replace(UTILITY_FILLER_RE, '') === '';
 }
 
 function isRoomRentInquiry(text) {
@@ -9016,6 +9030,7 @@ function roomDetailByKey(key) {
 • Starter (ไม่มีเฟอร์): 3,800 บ./ด.`,
     ROOM_UTIL: `[ค่าน้ำ-ไฟ/เน็ต]
 น้ำ 18 | ไฟ 8 
+💧น้ำขั้นต่ำ 50 บาท
 🛜เน็ต: ฟรี`,
     ROOM_RENT_IMG: `[เรทราคา + ภาพ]`,   // 👈 new entry
     ROOM_DEPOSIT: `[เงินประกัน/สัญญา]
@@ -10464,10 +10479,13 @@ async function quickKeywordReply(text, env, userId) {
   }
 
   if (isUtilityInquiry(normalized)) {
+    // "ปกติค่าน้ำขั้นต่ำ50บาทใช่มั้ยคะ" is a tenant asking about their own bill;
+    // the rate card answers none of it, so leave it for staff in the inbox.
+    if (!isUtilityRateAsk(normalized) && await inboxContactType(env, userId) === 'TENANT') return null;
     const utilityText = roomDetailByKey('ROOM_UTIL');
     const textMessage = {
       type: 'text',
-      text: utilityText || '[ค่าน้ำ-ไฟ/เน็ต]\nน้ำ 18 | ไฟ 8\n🛜เน็ต: ฟรี',
+      text: utilityText || '[ค่าน้ำ-ไฟ/เน็ต]\nน้ำ 18 | ไฟ 8\n💧น้ำขั้นต่ำ 50 บาท\n🛜เน็ต: ฟรี',
       quickReply: utilityReplyQuickActions
     };
     return [textMessage];
@@ -13147,6 +13165,7 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  isUtilityRateAsk,
   buildRoomRentImageMessages,
   detectRepairIntent,
   isUrgentRepairText,
