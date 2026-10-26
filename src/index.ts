@@ -10246,6 +10246,8 @@ function buildForgotKeyHelpReply(text) {
   ];
 }
 
+const ROOM_COMPOUND_TRAVEL_RE = /(ห่าง|ไกล|กี่\s*(?:กม|โล|กิโล)|สนามบิน|สุวรรณภูมิ|ดอนเมือง|แอร์พอร์ต|สจล|kmitl|มหาวิทยาลัย|มหาลัย|เดินทาง|รถเมล์|รถไฟฟ้า)/i;
+
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -10253,6 +10255,14 @@ async function quickKeywordReply(text, env, userId) {
   // A tenant describing something broken must reach the repair offer, not a
   // canned answer that happens to share a word ("ช่วยดูหน่อย" is not a visit).
   if (detectRepairIntent(normalized) || isUrgentRepairText(normalized)) return null;
+
+  // "ขอดูห้องเพิ่มเติมได้ไหมคะ รายเดือนราคาเท่าไหร่ ห่างจากสนามบินกี่โลคะ" asks
+  // about distance as well; the canned visit hours + photos would answer none of
+  // it and the AI would never get the message. Leave compound asks to the AI.
+  if (ROOM_COMPOUND_TRAVEL_RE.test(normalized) &&
+      (isRoomPhotoIntent(normalized) || isRoomVisitIntent(normalized) || isRoomDetailAsk(normalized))) {
+    return null;
+  }
 
   // One reply answers everything: the cards, the rate sheet and every topic.
   // The rich menu sends "รายละเอียดห้อง"; leads also type their own version.

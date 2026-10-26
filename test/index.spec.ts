@@ -627,6 +627,11 @@ describe('Worker routes', () => {
 			expect(visitHours(r) && !!photoCarousel(r), t).toBe(true);
 			expect(r.fastReply.length, t).toBeLessThanOrEqual(5);
 		}
+		// A view request that also asks about distance/travel is the AI's to answer.
+		for (const t of ['ขอดูห้องเพิ่มเติมได้ไหมคะ รายเดือน มีราคาเท่าไหร่บ้างคะ ห่างจากสนามบินสุวรรณภูมิกี่โลคะ',
+			'ขอดูรูปห้องหน่อยค่ะ แล้วไป สจล. ไกลไหมคะ']) {
+			expect(await __testables.quickKeywordReply(t, {}, 'Uphrase'), t).toBeNull();
+		}
 		for (const t of ['ขอไปดูห้องวันนี้ได้ไหมคะ', 'ขอดูห้องจริงที่จะเข้าอยู่ได้ไหมคะ', 'ผมขอดูสัญญาหออีกรอบได้ไหมครับ']) {
 			expect(photoCarousel(await kind(t)), t).toBeUndefined();
 		}
