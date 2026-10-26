@@ -667,9 +667,10 @@ async function loginCallback(env, url) {
   await env.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(state, token, name).run();
   await logAccess(env, { name }, 'login_line', '');
   // Finished in the app itself: keep the token and go straight in. Finished in
-  // Safari or LINE: the home-screen app picks the token up by polling.
-  return htmlPage('Mama Inbox', `<p>✅ เข้าสู่ระบบแล้ว (${name})</p><p>กลับไปที่แอป Mama Inbox ได้เลย</p><a href="/inbox">เปิด Mama Inbox</a>`,
-    `try{localStorage.setItem('inboxToken',${JSON.stringify(token)});localStorage.removeItem('pendingLogin')}catch(e){}`);
+  // Safari or LINE: the home-screen app picks the token up by polling. The
+  // button is only a fallback for a browser that blocks the redirect.
+  return htmlPage('Mama Inbox', `<p>✅ เข้าสู่ระบบแล้ว (${name})</p><p>กำลังเปิด Mama Inbox…</p><a href="/inbox">เปิด Mama Inbox</a>`,
+    `try{localStorage.setItem('inboxToken',${JSON.stringify(token)});localStorage.removeItem('pendingLogin')}catch(e){}location.replace('/inbox');`);
 }
 
 async function loginPoll(env, url) {

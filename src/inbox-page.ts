@@ -407,12 +407,17 @@ function showLogin(note) {
     '<p id="lgmsg">' + (pending ? 'กำลังรอยืนยันใน LINE…' : 'สำหรับเจ้าหน้าที่มามา แมนชั่น') + '</p>' +
     '<button id="lgbtn" style="margin-top:12px;padding:13px 22px;border-radius:999px;background:#06c755;color:#fff;font-weight:600;font-size:16px">เข้าสู่ระบบด้วย LINE</button>' +
     '<p style="margin-top:24px;font-size:13px">หรือพิมพ์ <b>inbox</b> ในแชท LINE กับมามา แมนชั่น เพื่อรับลิงก์</p></div>';
-  document.getElementById('lgbtn').onclick = () => {
+  const start = () => {
     const s = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
     try { localStorage.setItem('pendingLogin', s); } catch (_) {}
     location.href = '/inbox/auth/start?s=' + s;
   };
-  if (pending) pollLogin(pending);
+  document.getElementById('lgbtn').onclick = start;
+  if (pending) { pollLogin(pending); return; }
+  // Opening the app signed out goes straight to LINE, once per launch, so a
+  // refused or cancelled login shows the button instead of looping.
+  let tried = false; try { tried = sessionStorage.getItem('autoLogin') === '1'; sessionStorage.setItem('autoLogin', '1'); } catch (_) { tried = true; }
+  if (!tried) { const m = document.getElementById('lgmsg'); if (m) m.textContent = 'กำลังเชื่อมต่อ LINE…'; setTimeout(start, 400); }
 }
 function pollLogin(s) {
   let tries = 0;
