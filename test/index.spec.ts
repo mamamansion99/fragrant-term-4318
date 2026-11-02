@@ -563,7 +563,8 @@ describe('Worker routes', () => {
 			const fastReply = await __testables.quickKeywordReply(text, {}, 'Uphrase');
 			return { route: __testables.classifyTextCommand(text, { fastReply })?.kind || null, fastReply: fastReply as any };
 		};
-		for (const t of ['ชำระค่าห้อง', 'ชำระค่าห้องค่ะ', 'จ่ายค่าเช่า a408', '#ชำระค่าเช่า A508', 'ชำระค่าเช่า\nห้อง B105', 'แจ้งชำระค่าเช่า', 'ชำระบิลค่าเช่า', 'จ่ายค่าหอ']) {
+		for (const t of ['ชำระค่าห้อง', 'ชำระค่าห้องค่ะ', 'จ่ายค่าเช่า a408', '#ชำระค่าเช่า A508', 'ชำระค่าเช่า\nห้อง B105', 'แจ้งชำระค่าเช่า', 'ชำระบิลค่าเช่า', 'จ่ายค่าหอ',
+			'เดือน: พฤศจิกายน  2026\nพิมพ์เบอร์ห้อง A414', 'เดือน:  กันยายน 2026\nพิมพ์เบอร์ห้อง (เช่น A414)', 'เดือน: มิถุนายน 2026\nพิมพ์เบอร์ห้อง 111']) {
 			expect((await kind(t)).route, t).toBe('pay_rent');
 		}
 		for (const t of ['ต้องจ่ายค่าห้องมั้ยคะ', 'กำลังจะโอนจ่ายค่าห้องพอดีเลยเห็น']) {

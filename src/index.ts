@@ -565,10 +565,17 @@ function stripCommandPoliteSuffix(text) {
 // Sentences about rent ("ต้องจ่ายค่าห้องมั้ยคะ") stay with the admin.
 const PAY_RENT_COMMAND_RE = /^#?\s*(แจ้ง\s*)?(ส่ง\s*สลิป|ชำระ|จ่าย|โอน)\s*(บิล\s*)?ค่า\s*(เช่า\s*(ห้อง|หอ)?|ห้อง|หอ)(\s*(ห้อง)?\s*[AaBb]\s*-?\s*\d{3,4})?(\s*(เดือน\s*นี้|เดือน\s*\S{1,12}))?$/;
 
+// A rent-slip form some tenants fill in and send every month right before the
+// slip: "เดือน: พฤศจิกายน 2026\nพิมพ์เบอร์ห้อง A414" (also "(เช่น A414)" left
+// unfilled). "เบอร์" used to route it to the contact-number card, so the slip
+// that followed fell through to AUTO_IMG and nobody answered.
+const PAY_RENT_MONTH_FORM_RE = /^เดือน\s*:?\s*\S+\s*\d{4}\s*พิมพ์\s*เบอร์\s*ห้อง/;
+
 function isPayRentCommand(text) {
   const raw = stripCommandPoliteSuffix(text).replace(/\s+/g, ' ');
   if (!raw) return false;
   if (/^(send\s*rent\s*slip|pay\s*rent)$/i.test(raw)) return true;
+  if (PAY_RENT_MONTH_FORM_RE.test(raw)) return true;
   return PAY_RENT_COMMAND_RE.test(raw);
 }
 
