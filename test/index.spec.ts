@@ -3863,3 +3863,44 @@ describe('maid room relay group gate', () => {
 		expect(__testables.isMaidRelayGroup(oneToOne, 'U1')).toBe(false);
 	});
 });
+
+describe('เงินสดเช็คอิน <RoomID> [ยอด]', () => {
+	const { parseCheckinCashCommand, parseCheckinCashAmount, parseCheckinCommand } = __testables;
+
+	it('parses room with and without amount', () => {
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505 9550')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: 9550 });
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน ห้อง b101 9,550 บาท')).toEqual({ kind: 'checkin_cash', roomId: 'B101', amount: 9550 });
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: null });
+	});
+
+	it('treats an out-of-range amount as missing so the bot asks again', () => {
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505 50')?.amount).toBeNull();
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505 9999999')?.amount).toBeNull();
+		expect(parseCheckinCashAmount('95.5')).toBeNull();
+		expect(parseCheckinCashAmount('9,550')).toBe(9550);
+	});
+
+	it('rejects non-rooms and does not collide with the normal check-in command', () => {
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน C101 9550')).toBeNull();
+		expect(parseCheckinCashCommand('เช็คอินห้อง A505')).toBeNull();
+		expect(parseCheckinCommand('เงินสดเช็คอิน A505 9550')).toBeNull();
+	});
+});
+
+describe('การ์ดเช็คอินในกลุ่มเจ้าหน้าที่', () => {
+	const { buildCheckinStaffStartCard, buildCheckinCashConfirmMessage } = __testables;
+
+	it('carries the room on both buttons', () => {
+		const card = buildCheckinStaffStartCard('A505', '10:31');
+		const data = card.contents.footer.contents.map((b) => b.action.data);
+		expect(data).toEqual(['act=checkin_calc_start&room=A505', 'act=checkin_cash_start&room=A505']);
+	});
+
+	it('puts the one-time nonce on the confirm and cancel buttons', () => {
+		const msg = buildCheckinCashConfirmMessage('A505', 9550, 'abc123def456');
+		const actions = msg.contents.footer.contents.map((b) => b.action);
+		expect(actions[0].data).toBe('act=checkin_cash_ok&n=abc123def456');
+		expect(actions[0].label).toBe('ยืนยัน 9,550');
+		expect(actions[1].data).toBe('act=checkin_cash_no&n=abc123def456');
+	});
+});

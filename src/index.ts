@@ -1079,8 +1079,18 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activ
     );
   }
 
-  const ackMsg = `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที กรุณาส่งสลิป/หลักฐานภายใน 30 นาที`;
+  const ackMsg =
+    `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที\n\n` +
+    '💳 โอนเงิน — ส่งสลิปในแชทนี้ภายใน 30 นาที\n' +
+    '💵 เงินสด — ชำระกับเจ้าหน้าที่ได้เลย ไม่ต้องส่งสลิป';
   await replyOrPushText(env, replyToken, chatId, ackMsg, 'checkin_start_ack_failed');
+
+  // การ์ดในกลุ่มเจ้าหน้าที่ — ปุ่มส่งใบคำนวณ / รับเงินสด ของห้องนี้
+  ctx.waitUntil(
+    linePush(env.LINE_ACCESS_TOKEN, CHECKIN_CASH_STAFF_GROUP_ID, [
+      buildCheckinStaffStartCard(roomId, formatTimeBangkok(new Date()))
+    ]).catch((err) => console.error('checkin_staff_card_push_failed', err))
+  );
 }
 
 function parseCheckinCommand(text) {
@@ -1165,6 +1175,7 @@ const DEFAULT_N8N_RETURN_KEY_DECISION_WEBHOOK_URL = 'https://n8n.srv1112305.hstg
 const DEFAULT_N8N_PREBOOK_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/prebook';
 const DEFAULT_N8N_CHECKIN_KEYCARD_PHOTO_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/c157057d-5a43-4f6d-96ad-5655c7ebf76e';
 const DEFAULT_N8N_CHECKIN_HORGANICE_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/checkin-horganice';
+const CHECKIN_CASH_STAFF_GROUP_ID = 'C355d5b5c8a01d88bf61296b4e10f1575'; // MM เจ้าหน้าที่
 const DEFAULT_N8N_CLEANING_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/cleaning_mm';
 const DEFAULT_N8N_BILL_MANUAL_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/bill-manual-received';
 const BILL_MANUAL_PAY_CLICK_ACTION = 'BILL_PAY_CLICK';
@@ -1741,6 +1752,171 @@ function parseCheckinHorganiceCommand(text) {
   if (!/^[AB]\d{3,4}$/.test(roomId)) return null;
 
   return { kind: 'checkin_horganice', roomId, note: String(match[2] || '').trim() };
+}
+
+// เช็คอิน: ผู้เช่าพิมพ์ "เช็คอินห้อง X" เอง → การ์ดเด้งเข้ากลุ่มเจ้าหน้าที่ มี 2 ปุ่ม
+//   📷 ส่งใบคำนวณ — รูปถัดไปของคนกด = ใบคำนวณของห้องนั้น (ใช้ทั้งจ่ายสลิปและเงินสด เป็นข้อมูลอ้างอิงเท่านั้น)
+//   💵 รับเงินสด   — พิมพ์ยอด → ถ่ายรูปเงินสด → ปุ่มยืนยัน → n8n ลง Cash_Entry แล้วเดินสายเช็คอินต่อ
+// ใช้ได้เฉพาะในกลุ่มเจ้าหน้าที่ ใครในกลุ่มกดก็ได้ (เหมือนปุ่มรูปคีย์การ์ด)
+const CHECKIN_CASH_RE = /^\s*เงินสด\s*เช็คอิน\s*(?:ห้อง\s*)?([A-Za-z]\d{3,4})(?:\s+([\d,]+(?:\.\d{1,2})?))?\s*(?:บาท)?\s*$/i;
+const CHECKIN_CASH_TTL_SECONDS = 20 * 60;
+const CHECKIN_CASH_MIN_AMOUNT = 500;
+const CHECKIN_CASH_MAX_AMOUNT = 100000;
+const CHECKIN_CASH_OK_ACT = 'checkin_cash_ok';
+const CHECKIN_CASH_NO_ACT = 'checkin_cash_no';
+const CHECKIN_CASH_START_ACT = 'checkin_cash_start';
+const CHECKIN_CALC_START_ACT = 'checkin_calc_start';
+
+// ชื่อที่โชว์ในการ์ด/ชีต ตาม LINE userId — ไม่อยู่ในนี้ใช้ชื่อ LINE ในกลุ่มแทน
+const CHECKIN_STAFF_THAI_NAMES = {
+  Ue90558b73d62863e2287ac32e69541a3: 'Ma',
+  U193cae8dd9197f7d4bd6ada8046fd98b: 'KP',
+  U49a9caf429472da9881a4dc9f403e988: 'KK',
+  U2855d93e108ccebbef7d1b55ec8827e5: 'พี่ก้อย',
+  U9293d43980e98649e20c8759a2c2d7f0: 'พี่ยุ'
+};
+
+async function checkinStaffName(env, ev) {
+  const userId = String(ev?.source?.userId || '').trim();
+  return CHECKIN_STAFF_THAI_NAMES[userId] || (await getLineDisplayName(env, ev)) || 'เจ้าหน้าที่';
+}
+
+function isCheckinStaffChat(chatId) {
+  return String(chatId || '') === CHECKIN_CASH_STAFF_GROUP_ID;
+}
+
+function parseCheckinCashCommand(text) {
+  const match = CHECKIN_CASH_RE.exec(String(text || '').trim());
+  if (!match) return null;
+  const roomId = String(match[1] || '').trim().toUpperCase();
+  if (!/^[AB]\d{3,4}$/.test(roomId)) return null;
+  const amount = match[2] ? parseCheckinCashAmount(match[2]) : null;
+  return { kind: 'checkin_cash', roomId, amount };
+}
+
+// null = ไม่ใช่ตัวเลขที่รับได้ (ตัวเลขล้วน ไม่มีทศนิยม ในช่วงที่สมเหตุสมผล)
+function parseCheckinCashAmount(text) {
+  const raw = String(text || '').trim().replace(/[,\s]/g, '').replace(/บาท$/, '');
+  if (!/^\d{3,6}$/.test(raw)) return null;
+  const amount = Number(raw);
+  if (amount < CHECKIN_CASH_MIN_AMOUNT || amount > CHECKIN_CASH_MAX_AMOUNT) return null;
+  return amount;
+}
+
+function buildCheckinCashWaitKey(userId, chatId) {
+  return `checkin_cash_wait:${userId || chatId || 'unknown'}`;
+}
+
+// รอรูปจากคนกดปุ่ม: { kind: 'calc' | 'cash', roomId, amount? }
+function buildCheckinPhotoWaitKey(groupId, userId) {
+  return `checkin_photo_wait:${groupId}:${userId}`;
+}
+
+function buildCheckinCashConfirmKey(nonce) {
+  return `checkin_cash_confirm:${nonce}`;
+}
+
+async function signedLineImageUrls(env, messageId) {
+  const origin = currentWorkerOrigin();
+  if (!origin || !messageId) return { imageUrl: '', previewUrl: '' };
+  return {
+    imageUrl: await repairMediaUrl(env, origin, messageId, 'content'),
+    previewUrl: await repairMediaUrl(env, origin, messageId, 'preview')
+  };
+}
+
+function buildCheckinStaffStartCard(roomId, startedAtText) {
+  const button = (label, act, style, color = undefined) => ({
+    type: 'button',
+    style,
+    height: 'sm',
+    ...(color ? { color } : {}),
+    action: {
+      type: 'postback',
+      label,
+      data: `act=${act}&room=${roomId}`,
+      displayText: `${label} ${roomId}`
+    }
+  });
+  return {
+    type: 'flex',
+    altText: `เริ่มเช็คอิน ห้อง ${roomId}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: `🧾 เริ่มเช็คอิน ห้อง ${roomId}`, weight: 'bold', size: 'md' },
+          { type: 'text', text: `เริ่มเมื่อ ${startedAtText} น.`, size: 'sm', color: '#666666' },
+          { type: 'text', text: 'จ่ายเงินสด: รับเงินแล้วกด 💵 · ทุกห้องส่งใบคำนวณด้วย 📷', size: 'xs', color: '#888888', wrap: true }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          button('📷 ส่งใบคำนวณ', CHECKIN_CALC_START_ACT, 'primary', '#2f6fed'),
+          button('💵 รับเงินสด', CHECKIN_CASH_START_ACT, 'secondary')
+        ]
+      }
+    }
+  };
+}
+
+function buildCheckinCashConfirmMessage(roomId, amount, nonce) {
+  const amountText = amount.toLocaleString('en-US');
+  return {
+    type: 'flex',
+    altText: `ยืนยันรับเงินสด ห้อง ${roomId} ${amountText} บาท`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: 'ยืนยันรับเงินสด', weight: 'bold', size: 'md' },
+          { type: 'text', text: `ห้อง ${roomId}`, size: 'sm', color: '#666666' },
+          { type: 'text', text: `${amountText} บาท`, weight: 'bold', size: 'xxl' },
+          { type: 'text', text: '📷 รูปเงินสดแนบแล้ว\nตรวจยอดกับเงินที่รับจริงก่อนกด', size: 'sm', color: '#666666', wrap: true }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: `ยืนยัน ${amountText}`.slice(0, 20),
+              data: `act=${CHECKIN_CASH_OK_ACT}&n=${nonce}`,
+              displayText: `ยืนยันรับเงินสด ${roomId} ${amountText}`
+            }
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ยกเลิก',
+              data: `act=${CHECKIN_CASH_NO_ACT}&n=${nonce}`,
+              displayText: 'ยกเลิก'
+            }
+          }
+        ]
+      }
+    }
+  };
 }
 
 function isReturnKeyAllowedLineUserId(userId) {
@@ -3201,6 +3377,10 @@ function classifyTextCommand(text, options = {}) {
   }
   if (parseCheckinCommand(raw) || parseCheckinRestartCommand(raw)) {
     return { kind: 'checkin', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
+  }
+  // คำสั่งเงินสดเช็คอินต้องไม่ล้าง checkin_flow ที่กำลังรอสลิปของห้องเดียวกัน
+  if (parseCheckinCashCommand(raw)) {
+    return { kind: 'checkin_cash', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
   if (parseCleaningCommand(raw)) {
     return { kind: 'cleaning', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
@@ -5254,6 +5434,87 @@ const worker = {
           continue;
         }
 
+        if (act === CHECKIN_CALC_START_ACT || act === CHECKIN_CASH_START_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const roomId = String(data.room || '').trim().toUpperCase();
+          if (!isCheckinStaffChat(chatId) || !userId || !/^[AB]\d{3,4}$/.test(roomId)) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ', 'checkin_staff_pb_wrong_chat_failed');
+            continue;
+          }
+          if (act === CHECKIN_CALC_START_ACT) {
+            await kvPut(
+              env,
+              buildCheckinPhotoWaitKey(chatId, userId),
+              { kind: 'calc', roomId, ts: Date.now() },
+              CHECKIN_CASH_TTL_SECONDS
+            );
+            await replyOrPushText(env, replyToken, chatId, `ส่งรูปใบคำนวณห้อง ${roomId} ได้เลยค่ะ`, 'checkin_calc_start_ack_failed');
+            continue;
+          }
+          await kvPut(env, buildCheckinCashWaitKey(userId, chatId), { roomId, ts: Date.now() }, CHECKIN_CASH_TTL_SECONDS);
+          await replyOrPushText(
+            env,
+            replyToken,
+            chatId,
+            `รับเงินสดห้อง ${roomId} กี่บาทคะ\nพิมพ์ตัวเลขยอดที่รับจริง เช่น 9550`,
+            'checkin_cash_start_ack_failed'
+          );
+          continue;
+        }
+
+        if (act === CHECKIN_CASH_OK_ACT || act === CHECKIN_CASH_NO_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const cashNonce = String(data.n || '').trim();
+          const cashKey = /^[0-9a-f]{12}$/.test(cashNonce) ? buildCheckinCashConfirmKey(cashNonce) : '';
+          const pending = cashKey ? await kvGet(env, cashKey) : null;
+          const pendingLive =
+            pending && Date.now() - Number(pending.ts || 0) < CHECKIN_CASH_TTL_SECONDS * 1000;
+          // ยืนยันได้เฉพาะคนที่พิมพ์ยอด และใช้ได้ครั้งเดียว กันกดซ้ำ/ปุ่มเก่าในแชท
+          if (!isCheckinStaffChat(chatId) || !pendingLive || pending.userId !== userId) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'ปุ่มนี้หมดอายุ ถูกใช้ไปแล้ว หรือไม่ใช่ของคุณค่ะ กด 💵 รับเงินสด ที่การ์ดเช็คอินใหม่อีกครั้ง',
+              'checkin_cash_pb_expired_failed'
+            );
+            continue;
+          }
+          await kvDel(env, cashKey);
+          if (act === CHECKIN_CASH_NO_ACT) {
+            await replyOrPushText(env, replyToken, chatId, `ยกเลิกรายการเงินสดห้อง ${pending.roomId} แล้วค่ะ`, 'checkin_cash_cancel_ack_failed');
+            continue;
+          }
+          // n8n เป็นคนตอบผลกลับเข้าแชท worker พูดเฉพาะตอน webhook ล่ม
+          const cashOk = await notifyN8nCheckinFlow(env, {
+            source: 'line_postback',
+            intent: 'checkin_cash',
+            roomId: pending.roomId,
+            amount: pending.amount,
+            nonce: cashNonce,
+            imageMessageId: pending.imageMessageId || '',
+            imageUrl: pending.imageUrl || '',
+            previewUrl: pending.previewUrl || '',
+            actorLineUserId: userId,
+            actorName: await checkinStaffName(env, ev),
+            chatId: pending.chatId || chatId || null,
+            eventId: ev?.webhookEventId || null,
+            receivedAt: new Date().toISOString()
+          });
+          if (!cashOk) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              'ระบบบันทึกเงินสดไม่ตอบสนอง ยังไม่ได้บันทึกอะไร กด 💵 รับเงินสด ใหม่อีกครั้งค่ะ',
+              'checkin_cash_webhook_failed'
+            );
+          }
+          continue;
+        }
+
         if (isCheckout2PaymentPostback(data)) {
           const chatId = getChatId(ev);
           const stateKey = getStateKey(ev);
@@ -7168,6 +7429,68 @@ const worker = {
             continue;
           }
 
+          // เงินสดเช็คอิน: กด 💵 ที่การ์ดแล้วพิมพ์ยอด หรือพิมพ์ "เงินสดเช็คอิน A505 9550" เองในกลุ่มเจ้าหน้าที่
+          // อ่าน KV เฉพาะข้อความที่หน้าตาเป็นตัวเลขล้วน ไม่ให้ทุกข้อความเสียโควตา
+          const checkinCashCmd = parseCheckinCashCommand(textIn);
+          const checkinCashWaitKey = buildCheckinCashWaitKey(userId, chatId);
+          const checkinCashWait =
+            !checkinCashCmd && isCheckinStaffChat(chatId) && /^[\d,\s]+(บาท)?$/.test(textIn.trim())
+              ? await kvGet(env, checkinCashWaitKey)
+              : null;
+          const checkinCashWaitLive =
+            checkinCashWait &&
+            checkinCashWait.roomId &&
+            Date.now() - Number(checkinCashWait.ts || 0) < CHECKIN_CASH_TTL_SECONDS * 1000;
+          const checkinCashAmountOnly = checkinCashWaitLive ? parseCheckinCashAmount(textIn) : null;
+          if (checkinCashCmd || (checkinCashWaitLive && /^[\d,\s]+(บาท)?$/.test(textIn.trim()))) {
+            if (!isCheckinStaffChat(chatId)) {
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                'คำสั่งนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ',
+                'checkin_cash_wrong_chat_failed'
+              );
+              continue;
+            }
+
+            const cashRoomId = checkinCashCmd ? checkinCashCmd.roomId : String(checkinCashWait.roomId);
+            const cashAmount = checkinCashCmd ? checkinCashCmd.amount : checkinCashAmountOnly;
+
+            if (!cashAmount) {
+              await kvPut(
+                env,
+                checkinCashWaitKey,
+                { roomId: cashRoomId, ts: Date.now() },
+                CHECKIN_CASH_TTL_SECONDS
+              );
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `รับเงินสดห้อง ${cashRoomId} กี่บาทคะ\nพิมพ์ตัวเลขยอดที่รับจริง เช่น 9550 (${CHECKIN_CASH_MIN_AMOUNT.toLocaleString('en-US')}–${CHECKIN_CASH_MAX_AMOUNT.toLocaleString('en-US')})`,
+                'checkin_cash_ask_amount_failed'
+              );
+              continue;
+            }
+
+            await kvDel(env, checkinCashWaitKey);
+            await kvPut(
+              env,
+              buildCheckinPhotoWaitKey(chatId, userId),
+              { kind: 'cash', roomId: cashRoomId, amount: cashAmount, ts: Date.now() },
+              CHECKIN_CASH_TTL_SECONDS
+            );
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              `📷 ถ่ายรูปเงินสด ${cashAmount.toLocaleString('en-US')} บาทที่รับมา\nส่งในแชทนี้ได้เลยค่ะ`,
+              'checkin_cash_ask_photo_failed'
+            );
+            continue;
+          }
+
           const checkinRoomCode = parseCheckinCommand(textIn);
           if (checkinRoomCode) {
             const checkinGuardKey = buildCheckinStartGuardKey(checkinRoomCode);
@@ -8608,6 +8931,8 @@ const worker = {
               lineUserId: ev?.source?.userId || null,
               chatId,
               imageMessageId: ev?.message?.id || null,
+              // ให้ n8n ใส่รูปสลิปในการ์ดสรุป MM API ได้ (n8n เซ็น URL เองไม่ได้)
+              ...(await signedLineImageUrls(env, String(ev?.message?.id || ''))),
               receivedAt: new Date().toISOString()
             };
 
@@ -8668,6 +8993,72 @@ const worker = {
               penaltyFlow,
               penaltyStateKeys
             });
+            continue;
+          }
+
+          // รูปที่เจ้าหน้าที่ส่งหลังกด 📷 ส่งใบคำนวณ / หลังพิมพ์ยอดเงินสด
+          const checkinPhotoWaitKey =
+            isCheckinStaffChat(chatId) && ev?.source?.userId
+              ? buildCheckinPhotoWaitKey(chatId, String(ev.source.userId))
+              : '';
+          const checkinPhotoWait = checkinPhotoWaitKey ? await kvGet(env, checkinPhotoWaitKey) : null;
+          if (
+            checkinPhotoWait &&
+            checkinPhotoWait.roomId &&
+            Date.now() - Number(checkinPhotoWait.ts || 0) < CHECKIN_CASH_TTL_SECONDS * 1000
+          ) {
+            await kvDel(env, checkinPhotoWaitKey);
+            const photoUserId = String(ev.source.userId);
+            const photoMessageId = String(ev?.message?.id || '');
+            const photoUrls = await signedLineImageUrls(env, photoMessageId);
+            const photoRoomId = String(checkinPhotoWait.roomId);
+
+            if (checkinPhotoWait.kind === 'cash') {
+              const cashNonce = crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+              await kvPut(
+                env,
+                buildCheckinCashConfirmKey(cashNonce),
+                {
+                  roomId: photoRoomId,
+                  amount: Number(checkinPhotoWait.amount),
+                  userId: photoUserId,
+                  chatId,
+                  imageMessageId: photoMessageId,
+                  ...photoUrls,
+                  ts: Date.now()
+                },
+                CHECKIN_CASH_TTL_SECONDS
+              );
+              await replyOrPushMessages(
+                env,
+                replyToken,
+                chatId,
+                [buildCheckinCashConfirmMessage(photoRoomId, Number(checkinPhotoWait.amount), cashNonce)],
+                'checkin_cash_confirm_prompt_failed'
+              );
+              continue;
+            }
+
+            const calcOk = await notifyN8nCheckinFlow(env, {
+              source: 'line_message',
+              intent: 'checkin_calc_photo',
+              roomId: photoRoomId,
+              imageMessageId: photoMessageId,
+              ...photoUrls,
+              actorLineUserId: photoUserId,
+              actorName: await checkinStaffName(env, ev),
+              chatId,
+              receivedAt: new Date().toISOString()
+            });
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              calcOk
+                ? `✅ แนบใบคำนวณห้อง ${photoRoomId} แล้วค่ะ`
+                : `ระบบไม่ตอบสนอง ยังไม่ได้แนบใบคำนวณห้อง ${photoRoomId} กด 📷 ส่งใบคำนวณ ใหม่อีกครั้งค่ะ`,
+              'checkin_calc_photo_ack_failed'
+            );
             continue;
           }
 
@@ -13252,6 +13643,10 @@ export const __testables = {
   armCheckoutTransferSlipFlow,
   detectPresetOtherPaymentReason,
   isCheckoutCashPaymentPostback,
+  parseCheckinCashCommand,
+  parseCheckinCashAmount,
+  buildCheckinStaffStartCard,
+  buildCheckinCashConfirmMessage,
   buildCheckoutCashFlowState,
   parseCheckoutCashAmount,
   buildCheckoutCashAmountState,
