@@ -76,6 +76,16 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .in{align-self:flex-start;background:var(--surface);border-top-left-radius:6px}
 .out{align-self:flex-end;background:var(--bot);border-top-right-radius:6px}.out.ai{background:var(--ai)}.out.mine{background:var(--mine)}
 .b img{max-width:100%;border-radius:10px;display:block}
+.b.rich{background:transparent;padding:0;box-shadow:none;max-width:100%}
+.fx-scroll{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
+.fx-scroll+.fx-scroll,.fx-text+.fx-scroll,.fx-scroll+.fx-text,.fx-text+.fx-text,.fx-photo{margin-top:6px}
+.fx-bubble{flex:0 0 auto;max-width:82vw;background:#fff;color:#111;border-radius:14px;overflow:hidden;scroll-snap-align:start;box-shadow:0 1px 3px rgba(0,0,0,.15);display:flex;flex-direction:column}
+.fx-hero img.fx-img{border-radius:0}.fx-img{display:block;max-width:100%;border-radius:0}
+.fx-t{line-height:1.4;min-width:0}.fx-box{min-width:0}
+.fx-btn{border-radius:8px;padding:10px 8px;text-align:center;font-size:14px;font-weight:600}
+.fx-tbtn{border-top:1px solid #e5e5e5;padding:11px;text-align:center;color:#42659a;font-size:14px}
+.fx-text{background:var(--raised);color:var(--ink);border-radius:14px;padding:8px 12px;white-space:pre-wrap;display:inline-block}
+.fx-photo{max-width:240px;border-radius:12px;display:block}
 .stk{max-width:120px;padding:2px}.stk img{width:110px;height:auto;display:block}
 .stk.in{background:none;border:0}.stk.out{background:none}
 .hold{display:flex;align-items:center;gap:10px;padding:8px 12px 8px 16px;font-size:13px;border-top:1px solid var(--line)}
@@ -232,6 +242,105 @@ async function loadMe() {
 const FACTS = [['job', (v) => v, 'อาชีพ ?'], ['move_in', (v) => 'เข้าอยู่ ' + v, 'เข้าอยู่ ?'], ['people', (v) => v + ' คน', 'จำนวนคน ?'],
   ['pets', (v) => v === true || v === 'ใช่' ? 'มีสัตว์เลี้ยง' : 'ไม่มีสัตว์เลี้ยง', 'สัตว์เลี้ยง ?'], ['contract_months', (v) => 'สัญญา ' + v + ' เดือน', ''],
   ['gender', (v) => v === 'female' ? 'ผู้หญิง (เดาจากคำพิมพ์)' : 'ผู้ชาย (เดาจากคำพิมพ์)', 'เพศ ?']];
+// LINE flex / template messages drawn the way the customer sees them, from
+// the JSON the bot sent. Covers the parts our cards use; anything else falls
+// back to its alt text.
+const FX_SIZE = { xxs: 10, xs: 11, sm: 13, md: 14, lg: 16, xl: 18, xxl: 21, '3xl': 26, '4xl': 32, '5xl': 40 };
+const FX_GAP = { none: 0, xs: 2, sm: 4, md: 8, lg: 12, xl: 16, xxl: 20 };
+const fxPx = (v, map) => v == null ? '' : (map && map[v] != null ? map[v] + 'px' : String(v));
+const fxSafe = (u) => /^https:[/][/]/.test(String(u || '')) ? esc(u) : '';
+function fxStyle(n, parent) {
+  const s = [];
+  // A fixed width wins over LINE's default of sharing a row equally.
+  if (n.width) s.push('flex:0 0 auto');
+  else if (n.flex != null) s.push('flex:' + n.flex + ' ' + (n.flex ? 1 : 0) + ' ' + (n.flex ? '0' : 'auto'));
+  else if ((parent === 'horizontal' || parent === 'baseline') && n.type !== 'icon') s.push('flex:1 1 0');
+  const m = n.margin != null ? fxPx(n.margin, FX_GAP) : '';
+  if (m) s.push((parent === 'horizontal' || parent === 'baseline' ? 'margin-left:' : 'margin-top:') + m);
+  if (n.backgroundColor) s.push('background:' + n.backgroundColor);
+  ['paddingAll', 'paddingTop', 'paddingBottom', 'paddingStart', 'paddingEnd'].forEach((k) => {
+    if (n[k] == null) return;
+    const css = { paddingAll: 'padding', paddingTop: 'padding-top', paddingBottom: 'padding-bottom', paddingStart: 'padding-left', paddingEnd: 'padding-right' }[k];
+    s.push(css + ':' + fxPx(n[k], FX_GAP));
+  });
+  if (n.cornerRadius) s.push('border-radius:' + fxPx(n.cornerRadius, FX_GAP) + ';overflow:hidden');
+  if (n.width) s.push('width:' + n.width); if (n.height) s.push('height:' + n.height);
+  if (n.borderWidth && n.borderColor) s.push('border:' + fxPx(n.borderWidth, { light: 1, normal: 1, medium: 2, 'semi-bold': 3, bold: 4 }) + ' solid ' + n.borderColor);
+  return s.join(';');
+}
+function fxNode(n, parent) {
+  if (!n || typeof n !== 'object') return '';
+  const st = fxStyle(n, parent);
+  if (n.type === 'box') {
+    const dir = n.layout === 'vertical' ? 'column' : 'row';
+    const gap = n.spacing ? 'gap:' + fxPx(n.spacing, FX_GAP) + ';' : '';
+    const al = n.layout === 'baseline' ? 'align-items:baseline;' : (n.justifyContent ? 'justify-content:' + n.justifyContent + ';' : '') + (n.alignItems ? 'align-items:' + n.alignItems + ';' : '');
+    return '<div class="fx-box" style="display:flex;flex-direction:' + dir + ';' + gap + al + st + '">' +
+      (n.contents || []).map((c) => fxNode(c, n.layout)).join('') + '</div>';
+  }
+  if (n.type === 'text') {
+    const t = Array.isArray(n.contents) && n.contents.length
+      ? n.contents.map((sp) => '<span style="' + (sp.color ? 'color:' + sp.color + ';' : '') + (sp.weight === 'bold' ? 'font-weight:700;' : '') + (sp.size ? 'font-size:' + fxPx(sp.size, FX_SIZE) + ';' : '') + '">' + esc(sp.text) + '</span>').join('')
+      : esc(n.text);
+    return '<div class="fx-t" style="font-size:' + (fxPx(n.size || 'md', FX_SIZE)) + ';' + (n.weight === 'bold' ? 'font-weight:700;' : '') +
+      (n.color ? 'color:' + n.color + ';' : '') + (n.align ? 'text-align:' + ({ start: 'left', end: 'right' }[n.align] || n.align) + ';' : '') +
+      (n.wrap ? 'white-space:pre-wrap;' : 'white-space:nowrap;overflow:hidden;text-overflow:ellipsis;') + (n.decoration === 'line-through' ? 'text-decoration:line-through;' : '') + st + '">' + t + '</div>';
+  }
+  if (n.type === 'image') {
+    const ar = String(n.aspectRatio || '1:1').split(':');
+    const w = { xxs: '40px', xs: '60px', sm: '80px', md: '100px', lg: '120px', xl: '140px', xxl: '160px', full: '100%' }[n.size || 'md'] || n.size;
+    return '<div style="' + st + ';display:flex;justify-content:' + ({ start: 'flex-start', end: 'flex-end' }[n.align] || 'center') + '"><img class="fx-img" loading="lazy" src="' + fxSafe(n.url) +
+      '" style="width:' + w + ';aspect-ratio:' + ar[0] + '/' + (ar[1] || ar[0]) + ';object-fit:' + (n.aspectMode === 'cover' ? 'cover' : 'contain') + (n.backgroundColor ? ';background:' + n.backgroundColor : '') + '" alt=""></div>';
+  }
+  if (n.type === 'icon') return '<img src="' + fxSafe(n.url) + '" style="width:' + fxPx(n.size || 'md', FX_SIZE) + ';height:auto;' + st + '" alt="">';
+  if (n.type === 'button') {
+    const a = n.action || {};
+    const prim = n.style === 'primary', sec = n.style === 'secondary';
+    const bg = prim ? (n.color || '#17c950') : sec ? (n.color || '#dcdfe5') : 'transparent';
+    const fg = prim ? '#fff' : (sec ? '#111' : (n.color || '#42659a'));
+    return '<div class="fx-btn" title="' + esc(a.uri || a.data || a.text || '') + '" style="background:' + bg + ';color:' + fg + ';' + (n.height === 'sm' ? 'padding:6px;' : '') + st + '">' + esc(a.label || '') + '</div>';
+  }
+  if (n.type === 'separator') return '<div style="border-top:1px solid ' + (n.color || 'var(--line)') + ';' + st + '"></div>';
+  if (n.type === 'spacer') return '<div style="height:' + fxPx(n.size || 'md', FX_GAP) + '"></div>';
+  if (n.type === 'filler') return '<div style="flex:1"></div>';
+  return '';
+}
+function fxBubble(b) {
+  if (!b || b.type !== 'bubble') return '';
+  const sty = b.styles || {};
+  // The padding belongs to the block's own box so its background fills the edge, as in LINE.
+  const part = (k, pad) => b[k] ? '<div class="fx-' + k + '" style="' + ((sty[k] && sty[k].backgroundColor) ? 'background:' + sty[k].backgroundColor : '') + '">' +
+    fxNode(Object.assign({}, b[k], pad && b[k].paddingAll == null ? { paddingAll: '16px' } : {})) + '</div>' : '';
+  const w = { nano: 120, micro: 160, deca: 220, hecto: 241, kilo: 260, mega: 300, giga: 340 }[b.size || 'mega'] || 300;
+  return '<div class="fx-bubble" style="width:' + w + 'px">' + part('header', true) + part('hero', false) + part('body', true) + part('footer', true) + '</div>';
+}
+function richHtml(list) {
+  if (!Array.isArray(list)) return '';
+  return list.map((m) => {
+    if (!m) return '';
+    if (m.type === 'text') return '<div class="fx-text">' + esc(m.text) + '</div>';
+    if (m.type === 'image') return '<img class="fx-photo" src="' + fxSafe(m.previewImageUrl || m.originalContentUrl) + '" alt="รูป">';
+    if (m.type === 'sticker') return '';
+    if (m.type === 'flex') {
+      const c = m.contents || {};
+      const inner = c.type === 'carousel' ? (c.contents || []).map(fxBubble).join('') : fxBubble(c);
+      return inner ? '<div class="fx-scroll">' + inner + '</div>' : '<div class="fx-text">' + esc(m.altText) + '</div>';
+    }
+    if (m.type === 'template') {
+      const t = m.template || {};
+      const card = (col) => '<div class="fx-bubble" style="width:260px">' +
+        (col.thumbnailImageUrl ? '<img class="fx-img" style="width:100%;aspect-ratio:1.51/1;object-fit:cover" src="' + fxSafe(col.thumbnailImageUrl) + '" alt="">' : '') +
+        '<div style="padding:12px 14px">' + (col.title ? '<div class="fx-t" style="font-weight:700">' + esc(col.title) + '</div>' : '') +
+        '<div class="fx-t" style="white-space:pre-wrap;font-size:13px;color:#555">' + esc(col.text) + '</div></div>' +
+        (col.actions || []).map((a) => '<div class="fx-tbtn">' + esc(a.label) + '</div>').join('') + '</div>';
+      if (t.type === 'carousel') return '<div class="fx-scroll">' + (t.columns || []).map(card).join('') + '</div>';
+      if (t.type === 'confirm') return '<div class="fx-scroll">' + card({ text: t.text, actions: t.actions }) + '</div>';
+      if (t.type === 'image_carousel') return '<div class="fx-scroll">' + (t.columns || []).map((c) => '<img class="fx-img" style="width:160px;border-radius:12px" src="' + fxSafe(c.imageUrl) + '" alt="">').join('') + '</div>';
+      return '<div class="fx-scroll">' + card(t) + '</div>';
+    }
+    return m.altText ? '<div class="fx-text">' + esc(m.altText) + '</div>' : '';
+  }).join('');
+}
 function renderThread(d) {
   thread = d;
   const c = d.contact || { u: current, type: 'NON_TENANT' };
@@ -250,8 +359,9 @@ function renderThread(d) {
     const label = m.dir === 'IN' ? '' : (me ? m.author.slice(6) : m.author === 'ai' ? 'AI' : 'บอท');
     const stk = stickerImg(m.text);
     if (stk) { html += '<div class="b stk ' + side + '"><img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'; continue; }
-    const body = m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text);
-    html += '<div class="b ' + side + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + body + '</div>';
+    const rich = m.rich ? richHtml(m.rich) : '';
+    const body = rich || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
+    html += '<div class="b ' + side + (rich ? ' rich' : '') + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + body + '</div>';
   }
   const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;

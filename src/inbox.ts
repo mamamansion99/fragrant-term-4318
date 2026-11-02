@@ -120,10 +120,10 @@ async function touchContact(db, userId, ts, text, author, actionable) {
 async function insertMessage(db, m) {
   const actionable = m.direction === 'IN' ? (needsReply(m.kind, m.text, m.handler) ? 1 : 0) : 0;
   const res = await db.prepare(
-    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)`
+    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable, payload)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
   ).bind(m.userId, m.ts, m.direction, m.author, m.kind || '', String(m.text || '').slice(0, 4000),
-    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable).run();
+    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable, m.payload || null).run();
   if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author, actionable);
 }
 
@@ -184,7 +184,16 @@ export async function payRentCommandInWindow(env, userId, windowMs) {
   return used ? null : { ts: cmd.ts };
 }
 
-export async function recordInboxOutbound(env, payload, author) {
+// Non-text messages kept whole so the inbox can draw them; a card too big
+// for a row falls back to its alt text.
+function richPayload(messages) {
+  const rich = (Array.isArray(messages) ? messages : []).filter((m) => m && m.type && m.type !== 'text');
+  if (!rich.length) return null;
+  const s = JSON.stringify(messages);
+  return s.length <= 60000 ? s : null;
+}
+
+export async function recordInboxOutbound(env, payload, author, messages) {
   const db = env?.INBOX_DB;
   if (!db || !payload || payload.sourceType !== 'user' || !String(payload.userId || '').startsWith('U')) return;
   await insertMessage(db, {
@@ -196,7 +205,8 @@ export async function recordInboxOutbound(env, payload, author) {
     text: payload.text,
     logId: payload.logId,
     handler: payload.handler,
-    inReplyTo: payload.inReplyTo
+    inReplyTo: payload.inReplyTo,
+    payload: richPayload(messages)
   });
 }
 
@@ -336,7 +346,9 @@ async function listMessages(env, url, deps) {
   for (const r of rows) {
     let media = '';
     if (r.kind === 'image' && r.line_message_id) media = await deps.repairMediaUrl(env, origin, r.line_message_id, 'preview');
-    out.push({ id: r.id, at: r.ts, dir: r.direction, author: r.author, kind: r.kind, text: r.text, media });
+    let rich = null;
+    if (r.payload) { try { rich = JSON.parse(r.payload); } catch (_) { rich = null; } }
+    out.push({ id: r.id, at: r.ts, dir: r.direction, author: r.author, kind: r.kind, text: r.text, media, rich });
   }
   const contact = await env.INBOX_DB.prepare('SELECT * FROM contacts WHERE user_id = ?1').bind(userId).first();
   return {

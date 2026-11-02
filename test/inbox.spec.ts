@@ -53,6 +53,18 @@ describe('inbox', () => {
 		expect(waiting.some((c: any) => c.u === CUSTOMER)).toBe(true);
 	});
 
+	it('keeps the flex card the bot sent so the inbox can draw it, and plain text stays text', async () => {
+		const U = 'Ufx000000000000000000000000000001';
+		const card = { type: 'flex', altText: 'รูปห้อง', contents: { type: 'carousel', contents: [{ type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'ห้องมุม' }] } }] } };
+		await recordInboxOutbound(e, { timestamp: new Date().toISOString(), userId: U, sourceType: 'user', text: '[flex] รูปห้อง', logId: 'fx-1', handler: 'quick_keyword' }, 'bot', [card]);
+		await recordInboxOutbound(e, { timestamp: new Date(Date.now() + 1000).toISOString(), userId: U, sourceType: 'user', text: 'ได้ครับ', logId: 'fx-2', handler: 'inbox' }, 'staff:Ma', [{ type: 'text', text: 'ได้ครับ' }]);
+		const token = await issueInboxToken(e, STAFF);
+		const msgs = (await get(`/inbox/api/messages?u=${U}`, token)).body.messages;
+		expect(msgs[0].rich).toEqual([card]);
+		expect(msgs[0].text).toBe('[flex] รูปห้อง');
+		expect(msgs[1].rich).toBeNull();
+	});
+
 	it('refuses tokens for people who are not staff and tampered tokens', async () => {
 		const outsider = await issueInboxToken(e, 'Unotstaff00000000000000000000000');
 		expect((await get('/inbox/api/me', outsider)).status).toBe(401);

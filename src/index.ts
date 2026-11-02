@@ -12878,7 +12878,7 @@ function logOutboundMessages(kind, to, messages) {
   );
   // store.author is set by the inbox when a staff member sends.
   store.ctx.waitUntil(
-    recordInboxOutbound(store.env, payload, store.author || 'bot').catch((err) => console.error('inbox_outbound_failed', err))
+    recordInboxOutbound(store.env, payload, store.author || 'bot', messages).catch((err) => console.error('inbox_outbound_failed', err))
   );
 }
 
