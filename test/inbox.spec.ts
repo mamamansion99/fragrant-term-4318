@@ -99,6 +99,13 @@ describe('inbox', () => {
 			body: JSON.stringify({ u: CUSTOMER, text: '  ' })
 		});
 		expect(res.status).toBe(400);
+		const bad = await SELF.fetch('https://example.com/inbox/api/send', {
+			method: 'POST',
+			headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+			body: JSON.stringify({ u: CUSTOMER, kind: 'sticker', packageId: '446', stickerId: 'x' })
+		});
+		expect(bad.status).toBe(400);
+		expect(await (await SELF.fetch('https://example.com/inbox')).text()).toContain('id="stkbtn"');
 	});
 });
 

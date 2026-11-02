@@ -12842,6 +12842,8 @@ function summarizeOutboundMessages(messages) {
   return (Array.isArray(messages) ? messages : [])
     .map((msg) => {
       if (msg?.type === 'text') return String(msg.text || '');
+      // Same shape as an inbound sticker, so the inbox shows the picture.
+      if (msg?.type === 'sticker') return `(sticker ${msg.packageId}/${msg.stickerId})`;
       if (msg?.altText) return `[${msg.type}] ${msg.altText}`;
       return `[${msg?.type || 'message'}]`;
     })

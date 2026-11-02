@@ -110,6 +110,14 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .compose textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:20px;padding:9px 14px;font:inherit;background:var(--raised);color:var(--ink);max-height:120px}
 .send{width:42px;height:42px;border-radius:50%;background:var(--green);color:var(--green-ink);font-size:18px;display:grid;place-items:center;flex:none}
 .send:disabled{opacity:.5}
+.stkbtn{width:42px;height:42px;border-radius:50%;background:var(--raised);font-size:20px;display:grid;place-items:center;flex:none;border:0;cursor:pointer}
+.stkpanel{border-top:1px solid var(--line);background:var(--surface)}
+.stktabs{display:flex;gap:4px;overflow-x:auto;padding:6px 8px}
+.stktabs button{flex:none;border:0;background:none;border-radius:8px;padding:2px;opacity:.55;cursor:pointer}.stktabs button.on{opacity:1;background:var(--raised)}
+.stktabs img{width:34px;height:34px;object-fit:contain;display:block}
+.stkgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;max-height:220px;overflow-y:auto;padding:4px 8px 8px}
+.stkgrid button{border:0;background:none;border-radius:10px;padding:4px;cursor:pointer}.stkgrid button.arm{background:var(--green-soft,rgba(6,181,76,.18))}
+.stkgrid img{width:100%;aspect-ratio:1;object-fit:contain;display:block}
 .endbtn{padding:6px 12px;border-radius:999px;font-weight:600;font-size:13px;background:var(--raised);flex:none}
 .closed{display:flex;gap:10px;align-items:center;padding:8px 16px;font-size:13px;background:var(--raised);border-bottom:1px solid var(--line);color:var(--mute)}
 .closed span{flex:1}.closed button{padding:5px 12px;border-radius:999px;background:var(--surface);font-weight:600;font-size:13px;color:var(--ink)}
@@ -162,7 +170,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <div id="sugg"></div>
     <div class="quick" id="quick"></div>
     <div class="replybar" id="replybar" hidden><span id="replytxt"></span><button id="replyx" aria-label="ยกเลิกการตอบกลับ">✕</button></div>
+    <div class="stkpanel" id="stkpanel" hidden><div class="stktabs" id="stktabs"></div><div class="stkgrid" id="stkgrid"></div></div>
     <div class="compose">
+      <button class="stkbtn" id="stkbtn" aria-label="สติกเกอร์">😊</button>
       <textarea id="text" rows="1" placeholder="พิมพ์ตอบลูกค้า"></textarea>
       <button class="send" id="send" aria-label="ส่ง">➤</button>
     </div>
@@ -428,7 +438,7 @@ async function loadThread() {
   if (sig !== lastSig) { lastSig = sig; renderThread(d); }
 }
 function openThread(u) {
-  setReply(null); current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
+  setReply(null); $('stkpanel').hidden = true; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
   $('phone').classList.add('open'); history.pushState({ u }, '', '#' + u); loadThread();
 }
 function closeThread() { current = null; $('phone').classList.remove('open'); loadList(); loadMe(); }
@@ -483,6 +493,34 @@ $('quick').addEventListener('click', (e) => {
   if (!b.classList.contains('arm')) { b.classList.add('arm'); b.textContent = 'แตะอีกครั้งเพื่อส่ง';
     setTimeout(() => { b.classList.remove('arm'); b.textContent = x.label; }, 3000); return; }
   b.classList.remove('arm'); b.textContent = x.label; sendShortcut(x);
+});
+// Bots can only send LINE's free sticker packages (ids listed by LINE); the
+// stickers the OA bought in OA Manager are not available to the API.
+const STICKER_PACKS = [
+  [11537, 52002734, 40], [11538, 51626494, 40], [11539, 52114110, 40],
+  [446, 1988, 40], [789, 10855, 40], [1070, 17839, 40],
+  [6136, 10551376, 24], [6325, 10979904, 24], [6359, 11069848, 24], [6362, 11087920, 24], [6370, 11088016, 24],
+  [8515, 16581242, 24], [8522, 16581266, 24], [8525, 16581290, 24]
+];
+const stkUrl = (id) => 'https://stickershop.line-scdn.net/stickershop/v1/sticker/' + id + '/android/sticker.png';
+let stkPack = 0;
+function renderStickers() {
+  $('stktabs').innerHTML = STICKER_PACKS.map((p, i) => '<button data-p="' + i + '" class="' + (i === stkPack ? 'on' : '') + '"><img loading="lazy" src="' + stkUrl(p[1]) + '" alt=""></button>').join('');
+  const [pkg, first, n] = STICKER_PACKS[stkPack];
+  let h = '';
+  for (let i = 0; i < n; i++) h += '<button data-pkg="' + pkg + '" data-s="' + (first + i) + '"><img loading="lazy" src="' + stkUrl(first + i) + '" alt="สติกเกอร์"></button>';
+  $('stkgrid').innerHTML = h;
+}
+$('stkbtn').onclick = () => { const p = $('stkpanel'); p.hidden = !p.hidden; if (!p.hidden) renderStickers(); };
+$('stktabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; stkPack = Number(b.dataset.p); renderStickers(); });
+// Two taps like the card shortcuts: a sticker goes out at once and cannot be taken back.
+$('stkgrid').addEventListener('click', async (e) => {
+  const b = e.target.closest('button'); if (!b || !current) return;
+  if (!b.classList.contains('arm')) { [...$('stkgrid').children].forEach((x) => x.classList.remove('arm')); b.classList.add('arm'); return; }
+  b.classList.remove('arm');
+  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, kind: 'sticker', packageId: b.dataset.pkg, stickerId: b.dataset.s }) });
+  if (!d.ok) { toast('ส่งสติกเกอร์ไม่สำเร็จ'); return; }
+  toast('ส่งสติกเกอร์แล้ว ✓'); $('stkpanel').hidden = true; lastSig = ''; stickToBottom = true; loadThread();
 });
 async function sendShortcut(x) {
   const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) });

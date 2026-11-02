@@ -416,7 +416,7 @@ async function sendReply(env, request, staff, deps) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.u || '');
   const text = String(body.text || '').trim();
-  let kind = body.kind === 'roomcard' ? 'roomcard' : 'text';
+  let kind = ['roomcard', 'sticker'].includes(body.kind) ? body.kind : 'text';
   let imageUrl = '';
   if (body.shortcutId) {
     const sc = await env.INBOX_DB.prepare('SELECT * FROM shortcuts WHERE id = ?1').bind(Number(body.shortcutId)).first();
@@ -426,9 +426,14 @@ async function sendReply(env, request, staff, deps) {
   }
   if (!userId.startsWith('U') || (kind === 'text' && !text)) return json({ ok: false, error: 'missing' }, 400);
   if (text.length > 4900) return json({ ok: false, error: 'too_long' }, 400);
+  // Stickers: LINE only delivers the packages it allows bots to send; the page offers those.
+  const packageId = String(body.packageId || ''), stickerId = String(body.stickerId || '');
+  if (kind === 'sticker' && !(/^\d{1,9}$/.test(packageId) && /^\d{1,12}$/.test(stickerId))) return json({ ok: false, error: 'sticker' }, 400);
   if (kind === 'image' && !/^https:\/\/\S+\.(jpe?g|png)(\?\S*)?$/i.test(imageUrl)) return json({ ok: false, error: 'image_url' }, 400);
   const messages = kind === 'roomcard'
     ? deps.roomDetailMessages()
+    : kind === 'sticker'
+      ? [{ type: 'sticker', packageId, stickerId }]
     : kind === 'image'
       ? [{ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl }]
       : [{ type: 'text', text }];
