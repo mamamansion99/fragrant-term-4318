@@ -3610,7 +3610,7 @@ async function linePushText(channelToken, to, text) {
     const body = await res.text();
     throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
   }
-  logOutboundMessages('push', to, [{ type: 'text', text }]);
+  logOutboundMessages('push', to, [{ type: 'text', text }], await sentMessagesOf(res));
 }
 
 async function safeLinePushText(channelToken, to, text, logLabel = 'line_push_failed') {
@@ -3641,7 +3641,7 @@ async function linePush(channelToken, to, messages) {
     const body = await res.text();
     throw new Error(`LINE push failed ${res.status} ${res.statusText}: ${body}`);
   }
-  logOutboundMessages('push', to, messages);
+  logOutboundMessages('push', to, messages, await sentMessagesOf(res));
 }
 
 async function fetchWithRedirect(url, init, bodyString, maxRedirects = 3) {
@@ -9570,7 +9570,7 @@ async function lineReply(channelToken, replyToken, messages) {
     const body = await res.text();
     throw new Error(`LINE reply failed ${res.status} ${res.statusText}: ${body}`);
   }
-  logOutboundMessages('reply', null, messages);
+  logOutboundMessages('reply', null, messages, await sentMessagesOf(res));
 }
 
 function createReplyToLine(env) {
@@ -12805,6 +12805,8 @@ function startEventLog(env, ev) {
     chatId: getChatId(ev),
     sourceType: ev?.source?.type || '',
     messageId: ev?.message?.id || '',
+    quotedMessageId: ev?.message?.quotedMessageId || '',
+    quoteToken: ev?.message?.quoteToken || '',
     webhookEventId: ev?.webhookEventId || '',
     logId: ev?.webhookEventId || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     isRedelivery: ev?.deliveryContext?.isRedelivery === true,
@@ -12821,7 +12823,8 @@ function tagEventLog(handler) {
 
 function flushEventLog(env, ctx, log) {
   if (!log) return;
-  const { outCount, ...payload } = log;
+  // Quote fields are for the inbox only; MM_LOG keeps its column set.
+  const { outCount, quotedMessageId, quoteToken, ...payload } = log;
   payload.handler = log.handler || defaultEventHandler({
     type: log.eventType,
     message: { type: log.messageType },
@@ -12831,7 +12834,7 @@ function flushEventLog(env, ctx, log) {
     notifyN8nChatLog(env, payload).catch((err) => console.error('chat_log_inbound_failed', err))
   );
   ctx.waitUntil(
-    recordInboxEvent(env, payload).catch((err) => console.error('inbox_inbound_failed', err))
+    recordInboxEvent(env, { ...payload, quotedMessageId, quoteToken }).catch((err) => console.error('inbox_inbound_failed', err))
   );
 }
 
@@ -12846,7 +12849,18 @@ function summarizeOutboundMessages(messages) {
     .slice(0, CHAT_LOG_TEXT_LIMIT);
 }
 
-function logOutboundMessages(kind, to, messages) {
+// LINE answers a push/reply with the id and quote token of each message sent;
+// the inbox keeps them so customers' replies to bot messages can be shown.
+async function sentMessagesOf(res) {
+  try {
+    const body = await res.json();
+    return Array.isArray(body?.sentMessages) ? body.sentMessages : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function logOutboundMessages(kind, to, messages, sent = []) {
   const store = chatLogContext.getStore();
   if (!store?.env || !store?.ctx) return;
   const inbound = store.eventLog || null;
@@ -12878,7 +12892,7 @@ function logOutboundMessages(kind, to, messages) {
   );
   // store.author is set by the inbox when a staff member sends.
   store.ctx.waitUntil(
-    recordInboxOutbound(store.env, payload, store.author || 'bot', messages).catch((err) => console.error('inbox_outbound_failed', err))
+    recordInboxOutbound(store.env, payload, store.author || 'bot', messages, sent, store.quotedId).catch((err) => console.error('inbox_outbound_failed', err))
   );
 }
 

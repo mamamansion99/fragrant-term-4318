@@ -120,10 +120,12 @@ async function touchContact(db, userId, ts, text, author, actionable) {
 async function insertMessage(db, m) {
   const actionable = m.direction === 'IN' ? (needsReply(m.kind, m.text, m.handler) ? 1 : 0) : 0;
   const res = await db.prepare(
-    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable, payload)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)`
+    `INSERT OR IGNORE INTO messages (user_id, ts, direction, author, kind, text, line_message_id, log_id, handler, in_reply_to, actionable, payload,
+       quoted_id, quote_token, sent_ids)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)`
   ).bind(m.userId, m.ts, m.direction, m.author, m.kind || '', String(m.text || '').slice(0, 4000),
-    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable, m.payload || null).run();
+    m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable, m.payload || null,
+    m.quotedId || null, m.quoteToken || null, m.sentIds || null).run();
   if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author, actionable);
 }
 
@@ -150,7 +152,9 @@ export async function recordInboxEvent(env, log) {
     text: log.text,
     lineMessageId: log.messageId,
     logId: log.logId,
-    handler: log.handler
+    handler: log.handler,
+    quotedId: log.quotedMessageId,
+    quoteToken: log.quoteToken
   });
 }
 
@@ -193,7 +197,7 @@ function richPayload(messages) {
   return s.length <= 60000 ? s : null;
 }
 
-export async function recordInboxOutbound(env, payload, author, messages) {
+export async function recordInboxOutbound(env, payload, author, messages, sent, quotedId) {
   const db = env?.INBOX_DB;
   if (!db || !payload || payload.sourceType !== 'user' || !String(payload.userId || '').startsWith('U')) return;
   await insertMessage(db, {
@@ -206,7 +210,11 @@ export async function recordInboxOutbound(env, payload, author, messages) {
     logId: payload.logId,
     handler: payload.handler,
     inReplyTo: payload.inReplyTo,
-    payload: richPayload(messages)
+    payload: richPayload(messages),
+    quotedId: quotedId || '',
+    // One row can hold several bubbles; the first one's token is what staff quote.
+    quoteToken: (Array.isArray(sent) && sent[0]?.quoteToken) || '',
+    sentIds: Array.isArray(sent) && sent.length ? ',' + sent.map((x) => x?.id).filter(Boolean).join(',') + ',' : ''
   });
 }
 
@@ -335,6 +343,24 @@ async function todayStats(env, staff) {
   };
 }
 
+// The message a customer (or staff) replied to, small enough to show above the bubble.
+async function quotedPreview(env, origin, userId, lineId, deps) {
+  const q = await env.INBOX_DB.prepare(
+    'SELECT * FROM messages WHERE user_id = ?1 AND (line_message_id = ?2 OR sent_ids LIKE ?3) ORDER BY ts DESC LIMIT 1'
+  ).bind(userId, lineId, `%,${lineId},%`).first();
+  if (!q) return { found: false };
+  let media = '';
+  if (q.kind === 'image' && q.line_message_id) media = await deps.repairMediaUrl(env, origin, q.line_message_id, 'preview');
+  let img = '';
+  if (!media && q.payload) {
+    try {
+      const first = JSON.parse(q.payload).find((m) => m && m.type !== 'text');
+      img = first?.previewImageUrl || first?.originalContentUrl || '';
+    } catch (_) {}
+  }
+  return { found: true, dir: q.direction, author: q.author, text: String(q.text || '').slice(0, 140), media: media || img };
+}
+
 async function listMessages(env, url, deps) {
   const userId = url.searchParams.get('u') || '';
   const before = Number(url.searchParams.get('before') || 0) || Date.now() + 60000;
@@ -348,7 +374,8 @@ async function listMessages(env, url, deps) {
     if (r.kind === 'image' && r.line_message_id) media = await deps.repairMediaUrl(env, origin, r.line_message_id, 'preview');
     let rich = null;
     if (r.payload) { try { rich = JSON.parse(r.payload); } catch (_) { rich = null; } }
-    out.push({ id: r.id, at: r.ts, dir: r.direction, author: r.author, kind: r.kind, text: r.text, media, rich });
+    const quote = r.quoted_id ? await quotedPreview(env, origin, userId, r.quoted_id, deps) : null;
+    out.push({ id: r.id, at: r.ts, dir: r.direction, author: r.author, kind: r.kind, text: r.text, media, rich, quote, canQuote: !!r.quote_token });
   }
   const contact = await env.INBOX_DB.prepare('SELECT * FROM contacts WHERE user_id = ?1').bind(userId).first();
   return {
@@ -405,10 +432,21 @@ async function sendReply(env, request, staff, deps) {
     : kind === 'image'
       ? [{ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl }]
       : [{ type: 'text', text }];
+  // Replying to one message: LINE shows it quoted above the staff text.
+  let quotedId = '';
+  if (body.quoteId && kind === 'text') {
+    const q = await env.INBOX_DB.prepare('SELECT quote_token, line_message_id, sent_ids FROM messages WHERE id = ?1 AND user_id = ?2')
+      .bind(Number(body.quoteId), userId).first();
+    if (q?.quote_token) {
+      messages[0].quoteToken = q.quote_token;
+      quotedId = q.line_message_id || String(q.sent_ids || '').split(',').filter(Boolean)[0] || '';
+    }
+  }
   const store = deps.chatLogContext.getStore();
   if (store) {
     store.author = `staff:${staff.name}`;
     store.handler = 'inbox';
+    store.quotedId = quotedId;
   }
   try {
     await deps.linePush(env.LINE_ACCESS_TOKEN, userId, messages);

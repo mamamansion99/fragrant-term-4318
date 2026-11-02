@@ -65,6 +65,22 @@ describe('inbox', () => {
 		expect(msgs[1].rich).toBeNull();
 	});
 
+	it('shows which earlier message a customer replied to, and lets staff quote it back', async () => {
+		const U = 'Uqt0000000000000000000000000000001';
+		const now = Date.now();
+		await recordInboxOutbound(e, { timestamp: new Date(now - 60000).toISOString(), userId: U, sourceType: 'user', text: 'ขั้นตอนการชำระค่าเช่า', logId: 'qt-out', handler: 'quick_keyword' }, 'bot',
+			[{ type: 'text', text: 'ขั้นตอนการชำระค่าเช่า' }], [{ id: '6001', quoteToken: 'qtok-bot' }]);
+		await recordInboxEvent(e, { ...inbound('หนูขอดูหน่วยไฟแบบนี้ได้ไหมคะ', 'qt-in', new Date(now).toISOString()), userId: U, messageId: '7001', quotedMessageId: '6001', quoteToken: 'qtok-cust' });
+		await recordInboxEvent(e, { ...inbound('อีกเรื่องค่ะ', 'qt-in2', new Date(now + 1000).toISOString()), userId: U, messageId: '7002', quotedMessageId: '9999', quoteToken: 'qtok-2' });
+		const token = await issueInboxToken(e, STAFF);
+		const msgs = (await get(`/inbox/api/messages?u=${U}`, token)).body.messages;
+		expect(msgs[0].quote).toBeNull();
+		expect(msgs[1].quote).toMatchObject({ found: true, dir: 'OUT', text: 'ขั้นตอนการชำระค่าเช่า' });
+		expect(msgs[1].canQuote).toBe(true);
+		// Quoting something older than the inbox remembers still says it is a reply.
+		expect(msgs[2].quote).toEqual({ found: false });
+	});
+
 	it('refuses tokens for people who are not staff and tampered tokens', async () => {
 		const outsider = await issueInboxToken(e, 'Unotstaff00000000000000000000000');
 		expect((await get('/inbox/api/me', outsider)).status).toBe(401);

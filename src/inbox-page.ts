@@ -77,6 +77,13 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .out{align-self:flex-end;background:var(--bot);border-top-right-radius:6px}.out.ai{background:var(--ai)}.out.mine{background:var(--mine)}
 .b img{max-width:100%;border-radius:10px;display:block}
 .b.rich{background:transparent;padding:0;box-shadow:none;max-width:100%}
+.qt{display:flex;gap:8px;align-items:center;border-left:3px solid var(--mute);background:rgba(127,127,127,.12);border-radius:8px;padding:5px 8px;margin:2px 0 6px;font-size:12.5px;color:var(--mute);max-width:260px}
+.qt img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto}
+.qt span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal}
+.rp{background:none;border:0;color:var(--mute);font-size:12px;padding:2px 6px;cursor:pointer;align-self:center}
+.rrow{display:flex;align-items:flex-end;gap:2px}.rrow.out{justify-content:flex-end}
+.replybar{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;color:var(--mute);border-top:1px solid var(--line)}
+.replybar span{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.replybar button{background:none;border:0;font-size:16px;color:var(--mute);cursor:pointer}
 .fx-scroll{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
 .fx-scroll+.fx-scroll,.fx-text+.fx-scroll,.fx-scroll+.fx-text,.fx-text+.fx-text,.fx-photo{margin-top:6px}
 .fx-bubble{flex:0 0 auto;max-width:82vw;background:#fff;color:#111;border-radius:14px;overflow:hidden;scroll-snap-align:start;box-shadow:0 1px 3px rgba(0,0,0,.15);display:flex;flex-direction:column}
@@ -154,6 +161,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <div class="hold"><div class="st" id="hst"></div><button id="hbtn"></button></div>
     <div id="sugg"></div>
     <div class="quick" id="quick"></div>
+    <div class="replybar" id="replybar" hidden><span id="replytxt"></span><button id="replyx" aria-label="ยกเลิกการตอบกลับ">✕</button></div>
     <div class="compose">
       <textarea id="text" rows="1" placeholder="พิมพ์ตอบลูกค้า"></textarea>
       <button class="send" id="send" aria-label="ส่ง">➤</button>
@@ -361,7 +369,12 @@ function renderThread(d) {
     if (stk) { html += '<div class="b stk ' + side + '"><img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'; continue; }
     const rich = m.rich ? richHtml(m.rich) : '';
     const body = rich || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
-    html += '<div class="b ' + side + (rich ? ' rich' : '') + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + body + '</div>';
+    const q = m.quote;
+    const qt = !q ? '' : '<div class="qt">' + (q.media ? '<img src="' + esc(q.media) + '" alt="">' : '') + '<span>↩ ' +
+      (q.found ? esc(q.media ? 'รูป' : q.text) : 'ตอบกลับข้อความเก่า') + '</span></div>';
+    const bubble = '<div class="b ' + side + (rich ? ' rich' : '') + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + qt + body + '</div>';
+    const rp = m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '';
+    html += rp ? '<div class="rrow ' + (m.dir === 'IN' ? 'in' : 'out') + '">' + (m.dir === 'IN' ? bubble + rp : rp + bubble) + '</div>' : bubble;
   }
   const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
@@ -415,18 +428,30 @@ async function loadThread() {
   if (sig !== lastSig) { lastSig = sig; renderThread(d); }
 }
 function openThread(u) {
-  current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
+  setReply(null); current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
   $('phone').classList.add('open'); history.pushState({ u }, '', '#' + u); loadThread();
 }
 function closeThread() { current = null; $('phone').classList.remove('open'); loadList(); loadMe(); }
+// Staff can reply to one message; LINE quotes it above their text.
+let replyTo = null;
+function setReply(m) {
+  replyTo = m || null;
+  $('replybar').hidden = !m;
+  if (m) { $('replytxt').textContent = '↩ ตอบกลับ: ' + (m.media && !m.rich ? 'รูป' : String(m.text || '').replace(/\\s+/g, ' ')); $('text').focus(); }
+}
+$('replyx').onclick = () => setReply(null);
+$('msgs').addEventListener('click', (e) => {
+  const b = e.target.closest('.rp'); if (!b || !thread) return;
+  setReply(thread.messages.find((m) => String(m.id) === b.dataset.q));
+});
 async function send(text, draftId, kind) {
   if (!current || (!kind && !String(text || '').trim())) return;
   const waited = thread && thread.contact && thread.contact.waiting ? Math.max(1, Math.round((Date.now() - thread.contact.lastCustomerAt) / 60000)) : 0;
   $('send').disabled = true;
   try {
-    const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, text, draftId: draftId || $('text').dataset.draft || undefined, kind }) });
+    const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, text, draftId: draftId || $('text').dataset.draft || undefined, kind, quoteId: replyTo ? replyTo.id : undefined }) });
     if (!d.ok) { toast('ส่งไม่สำเร็จ ลองอีกครั้ง'); return; }
-    $('text').value = ''; delete $('text').dataset.draft; grow(); lastSig = ''; stickToBottom = true;
+    $('text').value = ''; delete $('text').dataset.draft; grow(); setReply(null); lastSig = ''; stickToBottom = true;
     toast('ส่งแล้ว ✓' + (waited ? ' ตอบใน ' + mins(waited) : '') + (draftId ? ' · ใช้คำแนะนำ AI' : ''));
     await loadThread();
   } finally { $('send').disabled = false; }
