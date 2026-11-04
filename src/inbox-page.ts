@@ -80,8 +80,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .qt{display:flex;gap:8px;align-items:center;border-left:3px solid var(--mute);background:rgba(127,127,127,.12);border-radius:8px;padding:5px 8px;margin:2px 0 6px;font-size:12.5px;color:var(--mute);max-width:260px}
 .qt img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto}
 .qt span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal}
-.rp{background:none;border:0;color:var(--mute);font-size:12px;padding:2px 6px;cursor:pointer;align-self:center}
-.rrow{display:flex;align-items:flex-end;gap:2px}.rrow.out{justify-content:flex-end}
+.rp{background:none;border:0;color:var(--mute);opacity:.45;font-size:13px;padding:6px;cursor:pointer;flex:0 0 auto}.rp:active,.rp:hover{opacity:1}
+.rrow{display:flex;align-items:center;gap:2px;width:100%}.rrow.ro{justify-content:flex-end}.rrow>.b{align-self:auto}
 .replybar{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;color:var(--mute);border-top:1px solid var(--line)}
 .replybar span{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.replybar button{background:none;border:0;font-size:16px;color:var(--mute);cursor:pointer}
 .fx-scroll{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
@@ -384,7 +384,7 @@ function renderThread(d) {
       (q.found ? esc(q.media ? 'รูป' : q.text) : 'ตอบกลับข้อความเก่า') + '</span></div>';
     const bubble = '<div class="b ' + side + (rich ? ' rich' : '') + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + qt + body + '</div>';
     const rp = m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '';
-    html += rp ? '<div class="rrow ' + (m.dir === 'IN' ? 'in' : 'out') + '">' + (m.dir === 'IN' ? bubble + rp : rp + bubble) + '</div>' : bubble;
+    html += rp ? '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? bubble + rp : rp + bubble) + '</div>' : bubble;
   }
   const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
