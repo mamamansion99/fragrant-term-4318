@@ -1,4 +1,4 @@
-import { env, SELF } from 'cloudflare:test';
+import { env, fetchMock, SELF } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 import { issueInboxToken, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from '../src/inbox';
 
@@ -315,5 +315,43 @@ describe('pay-rent flow recovery', () => {
 		expect(await payRentCommandInWindow(e, U, 5000)).toBeNull(); // older than the window
 		await recordInboxEvent(e, { timestamp: at(1000), direction: 'IN', eventType: 'message', messageType: 'image', text: '(image)', userId: U, sourceType: 'user', logId: 'pr-img', handler: 'image:pay_rent' });
 		expect(await payRentCommandInWindow(e, U, 15 * 60 * 1000)).toBeNull(); // slip already used the flow
+	});
+});
+
+describe('photos staff attach from the phone', () => {
+	const JPEG = btoa(String.fromCharCode(0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9));
+	const post = (token: string, body: unknown) => SELF.fetch('https://example.com/inbox/api/send', {
+		method: 'POST', headers: { Authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body)
+	});
+
+	it('rejects what is not a JPEG and serves nothing for unknown ids', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		expect((await post(token, { u: CUSTOMER, kind: 'photo', orig: btoa('hello'), preview: JPEG })).status).toBe(400);
+		expect((await post(token, { u: CUSTOMER, kind: 'photo', orig: JPEG })).status).toBe(400);
+		expect((await SELF.fetch('https://example.com/inbox/photo/' + 'a'.repeat(32) + '/orig.jpg')).status).toBe(404);
+		expect((await SELF.fetch('https://example.com/inbox/photo/abc/orig.jpg')).status).toBe(404);
+	});
+
+	it('stores the photo, pushes it to LINE as an image link, and serves that link', async () => {
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+		let pushed: any = null;
+		fetchMock.get('https://api.line.me').intercept({ path: '/v2/bot/message/push', method: 'POST' })
+			.reply(200, (opts: any) => { pushed = JSON.parse(String(opts.body)); return { sentMessages: [{ id: '8101' }] }; });
+		try {
+			const token = await issueInboxToken(e, STAFF);
+			const res = await post(token, { u: CUSTOMER, kind: 'photo', orig: JPEG, preview: JPEG });
+			expect(res.status).toBe(200);
+			const img = pushed.messages[0];
+			expect(img.type).toBe('image');
+			expect(img.originalContentUrl).toMatch(/^https:\/\/example\.com\/inbox\/photo\/[a-f0-9]{32}\/orig\.jpg$/);
+			expect(img.previewImageUrl).toMatch(/\/preview\.jpg$/);
+			const served = await SELF.fetch(img.originalContentUrl);
+			expect(served.status).toBe(200);
+			expect(served.headers.get('content-type')).toBe('image/jpeg');
+			expect(new Uint8Array(await served.arrayBuffer())[0]).toBe(0xff);
+		} finally {
+			fetchMock.deactivate();
+		}
 	});
 });

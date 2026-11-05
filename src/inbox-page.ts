@@ -173,6 +173,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <div class="stkpanel" id="stkpanel" hidden><div class="stktabs" id="stktabs"></div><div class="stkgrid" id="stkgrid"></div></div>
     <div class="compose">
       <button class="stkbtn" id="stkbtn" aria-label="สติกเกอร์">😊</button>
+      <button class="stkbtn" id="photobtn" aria-label="แนบรูป">📷</button>
+      <input type="file" id="photofile" accept="image/*" hidden>
       <textarea id="text" rows="1" placeholder="พิมพ์ตอบลูกค้า"></textarea>
       <button class="send" id="send" aria-label="ส่ง">➤</button>
     </div>
@@ -184,6 +186,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <button class="opt" data-st="closed" data-r="skip"><span class="ic">💤</span><span><b>ไม่ต้องตอบ</b><small>เช่น ขอบคุณ/สติกเกอร์ ลูกค้าพิมพ์มาใหม่จะกลับมา</small></span></button>
     <button class="opt" data-st="muted" data-r="mute"><span class="ic">🔕</span><span><b>ซ่อนถาวร</b><small>ไม่ขึ้นอีกแม้ลูกค้าพิมพ์มา และ AI จะไม่ตอบคนนี้</small></span></button>
     <button class="opt" id="endcancel" style="justify-content:center"><b>ยกเลิก</b></button>
+  </div></div>
+  <div class="sheet" id="photosheet" hidden><div class="pane">
+    <h3>ส่งรูปนี้ให้ลูกค้า</h3><p class="hint">ส่งแล้วแก้หรือลบไม่ได้</p>
+    <img id="photoprev" alt="รูปที่จะส่ง" style="display:block;max-width:100%;max-height:50vh;margin:0 auto 12px;border-radius:12px">
+    <div class="acts"><button class="btn go" id="photosend">ส่งรูป</button><button class="btn" id="photocancel" style="margin-left:auto">ยกเลิก</button></div>
   </div></div>
   <div class="sheet" id="scsheet" hidden><div class="pane">
     <h3>ปุ่มด่วน</h3><p class="hint">ทุกคนในทีมเห็นชุดเดียวกัน ข้อความจะขึ้นในช่องพิมพ์ให้แก้ก่อนส่ง ส่วนรูปและการ์ดส่งทันที</p>
@@ -522,6 +529,45 @@ $('stkgrid').addEventListener('click', async (e) => {
   if (!d.ok) { toast('ส่งสติกเกอร์ไม่สำเร็จ'); return; }
   toast('ส่งสติกเกอร์แล้ว ✓'); $('stkpanel').hidden = true; lastSig = ''; stickToBottom = true; loadThread();
 });
+// A photo from the phone: shrunk to JPEG here (LINE takes up to 10 MB, the
+// preview up to 1 MB), shown once to confirm, then stored and sent by the worker.
+let photoData = null;
+function loadImage(file) {
+  return new Promise((ok, bad) => { const img = new Image(); const u = URL.createObjectURL(file);
+    img.onload = () => { URL.revokeObjectURL(u); ok(img); }; img.onerror = () => { URL.revokeObjectURL(u); bad(new Error('decode')); }; img.src = u; });
+}
+function jpegOf(img, maxSide, quality) {
+  const s = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', quality);
+}
+$('photobtn').onclick = () => { if (current) $('photofile').click(); };
+$('photofile').addEventListener('change', async () => {
+  const f = $('photofile').files[0]; $('photofile').value = ''; if (!f) return;
+  try {
+    const img = await loadImage(f);
+    let orig = jpegOf(img, 2048, 0.85);
+    if (orig.length > 13000000) orig = jpegOf(img, 1600, 0.75);
+    let preview = jpegOf(img, 640, 0.8);
+    if (preview.length > 1300000) preview = jpegOf(img, 480, 0.6);
+    photoData = { orig: orig.split(',')[1], preview: preview.split(',')[1] };
+    $('photoprev').src = preview; $('photosheet').hidden = false;
+  } catch (_) { toast('เปิดรูปนี้ไม่ได้ ลองรูปอื่น'); }
+});
+function closePhoto() { $('photosheet').hidden = true; photoData = null; $('photoprev').removeAttribute('src'); }
+$('photocancel').onclick = closePhoto;
+$('photosheet').addEventListener('click', (e) => { if (e.target === $('photosheet')) closePhoto(); });
+$('photosend').onclick = async () => {
+  if (!photoData || !current) return;
+  $('photosend').disabled = true; $('photosend').textContent = 'กำลังส่ง…';
+  try {
+    const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, kind: 'photo', orig: photoData.orig, preview: photoData.preview }) });
+    if (!d.ok) { toast('ส่งรูปไม่สำเร็จ ลองอีกครั้ง'); return; }
+    closePhoto(); toast('ส่งรูปแล้ว ✓'); lastSig = ''; stickToBottom = true; loadThread();
+  } catch (_) { toast('ส่งรูปไม่สำเร็จ ลองอีกครั้ง'); }
+  finally { $('photosend').disabled = false; $('photosend').textContent = 'ส่งรูป'; }
+};
 async function sendShortcut(x) {
   const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) });
   toast(d.ok ? 'ส่ง ' + x.label + ' แล้ว ✓' : 'ส่งไม่สำเร็จ ลองอีกครั้ง'); lastSig = ''; stickToBottom = true; loadThread();

@@ -412,12 +412,55 @@ async function setHuman(env, userId, staff, holdMs) {
   return until;
 }
 
+/* ---------- photos staff attach from their phone ---------- */
+
+// LINE only takes an image as an https link, so a photo picked in the page is
+// kept in KV and served from this worker. The page shrinks it to JPEG first:
+// LINE allows 10 MB for the photo and 1 MB for its preview. The link holds a
+// random id and stays up for good, because customers open old photos later.
+const PHOTO_ID_RE = /^[a-f0-9]{32}$/;
+const PHOTO_MAX = { orig: 10 * 1024 * 1024, preview: 1024 * 1024 };
+
+function jpegBytes(b64, max) {
+  if (typeof b64 !== 'string' || !b64 || b64.length > Math.ceil(max / 3) * 4 + 4) return null;
+  let bin;
+  try { bin = atob(b64); } catch (_) { return null; }
+  if (bin.length > max || bin.length < 4) return null;
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff ? bytes : null;
+}
+
+async function storePhoto(env, origin, body) {
+  const orig = jpegBytes(body.orig, PHOTO_MAX.orig);
+  const preview = jpegBytes(body.preview, PHOTO_MAX.preview);
+  if (!orig || !preview || !env.KV) return null;
+  const id = Array.from(crypto.getRandomValues(new Uint8Array(16))).map((b) => b.toString(16).padStart(2, '0')).join('');
+  await env.KV.put(`inbox-photo:${id}:orig`, orig);
+  await env.KV.put(`inbox-photo:${id}:preview`, preview);
+  return { original: `${origin}/inbox/photo/${id}/orig.jpg`, preview: `${origin}/inbox/photo/${id}/preview.jpg` };
+}
+
+async function servePhoto(env, path) {
+  const m = path.match(/^\/inbox\/photo\/([a-f0-9]+)\/(orig|preview)\.jpg$/);
+  if (!m || !PHOTO_ID_RE.test(m[1]) || !env.KV) return new Response('not found', { status: 404 });
+  const bytes = await env.KV.get(`inbox-photo:${m[1]}:${m[2]}`, 'arrayBuffer');
+  if (!bytes) return new Response('not found', { status: 404 });
+  return new Response(bytes, { headers: { 'content-type': 'image/jpeg', 'cache-control': 'public, max-age=31536000, immutable' } });
+}
+
 async function sendReply(env, request, staff, deps) {
   const body = await request.json().catch(() => ({}));
   const userId = String(body.u || '');
   const text = String(body.text || '').trim();
-  let kind = ['roomcard', 'sticker'].includes(body.kind) ? body.kind : 'text';
+  let kind = ['roomcard', 'sticker', 'photo'].includes(body.kind) ? body.kind : 'text';
   let imageUrl = '';
+  let photo = null;
+  if (kind === 'photo') {
+    if (!userId.startsWith('U')) return json({ ok: false, error: 'missing' }, 400);
+    photo = await storePhoto(env, new URL(request.url).origin, body);
+    if (!photo) return json({ ok: false, error: 'photo' }, 400);
+  }
   if (body.shortcutId) {
     const sc = await env.INBOX_DB.prepare('SELECT * FROM shortcuts WHERE id = ?1').bind(Number(body.shortcutId)).first();
     if (!sc) return json({ ok: false, error: 'shortcut' }, 404);
@@ -436,6 +479,8 @@ async function sendReply(env, request, staff, deps) {
       ? [{ type: 'sticker', packageId, stickerId }]
     : kind === 'image'
       ? [{ type: 'image', originalContentUrl: imageUrl, previewImageUrl: imageUrl }]
+    : kind === 'photo'
+      ? [{ type: 'image', originalContentUrl: photo.original, previewImageUrl: photo.preview }]
       : [{ type: 'text', text }];
   // Replying to one message: LINE shows it quoted above the staff text.
   let quotedId = '';
@@ -748,6 +793,7 @@ export async function handleInboxRequest(request, env, url, deps) {
   if (request.method === 'GET' && path === '/inbox/auth/start') return loginStart(env, url);
   if (request.method === 'GET' && path === '/inbox/auth/callback') return loginCallback(env, url);
   if (request.method === 'GET' && path === '/inbox/auth/poll') return loginPoll(env, url);
+  if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/inbox/photo/')) return servePhoto(env, path);
   if (request.method === 'GET' && path === '/inbox/api/login-config') return json({ ok: true, lineLogin: lineLoginConfigured(env) });
   if (request.method === 'GET' && (path === '/inbox' || path === '/inbox/')) {
     return new Response(INBOX_PAGE_HTML, {
