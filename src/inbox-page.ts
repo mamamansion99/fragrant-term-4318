@@ -80,8 +80,12 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .qt{display:flex;gap:8px;align-items:center;border-left:3px solid var(--mute);background:rgba(127,127,127,.12);border-radius:8px;padding:5px 8px;margin:2px 0 6px;font-size:12.5px;color:var(--mute);max-width:260px}
 .qt img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto}
 .qt span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal}
-.rp{background:none;border:0;color:var(--mute);opacity:.45;font-size:13px;padding:6px;cursor:pointer;flex:0 0 auto}.rp:active,.rp:hover{opacity:1}
-.rrow{display:flex;align-items:center;gap:2px;width:100%}.rrow.ro{justify-content:flex-end}.rrow>.b{align-self:auto}
+.rrow{display:flex;align-items:flex-end;gap:6px;width:100%}.rrow.ro{justify-content:flex-end}.rrow>.b{align-self:auto}
+.side{flex:0 0 auto;min-width:34px;display:flex;justify-content:center;padding-bottom:2px}
+.side .tm{font-size:11px;color:var(--mute);white-space:nowrap}
+.rp{display:none;background:var(--raised);border:1px solid var(--line);color:var(--ink);border-radius:999px;font-size:13px;line-height:1;padding:6px 9px;cursor:pointer}
+@media (hover:hover){.rrow:hover .side .rp{display:block}.rrow:hover .side .tm{display:none}}
+.rrow.sel .side .rp{display:block}.rrow.sel .side .tm{display:none}
 .replybar{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;color:var(--mute);border-top:1px solid var(--line)}
 .replybar span{flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.replybar button{background:none;border:0;font-size:16px;color:var(--mute);cursor:pointer}
 .fx-scroll{display:flex;gap:8px;overflow-x:auto;padding:2px 0 4px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch}
@@ -383,15 +387,17 @@ function renderThread(d) {
     const me = m.author.startsWith('staff:'), side = m.dir === 'IN' ? 'in' : 'out ' + (me ? 'mine' : m.author === 'ai' ? 'ai' : '');
     const label = m.dir === 'IN' ? '' : (me ? m.author.slice(6) : m.author === 'ai' ? 'AI' : 'บอท');
     const stk = stickerImg(m.text);
-    if (stk) { html += '<div class="b stk ' + side + '"><img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'; continue; }
+    const sideHtml = '<div class="side"><span class="tm">' + t2(m.at) + '</span>' +
+      (m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '') + '</div>';
+    const wrap = (b) => '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? b + sideHtml : sideHtml + b) + '</div>';
+    if (stk) { html += wrap('<div class="b stk ' + side + '">' + (label ? '<span class="w">' + esc(label) + '</span>' : '') + '<img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'); continue; }
     const rich = m.rich ? richHtml(m.rich) : '';
     const body = rich || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
     const q = m.quote;
     const qt = !q ? '' : '<div class="qt">' + (q.media ? '<img src="' + esc(q.media) + '" alt="">' : '') + '<span>↩ ' +
       (q.found ? esc(q.media ? 'รูป' : q.text) : 'ตอบกลับข้อความเก่า') + '</span></div>';
-    const bubble = '<div class="b ' + side + (rich ? ' rich' : '') + '"><span class="w">' + (label ? esc(label) + ' · ' : '') + t2(m.at) + '</span>' + qt + body + '</div>';
-    const rp = m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '';
-    html += rp ? '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? bubble + rp : rp + bubble) + '</div>' : bubble;
+    const bubble = '<div class="b ' + side + (rich ? ' rich' : '') + '">' + (label ? '<span class="w">' + esc(label) + '</span>' : '') + qt + body + '</div>';
+    html += wrap(bubble);
   }
   const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
@@ -458,8 +464,15 @@ function setReply(m) {
 }
 $('replyx').onclick = () => setReply(null);
 $('msgs').addEventListener('click', (e) => {
-  const b = e.target.closest('.rp'); if (!b || !thread) return;
-  setReply(thread.messages.find((m) => String(m.id) === b.dataset.q));
+  const b = e.target.closest('.rp');
+  if (b && thread) { setReply(thread.messages.find((m) => String(m.id) === b.dataset.q)); return; }
+  // Touch screens have no hover: tapping a message shows its reply button
+  // in place of the time, like LINE OA. Links and buttons inside keep working.
+  const row = e.target.closest('.rrow');
+  if (!row || e.target.closest('a,button') || !row.querySelector('.rp')) return;
+  const was = row.classList.contains('sel');
+  $('msgs').querySelectorAll('.rrow.sel').forEach((r) => r.classList.remove('sel'));
+  if (!was) row.classList.add('sel');
 });
 async function send(text, draftId, kind) {
   if (!current || (!kind && !String(text || '').trim())) return;
