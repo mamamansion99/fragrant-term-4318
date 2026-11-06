@@ -37,6 +37,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .screen.thread{transform:translateX(100%)}
 .phone.open .screen.thread{transform:none}.phone.open .screen.home{transform:translateX(-25%)}
 @media (prefers-reduced-motion:reduce){.screen{transition:none}}
+.phone.drag .screen{transition:none}
+.screen.thread{box-shadow:-8px 0 24px rgba(0,0,0,.12)}
 .hd{padding:14px 16px 10px;display:flex;align-items:center;gap:12px}
 .hd h1{font:700 22px/1.2 var(--display);margin:0;flex:1}
 .me{min-width:36px;height:36px;padding:0 8px;border-radius:999px;display:grid;place-items:center;background:var(--green);color:var(--green-ink);font:600 14px var(--display)}
@@ -130,10 +132,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .send:active,.stkbtn:active{transform:scale(.86)}
 .send.pop{animation:sendpop .32s cubic-bezier(.34,1.56,.64,1)}
 @keyframes sendpop{0%{transform:scale(.86)}100%{transform:scale(1)}}
-.rrow.pend>.b{transform-origin:100% 100%;animation:rise .42s cubic-bezier(.34,1.4,.64,1) both}
+.rrow.pend>.b{transform-origin:100% 100%;animation:rise .42s cubic-bezier(.34,1.4,.64,1) both}.rrow.pend.placed>.b{animation:none}
 @keyframes rise{0%{opacity:0;transform:translateY(28px) scale(.86)}60%{opacity:1}100%{opacity:1;transform:none}}
 .rrow.pend .side .tm{color:var(--mute)}
-.rrow.pend.wait>.b{opacity:.72;transition:opacity .2s}
+.rrow.pend>.b{transition:opacity .25s}.rrow.pend.wait>.b{opacity:.72}
 .rrow.pend.fail>.b{outline:1.5px solid #e5484d;opacity:1}
 .rrow.pend.fail .side .tm{color:#e5484d;white-space:normal;text-align:right;max-width:90px;cursor:pointer}
 .suggest.gone{animation:fadeout .2s ease forwards}
@@ -464,7 +466,7 @@ function renderThread(d) {
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
   stickToBottom = false;
   box.innerHTML = html || (pending.length ? '' : '<div class="empty">ยังไม่มีข้อความ</div>');
-  pending.forEach((row) => box.append(row));
+  pending.forEach((row) => { box.append(row); row.classList.add('placed'); });
   box.dataset.ready = '1';
   holdPosition(box, stick, fromBottom);
   const closed = c.status && c.status !== 'open';
@@ -517,6 +519,37 @@ function openThread(u) {
   setReply(null); $('stkpanel').hidden = true; quickFor = null; pending = []; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
   $('phone').classList.add('open'); history.pushState({ u }, '', '#' + u); loadThread();
 }
+// Swipe right on a chat to go back to the list, like iOS: the chat follows the
+// finger, the list slides in behind it, and letting go past a third (or a
+// quick flick) finishes the gesture.
+(() => {
+  const th = document.querySelector('.screen.thread'), home = document.querySelector('.screen.home'), ph = $('phone');
+  let x0 = 0, y0 = 0, t0 = 0, dx = 0, mode = '';
+  th.addEventListener('touchstart', (e) => {
+    if (!ph.classList.contains('open') || e.touches.length > 1) { mode = 'no'; return; }
+    // Leave horizontal scrollers (cards, shortcut row, sticker tabs) alone.
+    const el = e.target.closest('.fx-scroll,.quick,.stktabs,textarea,[data-noswipe]');
+    if (el && el.scrollWidth > el.clientWidth) { mode = 'no'; return; }
+    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now(); dx = 0; mode = '';
+  }, { passive: true });
+  th.addEventListener('touchmove', (e) => {
+    if (mode === 'no') return;
+    const mx = e.touches[0].clientX - x0, my = e.touches[0].clientY - y0;
+    if (!mode) { if (Math.abs(mx) < 10 && Math.abs(my) < 10) return; mode = mx > 0 && mx > Math.abs(my) * 1.2 ? 'x' : 'no'; if (mode === 'x') ph.classList.add('drag'); }
+    if (mode !== 'x') return;
+    e.preventDefault();
+    dx = Math.max(0, mx); const w = th.offsetWidth, k = dx / w;
+    th.style.transform = 'translateX(' + dx + 'px)'; home.style.transform = 'translateX(' + (-25 + 25 * k) + '%)';
+  }, { passive: false });
+  const end = () => {
+    if (mode !== 'x') { mode = ''; return; }
+    mode = ''; ph.classList.remove('drag');
+    const w = th.offsetWidth, v = dx / Math.max(1, Date.now() - t0);
+    th.style.transform = ''; home.style.transform = '';
+    if (dx > w / 3 || (v > 0.5 && dx > 40)) { th.style.transform = 'translateX(' + dx + 'px)'; requestAnimationFrame(() => { th.style.transform = ''; history.back(); }); }
+  };
+  th.addEventListener('touchend', end); th.addEventListener('touchcancel', end);
+})();
 function closeThread() { current = null; $('phone').classList.remove('open'); loadList(); loadMe(); }
 // Staff can reply to one message; LINE quotes it above their text.
 let replyTo = null;
@@ -542,8 +575,12 @@ $('msgs').addEventListener('click', (e) => {
 let pending = [];
 function addPending(innerHtml, cls) {
   const row = document.createElement('div');
-  row.className = 'rrow ro pend wait';
-  row.innerHTML = '<div class="side"><span class="tm">กำลังส่ง…</span></div><div class="b out mine ' + (cls || '') + '">' + innerHtml + '</div>';
+  // Same markup as the message the server will return (name + time), so the
+  // swap to the real one is invisible. "Sending" only shows if it is slow.
+  row.className = 'rrow ro pend';
+  row.innerHTML = '<div class="side"><span class="tm">' + t2(Date.now()) + '</span></div><div class="b out mine ' + (cls || '') + '">' +
+    (myName ? '<span class="w">' + esc(myName) + '</span>' : '') + innerHtml + '</div>';
+  row._slow = setTimeout(() => { row.classList.add('wait'); row.querySelector('.tm').textContent = 'กำลังส่ง…'; }, 900);
   pending.push(row);
   const box = $('msgs'); const empty = box.querySelector('.empty'); if (empty) empty.remove();
   box.append(row);
@@ -552,12 +589,13 @@ function addPending(innerHtml, cls) {
   return row;
 }
 function pendingDone(row) {
-  pending = pending.filter((x) => x !== row);
-  row.classList.remove('wait'); row.querySelector('.tm').textContent = 'ส่งแล้ว';
-  lastSig = ''; stickToBottom = true; loadThread();
+  clearTimeout(row._slow); row.classList.add('sent');
+  if (row.classList.contains('wait')) { row.classList.remove('wait'); row.querySelector('.tm').textContent = t2(Date.now()); }
+  // Wait for the rise to finish before the real message replaces this one.
+  setTimeout(async () => { stickToBottom = true; pending = pending.filter((x) => x !== row); lastSig = ''; await loadThread(); }, 450);
 }
 function pendingFail(row, retry) {
-  row.classList.remove('wait'); row.classList.add('fail');
+  clearTimeout(row._slow); row.classList.remove('wait'); row.classList.add('fail');
   const tm = row.querySelector('.tm'); tm.textContent = 'ส่งไม่ได้ แตะเพื่อลองใหม่';
   tm.onclick = () => { pending = pending.filter((x) => x !== row); row.remove(); retry(); };
 }
