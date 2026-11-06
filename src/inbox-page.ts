@@ -111,6 +111,15 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .quick{display:flex;gap:8px;overflow-x:auto;padding:10px 12px 4px;scrollbar-width:none}
 .quick button{white-space:nowrap;padding:6px 12px;border-radius:999px;border:1px solid var(--line);font-size:13px;background:var(--surface)}
 .quick button.arm{background:var(--green);color:var(--green-ink);border-color:var(--green)}
+.quick[hidden]{display:none}
+.quick .qi{margin-right:4px}
+.qkbtn{font-size:24px;font-weight:300}.qkbtn.on{background:var(--green);color:var(--green-ink)}
+@media (max-width:767px){
+.quick{display:grid;grid-template-columns:repeat(4,1fr);gap:6px 4px;overflow:visible;padding:12px 8px 8px;border-top:1px solid var(--line);background:var(--surface)}
+.quick button{white-space:normal;border:0;background:none;border-radius:12px;padding:6px 2px;display:flex;flex-direction:column;align-items:center;gap:4px;font-size:12px;line-height:1.25;color:var(--muted,inherit)}
+.quick .qi{display:grid;place-items:center;width:48px;height:48px;border-radius:14px;background:var(--raised);font-size:24px}
+.quick button.arm{background:var(--green-soft,rgba(6,181,76,.18));color:inherit}
+}
 .compose{display:flex;gap:8px;align-items:flex-end;padding:8px 12px calc(10px + env(safe-area-inset-bottom,0px))}
 .compose textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:20px;padding:9px 14px;font:inherit;background:var(--raised);color:var(--ink);max-height:120px}
 .send{width:42px;height:42px;border-radius:50%;background:var(--green);color:var(--green-ink);font-size:18px;display:grid;place-items:center;flex:none}
@@ -173,10 +182,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <div class="msgs" id="msgs"></div>
     <div class="hold"><div class="st" id="hst"></div><button id="hbtn"></button></div>
     <div id="sugg"></div>
-    <div class="quick" id="quick"></div>
-    <div class="replybar" id="replybar" hidden><span id="replytxt"></span><button id="replyx" aria-label="ยกเลิกการตอบกลับ">✕</button></div>
+        <div class="replybar" id="replybar" hidden><span id="replytxt"></span><button id="replyx" aria-label="ยกเลิกการตอบกลับ">✕</button></div>
+    <div class="quick" id="quick" hidden></div>
     <div class="stkpanel" id="stkpanel" hidden><div class="stktabs" id="stktabs"></div><div class="stkgrid" id="stkgrid"></div></div>
     <div class="compose">
+      <button class="stkbtn qkbtn" id="qkbtn" aria-label="ข้อความลัด">+</button>
       <button class="stkbtn" id="stkbtn" aria-label="สติกเกอร์">😊</button>
       <button class="stkbtn" id="photobtn" aria-label="แนบรูป">📷</button>
       <input type="file" id="photofile" accept="image/*" hidden>
@@ -407,6 +417,7 @@ function renderThread(d) {
   const labels = {};
   d.messages.forEach((m) => { if (m.dir === 'OUT' && m.rich) collectActions(m.rich, labels); });
   const c = d.contact || { u: current, type: 'NON_TENANT' };
+  if (quickFor !== current) { quickFor = current; setQuick(c.type !== 'TENANT'); }
   const tav = $('tav'); tav.textContent = ''; tav.style.background = colorOf(current); tav.textContent = initial(c.name, current);
   $('tname').textContent = (c.name || 'ลูกค้า') + (c.room ? ' · ' + c.room : '');
   $('tsub').textContent = c.type === 'TENANT' ? 'ผู้เช่า' + (c.tenant ? ' · ' + c.tenant : '') : 'ลูกค้าใหม่';
@@ -487,7 +498,7 @@ async function loadThread() {
   if (sig !== lastSig) { lastSig = sig; renderThread(d); }
 }
 function openThread(u) {
-  setReply(null); $('stkpanel').hidden = true; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
+  setReply(null); $('stkpanel').hidden = true; quickFor = null; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
   $('phone').classList.add('open'); history.pushState({ u }, '', '#' + u); loadThread();
 }
 function closeThread() { current = null; $('phone').classList.remove('open'); loadList(); loadMe(); }
@@ -536,9 +547,26 @@ window.onpopstate = () => { if (current) closeThread(); };
 $('text').addEventListener('input', grow);
 $('send').onclick = () => send($('text').value);
 let shortcuts = [];
-function renderQuick() {
-  $('quick').innerHTML = shortcuts.map((x) => '<button data-id="' + x.id + '">' + esc(x.label) + '</button>').join('') + '<button data-edit="1">✏️ แก้ปุ่ม</button>';
+// Split a leading emoji off the label so the phone grid can show it as the icon.
+function qkParts(label) {
+  const m = String(label).match(/^(\\p{Extended_Pictographic}[\\u{FE0F}\\u{200D}\\p{Extended_Pictographic}]*)\\s*(.*)$/u);
+  return m ? [m[1], m[2]] : ['💬', String(label)];
 }
+function qkHtml(id, label, attr) {
+  const [ic, t] = qkParts(label);
+  return '<button ' + attr + '="' + id + '"><span class="qi">' + ic + '</span><span class="ql" data-full="' + esc(label) + '" data-short="' + esc(t) + '">' + esc(t) + '</span></button>';
+}
+function renderQuick() {
+  $('quick').innerHTML = shortcuts.map((x) => qkHtml(x.id, x.label, 'data-id')).join('') + qkHtml(1, '✏️ แก้ปุ่ม', 'data-edit');
+}
+// The shortcut tray (room cards, rates, booking link) is for new customers:
+// open by default for them, folded away for tenants. Staff can toggle it.
+function setQuick(open) {
+  $('quick').hidden = !open; $('qkbtn').classList.toggle('on', open); $('qkbtn').textContent = open ? '✕' : '+';
+  if (open) $('stkpanel').hidden = true;
+}
+let quickFor = null;
+$('qkbtn').onclick = () => setQuick($('quick').hidden);
 async function loadShortcuts() { const d = await api('/inbox/api/shortcuts'); shortcuts = d.shortcuts || []; renderQuick(); }
 $('quick').addEventListener('click', (e) => {
   const b = e.target.closest('button'); if (!b) return;
@@ -546,9 +574,10 @@ $('quick').addEventListener('click', (e) => {
   const x = shortcuts.find((s) => String(s.id) === b.dataset.id); if (!x) return;
   if (x.kind === 'text') { $('text').value = x.body; grow(); $('text').focus(); return; }
   // Two taps for cards and images: they go out at once and cannot be edited.
-  if (!b.classList.contains('arm')) { b.classList.add('arm'); b.textContent = 'แตะอีกครั้งเพื่อส่ง';
-    setTimeout(() => { b.classList.remove('arm'); b.textContent = x.label; }, 3000); return; }
-  b.classList.remove('arm'); b.textContent = x.label; sendShortcut(x);
+  const ql = b.querySelector('.ql');
+  if (!b.classList.contains('arm')) { b.classList.add('arm'); ql.textContent = 'แตะอีกครั้งเพื่อส่ง';
+    setTimeout(() => { b.classList.remove('arm'); ql.textContent = ql.dataset.short; }, 3000); return; }
+  b.classList.remove('arm'); ql.textContent = ql.dataset.short; sendShortcut(x);
 });
 // Bots can only send LINE's free sticker packages (ids listed by LINE); the
 // stickers the OA bought in OA Manager are not available to the API.
@@ -567,7 +596,7 @@ function renderStickers() {
   for (let i = 0; i < n; i++) h += '<button data-pkg="' + pkg + '" data-s="' + (first + i) + '"><img loading="lazy" src="' + stkUrl(first + i) + '" alt="สติกเกอร์"></button>';
   $('stkgrid').innerHTML = h;
 }
-$('stkbtn').onclick = () => { const p = $('stkpanel'); p.hidden = !p.hidden; if (!p.hidden) renderStickers(); };
+$('stkbtn').onclick = () => { const p = $('stkpanel'); p.hidden = !p.hidden; if (!p.hidden) { setQuick(false); renderStickers(); } };
 $('stktabs').addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; stkPack = Number(b.dataset.p); renderStickers(); });
 // Two taps like the card shortcuts: a sticker goes out at once and cannot be taken back.
 $('stkgrid').addEventListener('click', async (e) => {
