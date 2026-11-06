@@ -128,7 +128,7 @@ describe('Worker routes', () => {
 	});
 
 	it('keeps pay-rent trigger worker-owned and n8n-only', () => {
-		expect(__testables.PAY_RENT_SLIP_PROMPT).toBe('โปรดส่งสลิปได้เลยค่ะ');
+		expect(__testables.PAY_RENT_SLIP_PROMPT).toContain('แนบสลิปในแชท LINE นี้');
 		expect(__testables.getN8nPayRentUrl({
 			N8N_PAYRENT_URL: 'https://example.com/pay-rent',
 			PAYRENT_GAS_URL: 'https://script.google.com/macros/s/legacy/exec'
@@ -1959,6 +1959,12 @@ describe('Worker routes', () => {
 		expect(txt('เหตุผลย้ายออก A203: ย้ายงาน')).toBe(null);
 		expect(__testables.classifyTextCommand('เหตุผลจ่ายช้า A203: ป่วย')?.kind).toBe('late_reason');
 
+		expect(pb({ action: 'LATE_REASON', bill: '2026-11-A203', r: 'ask' }))
+			.toEqual({ reason: 'ASK', billId: '2026-11-A203', roomId: 'A203' });
+		const ask = __testables.lateReasonAskMessage('2026-11-A203', 'A203');
+		expect(ask.quickReply.items).toHaveLength(5);
+		expect(ask.quickReply.items[4].action.fillInText).toBe('เหตุผลจ่ายช้า A203: ');
+		for (const it of ask.quickReply.items) expect([...it.action.label].length).toBeLessThanOrEqual(20);
 		const msg = __testables.payRentSlipPromptMessage();
 		expect(msg.quickReply.items.map((i) => i.action.type)).toEqual(['cameraRoll', 'camera']);
 	});

@@ -273,7 +273,7 @@ const KEY_RENT_FLOW_TTL_SECONDS = 15 * 60;
 const KEY_RENT_START_TAP_GUARD_TTL_SECONDS = 45;
 const KEY_RENT_START_EVENT_TTL_SECONDS = 24 * 60 * 60;
 const KEY_RENT_WAITING_PHOTO_TTL_SECONDS = 10 * 60;
-const PAY_RENT_SLIP_PROMPT = 'โปรดส่งสลิปได้เลยค่ะ';
+const PAY_RENT_SLIP_PROMPT = '2️⃣ แนบสลิปในแชท LINE นี้ได้เลยค่ะ\nกดปุ่ม “เลือกรูปสลิป” ด้านล่าง 👇';
 const KEY_RENT_WAITING_PHOTO_KEY_PREFIX = 'keyrent:waiting-photo:';
 const CHECKIN_KEYCARD_WAITING_PHOTO_KEY_PREFIX = 'checkin:keycard:waiting-photo:';
 const CHECKOUT2_GROUP_WAITING_SLIP_KEY_PREFIX = 'checkout2:waiting-slip:';
@@ -1276,6 +1276,35 @@ async function notifyN8nLeaveReason(env, payload) {
 // รหัสต้องตรงกับ LATE_REASONS ใน MM_RentReminder และ Rent_LateReason
 const DEFAULT_N8N_LATE_REASON_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/rent-late-reason';
 const LATE_REASON_CODES = new Set(['INCOME', 'FAMILY', 'TODAY', 'PAID_APP', 'OTHER']);
+// ปุ่ม "แจ้งเหตุผล" ในการ์ด (r=ASK) — quick reply ใต้การ์ดหายเมื่อมีข้อความใหม่ ปุ่มนี้ดึงตัวเลือกกลับมา
+const LATE_REASON_CHOICES = [
+  ['INCOME', '💼 รายได้ยังไม่เข้า', 'รายได้/เงินเดือนยังไม่เข้า'],
+  ['FAMILY', '👪 รอเงินจากครอบครัว', 'รอเงินจากครอบครัว'],
+  ['TODAY', '⏰ ลืม จะโอนวันนี้', 'ลืม จะโอนวันนี้'],
+  ['PAID_APP', '✅ จ่ายในแอปแล้ว', 'จ่ายในแอปแล้ว ลืมส่งสลิป']
+];
+
+function lateReasonAskMessage(billId, roomId) {
+  return {
+    type: 'text',
+    text: 'กรุณาเลือกเหตุผลที่ชำระค่าเช่าล่าช้า 1 ข้อด้านล่างค่ะ 👇',
+    quickReply: {
+      items: [
+        ...LATE_REASON_CHOICES.map(([code, label, full]) => ({
+          type: 'action',
+          action: { type: 'postback', label, data: `action=LATE_REASON&bill=${billId}&r=${code}`, displayText: full }
+        })),
+        {
+          type: 'action',
+          action: {
+            type: 'postback', label: '✏️ อื่น ๆ (พิมพ์เอง)', data: `action=LATE_REASON&bill=${billId}&r=OTHER`,
+            displayText: 'อื่น ๆ', inputOption: 'openKeyboard', fillInText: `เหตุผลจ่ายช้า ${roomId}: `
+          }
+        }
+      ]
+    }
+  };
+}
 const LATE_REASON_TEXT_RE = /^\s*เหตุผล\s*จ่าย\s*ช้า\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*[:：]?\s*([\s\S]*)$/i;
 const LATE_REASON_BILL_RE = /^(\d{4}-\d{2})-([AB]\d{3,4})$/i;
 const LATE_REASON_THANKS = 'รับทราบค่ะ 🙏 ค่าปรับยังคิดวันละ 50 บาทจนกว่าจะชำระ\nโอนแล้วกดปุ่ม “แนบสลิป” ในการ์ด หรือพิมพ์ “ชำระค่าเช่า” แล้วส่งสลิปได้เลยค่ะ';
@@ -1286,7 +1315,7 @@ function parseLateReasonPostback(data) {
   if (String(data?.action || '').trim().toUpperCase() !== 'LATE_REASON') return null;
   const reason = String(data.r || '').trim().toUpperCase();
   const m = String(data.bill || '').trim().match(LATE_REASON_BILL_RE);
-  if (!LATE_REASON_CODES.has(reason) || !m) return { invalid: true };
+  if ((!LATE_REASON_CODES.has(reason) && reason !== 'ASK') || !m) return { invalid: true };
   return { reason, billId: `${m[1]}-${m[2].toUpperCase()}`, roomId: m[2].toUpperCase() };
 }
 
@@ -6389,6 +6418,10 @@ const worker = {
           const userIdLT = String(ev?.source?.userId || '');
           if (lateReason.invalid) {
             await replyOrPushText(env, replyToken, chatIdLT, LATE_REASON_FAIL_REPLY, 'late_reason_reply_failed');
+            continue;
+          }
+          if (lateReason.reason === 'ASK') {
+            await replyOrPushMessages(env, replyToken, chatIdLT, [lateReasonAskMessage(lateReason.billId, lateReason.roomId)], 'late_reason_reply_failed');
             continue;
           }
           const ok = await notifyN8nLateReason(env, {
@@ -13803,6 +13836,7 @@ export const __testables = {
   parseLateReasonPostback,
   parseLateReasonText,
   payRentSlipPromptMessage,
+  lateReasonAskMessage,
   resolveMoveOutReason,
   moveOutReasonLine,
   isCheckoutStartShortcut,
