@@ -372,3 +372,12 @@ describe('booking cards pushed by Apps Script', () => {
 		expect(m.rich).toEqual([card]);
 	});
 });
+
+describe('inbox page script', () => {
+	it('parses (a backslash lost inside the HTML template breaks the whole page)', async () => {
+		const { INBOX_PAGE_HTML } = await import('../src/inbox-page');
+		const scripts = [...INBOX_PAGE_HTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+		expect(scripts.length).toBeGreaterThan(0);
+		for (const s of scripts) expect(() => new Function(s)).not.toThrow();
+	});
+});

@@ -372,9 +372,9 @@ function richHtml(list) {
   }).join('');
 }
 // Older booking pushes from Apps Script were logged as a text summary
-// "[การ์ด] question\n[ปุ่ม: a / b]"; draw them as the card they were.
+// "[การ์ด] question" plus a "[ปุ่ม: a / b]" line; draw them as the card they were.
 function summaryCard(text) {
-  const mm = /^\[การ์ด\] ([\s\S]*?)(?:\n\[ปุ่ม: ([^\]]*)\])?$/.exec(String(text || ''));
+  const mm = /^\\[การ์ด\\] ([\\s\\S]*?)(?:\\n\\[ปุ่ม: ([^\\]]*)\\])?$/.exec(String(text || ''));
   if (!mm) return '';
   const acts = (mm[2] || '').split(' / ').filter(Boolean).map((label) => ({ label }));
   return richHtml([{ type: 'template', template: { type: 'buttons', text: mm[1], actions: acts } }]);
