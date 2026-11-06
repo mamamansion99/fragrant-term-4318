@@ -124,6 +124,21 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .compose textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:20px;padding:9px 14px;font:inherit;background:var(--raised);color:var(--ink);max-height:120px}
 .send{width:42px;height:42px;border-radius:50%;background:var(--green);color:var(--green-ink);font-size:18px;display:grid;place-items:center;flex:none}
 .send:disabled{opacity:.5}
+/* Sending feels instant, like Messages on iPhone: the bubble rises from the
+   composer on a spring the moment Send is tapped, while the request runs. */
+.send,.stkbtn{transition:transform .18s cubic-bezier(.3,.7,.4,1)}
+.send:active,.stkbtn:active{transform:scale(.86)}
+.send.pop{animation:sendpop .32s cubic-bezier(.34,1.56,.64,1)}
+@keyframes sendpop{0%{transform:scale(.86)}100%{transform:scale(1)}}
+.rrow.pend>.b{transform-origin:100% 100%;animation:rise .42s cubic-bezier(.34,1.4,.64,1) both}
+@keyframes rise{0%{opacity:0;transform:translateY(28px) scale(.86)}60%{opacity:1}100%{opacity:1;transform:none}}
+.rrow.pend .side .tm{color:var(--mute)}
+.rrow.pend.wait>.b{opacity:.72;transition:opacity .2s}
+.rrow.pend.fail>.b{outline:1.5px solid #e5484d;opacity:1}
+.rrow.pend.fail .side .tm{color:#e5484d;white-space:normal;text-align:right;max-width:90px;cursor:pointer}
+.suggest.gone{animation:fadeout .2s ease forwards}
+@keyframes fadeout{to{opacity:0;transform:translateY(6px)}}
+@media (prefers-reduced-motion:reduce){.rrow.pend>.b,.send.pop{animation:none}.send:active,.stkbtn:active{transform:none}}
 .stkbtn{width:42px;height:42px;border-radius:50%;background:var(--raised);font-size:20px;display:grid;place-items:center;flex:none;border:0;cursor:pointer}
 .stkpanel{border-top:1px solid var(--line);background:var(--surface)}
 .stktabs{display:flex;gap:4px;overflow-x:auto;padding:6px 8px}
@@ -448,7 +463,8 @@ function renderThread(d) {
   const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
   const stick = stickToBottom || !box.dataset.ready || fromBottom < 80;
   stickToBottom = false;
-  box.innerHTML = html || '<div class="empty">ยังไม่มีข้อความ</div>';
+  box.innerHTML = html || (pending.length ? '' : '<div class="empty">ยังไม่มีข้อความ</div>');
+  pending.forEach((row) => box.append(row));
   box.dataset.ready = '1';
   holdPosition(box, stick, fromBottom);
   const closed = c.status && c.status !== 'open';
@@ -498,7 +514,7 @@ async function loadThread() {
   if (sig !== lastSig) { lastSig = sig; renderThread(d); }
 }
 function openThread(u) {
-  setReply(null); $('stkpanel').hidden = true; quickFor = null; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
+  setReply(null); $('stkpanel').hidden = true; quickFor = null; pending = []; current = u; lastSig = ''; $('msgs').dataset.ready = ''; $('msgs').innerHTML = ''; $('sugg').innerHTML = '';
   $('phone').classList.add('open'); history.pushState({ u }, '', '#' + u); loadThread();
 }
 function closeThread() { current = null; $('phone').classList.remove('open'); loadList(); loadMe(); }
@@ -521,17 +537,48 @@ $('msgs').addEventListener('click', (e) => {
   $('msgs').querySelectorAll('.rrow.sel').forEach((r) => r.classList.remove('sel'));
   if (!was) row.classList.add('sel');
 });
+// Bubbles shown before the server answers. Re-renders keep them at the end;
+// once the send succeeds they are dropped and the real message takes their place.
+let pending = [];
+function addPending(innerHtml, cls) {
+  const row = document.createElement('div');
+  row.className = 'rrow ro pend wait';
+  row.innerHTML = '<div class="side"><span class="tm">กำลังส่ง…</span></div><div class="b out mine ' + (cls || '') + '">' + innerHtml + '</div>';
+  pending.push(row);
+  const box = $('msgs'); const empty = box.querySelector('.empty'); if (empty) empty.remove();
+  box.append(row);
+  box.scrollTo({ top: box.scrollHeight, behavior: matchMedia('(prefers-reduced-motion:reduce)').matches ? 'auto' : 'smooth' });
+  try { navigator.vibrate && navigator.vibrate(8); } catch (_) {}
+  return row;
+}
+function pendingDone(row) {
+  pending = pending.filter((x) => x !== row);
+  row.classList.remove('wait'); row.querySelector('.tm').textContent = 'ส่งแล้ว';
+  lastSig = ''; stickToBottom = true; loadThread();
+}
+function pendingFail(row, retry) {
+  row.classList.remove('wait'); row.classList.add('fail');
+  const tm = row.querySelector('.tm'); tm.textContent = 'ส่งไม่ได้ แตะเพื่อลองใหม่';
+  tm.onclick = () => { pending = pending.filter((x) => x !== row); row.remove(); retry(); };
+}
+function popSend() { const b = $('send'); b.classList.remove('pop'); void b.offsetWidth; b.classList.add('pop'); }
 async function send(text, draftId, kind) {
   if (!current || (!kind && !String(text || '').trim())) return;
   const waited = thread && thread.contact && thread.contact.waiting ? Math.max(1, Math.round((Date.now() - thread.contact.lastCustomerAt) / 60000)) : 0;
-  $('send').disabled = true;
+  const body = { u: current, text, draftId: draftId || $('text').dataset.draft || undefined, kind, quoteId: replyTo ? replyTo.id : undefined };
+  const quote = replyTo ? '<div class="qt"><span>↩ ' + esc(replyTo.media && !replyTo.rich ? 'รูป' : String(replyTo.text || '')) + '</span></div>' : '';
+  // Clear the composer first: the message is already "on its way" on screen.
+  $('text').value = ''; delete $('text').dataset.draft; grow(); setReply(null); popSend();
+  if (draftId) { const sg = $('sugg').firstElementChild; if (sg) sg.classList.add('gone'); }
+  const row = addPending(quote + esc(text));
   try {
-    const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, text, draftId: draftId || $('text').dataset.draft || undefined, kind, quoteId: replyTo ? replyTo.id : undefined }) });
-    if (!d.ok) { toast('ส่งไม่สำเร็จ ลองอีกครั้ง'); return; }
-    $('text').value = ''; delete $('text').dataset.draft; grow(); setReply(null); lastSig = ''; stickToBottom = true;
-    toast('ส่งแล้ว ✓' + (waited ? ' ตอบใน ' + mins(waited) : '') + (draftId ? ' · ใช้คำแนะนำ AI' : ''));
-    await loadThread();
-  } finally { $('send').disabled = false; }
+    const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify(body) });
+    if (!d.ok) throw new Error('send');
+    pendingDone(row);
+    if (waited || draftId) toast('ส่งแล้ว ✓' + (waited ? ' ตอบใน ' + mins(waited) : '') + (draftId ? ' · ใช้คำแนะนำ AI' : ''));
+  } catch (_) {
+    pendingFail(row, () => { $('text').value = text; if (body.draftId) $('text').dataset.draft = body.draftId; grow(); $('text').focus(); });
+  }
 }
 function grow() { const t = $('text'); t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 120) + 'px'; }
 $('list').addEventListener('click', (e) => {
@@ -602,10 +649,10 @@ $('stktabs').addEventListener('click', (e) => { const b = e.target.closest('butt
 $('stkgrid').addEventListener('click', async (e) => {
   const b = e.target.closest('button'); if (!b || !current) return;
   if (!b.classList.contains('arm')) { [...$('stkgrid').children].forEach((x) => x.classList.remove('arm')); b.classList.add('arm'); return; }
-  b.classList.remove('arm');
-  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, kind: 'sticker', packageId: b.dataset.pkg, stickerId: b.dataset.s }) });
-  if (!d.ok) { toast('ส่งสติกเกอร์ไม่สำเร็จ'); return; }
-  toast('ส่งสติกเกอร์แล้ว ✓'); $('stkpanel').hidden = true; lastSig = ''; stickToBottom = true; loadThread();
+  b.classList.remove('arm'); $('stkpanel').hidden = true;
+  const img = b.querySelector('img'), row = addPending(img ? '<img src="' + esc(img.src) + '" alt="สติกเกอร์">' : 'สติกเกอร์', 'stk');
+  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, kind: 'sticker', packageId: b.dataset.pkg, stickerId: b.dataset.s }) }).catch(() => ({}));
+  if (d.ok) pendingDone(row); else pendingFail(row, () => { $('stkpanel').hidden = false; renderStickers(); });
 });
 // A photo from the phone: shrunk to JPEG here (LINE takes up to 10 MB, the
 // preview up to 1 MB), shown once to confirm, then stored and sent by the worker.
@@ -647,8 +694,9 @@ $('photosend').onclick = async () => {
   finally { $('photosend').disabled = false; $('photosend').textContent = 'ส่งรูป'; }
 };
 async function sendShortcut(x) {
-  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) });
-  toast(d.ok ? 'ส่ง ' + x.label + ' แล้ว ✓' : 'ส่งไม่สำเร็จ ลองอีกครั้ง'); lastSig = ''; stickToBottom = true; loadThread();
+  const row = addPending(esc(x.label));
+  const d = await api('/inbox/api/send', { method: 'POST', body: JSON.stringify({ u: current, shortcutId: x.id }) }).catch(() => ({}));
+  if (d.ok) pendingDone(row); else pendingFail(row, () => sendShortcut(x));
 }
 let editing = null;
 function renderScList() {
