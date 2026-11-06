@@ -209,6 +209,12 @@ export async function payRentCommandInWindow(env, userId, windowMs) {
   return used ? null : { ts: cmd.ts };
 }
 
+function parseMessages(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string' && v.trim().startsWith('[')) { try { return JSON.parse(v); } catch (_) { return null; } }
+  return null;
+}
+
 // Non-text messages kept whole so the inbox can draw them; a card too big
 // for a row falls back to its alt text.
 function richPayload(messages) {
@@ -654,7 +660,9 @@ async function ingest(env, request) {
       text: body.text,
       logId: body.logId || null,
       handler: body.handler || 'ai_reply',
-      inReplyTo: body.inReplyTo || ''
+      inReplyTo: body.inReplyTo || '',
+      // Apps Script booking pushes send the cards themselves so the inbox can draw them.
+      payload: richPayload(parseMessages(body.messages))
     });
   }
   return json({ ok: true });

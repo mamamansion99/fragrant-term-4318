@@ -355,3 +355,20 @@ describe('photos staff attach from the phone', () => {
 		}
 	});
 });
+
+describe('booking cards pushed by Apps Script', () => {
+	it('keeps the card itself so the inbox can draw it', async () => {
+		const { handleInboxRequest } = await import('../src/inbox');
+		const U = 'Uinboxgascard0000000000000000000001';
+		const env2 = { ...e, INBOX_INGEST_SECRET: 's3cret' };
+		const card = { type: 'template', altText: 'ยืนยันบัตร', template: { type: 'confirm', text: 'ใช้รูปบัตรนี้ถูกต้องไหมคะ?',
+			actions: [{ type: 'postback', label: 'ถูกต้อง', data: 'act=id_yes&code=MM1' }, { type: 'postback', label: 'ขอส่งใหม่', data: 'act=id_no&code=MM1' }] } };
+		const url = new URL('https://example.com/inbox/api/ingest');
+		const res = await handleInboxRequest(new Request(url, { method: 'POST', headers: { 'x-inbox-secret': 's3cret', 'content-type': 'application/json' },
+			body: JSON.stringify({ userId: U, direction: 'OUT', author: 'bot', text: '[การ์ด] ใช้รูปบัตรนี้ถูกต้องไหมคะ?', logId: 'gas:t1', handler: 'reservation_gas', messages: JSON.stringify([card]) }) }), env2, url, {});
+		expect(res.status).toBe(200);
+		const token = await issueInboxToken(e, STAFF);
+		const m = (await get(`/inbox/api/messages?u=${U}`, token)).body.messages.at(-1);
+		expect(m.rich).toEqual([card]);
+	});
+});

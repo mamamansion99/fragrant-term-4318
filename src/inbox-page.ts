@@ -80,6 +80,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .qt{display:flex;gap:8px;align-items:center;border-left:3px solid var(--mute);background:rgba(127,127,127,.12);border-radius:8px;padding:5px 8px;margin:2px 0 6px;font-size:12.5px;color:var(--mute);max-width:260px}
 .qt img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto}
 .qt span{overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;white-space:normal}
+.pb{font-size:13px;color:var(--mute)}
 .rrow{display:flex;align-items:flex-end;gap:6px;width:100%}.rrow.ro{justify-content:flex-end}.rrow>.b{align-self:auto}
 .side{flex:0 0 auto;min-width:34px;display:flex;justify-content:center;padding-bottom:2px}
 .side .tm{font-size:11px;color:var(--mute);white-space:nowrap}
@@ -370,8 +371,41 @@ function richHtml(list) {
     return m.altText ? '<div class="fx-text">' + esc(m.altText) + '</div>' : '';
   }).join('');
 }
+// Older booking pushes from Apps Script were logged as a text summary
+// "[การ์ด] question\n[ปุ่ม: a / b]"; draw them as the card they were.
+function summaryCard(text) {
+  const mm = /^\[การ์ด\] ([\s\S]*?)(?:\n\[ปุ่ม: ([^\]]*)\])?$/.exec(String(text || ''));
+  if (!mm) return '';
+  const acts = (mm[2] || '').split(' / ').filter(Boolean).map((label) => ({ label }));
+  return richHtml([{ type: 'template', template: { type: 'buttons', text: mm[1], actions: acts } }]);
+}
+// A tapped button arrives as its postback data. Show the button's own label,
+// found on the card it came from, instead of the raw code.
+function collectActions(node, out) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { node.forEach((n) => collectActions(n, out)); return; }
+  if (node.type === 'postback' && node.data && node.label) out[node.data] = node.label;
+  for (const k in node) if (node[k] && typeof node[k] === 'object') collectActions(node[k], out);
+}
+const ACT_LABEL = { slip_yes: 'ยืนยันรหัสจอง', send_slip: 'ส่งสลิป', send_id: 'ส่งบัตรประชาชน', id_yes: 'บัตรถูกต้อง', id_no: 'ขอส่งบัตรใหม่',
+  id_retry: 'ขอส่งบัตรใหม่', checkin_pick: 'เลือกวันเข้าอยู่' };
+function postbackText(text, labels) {
+  const raw = String(text || ''), sp = raw.indexOf(' {');
+  const data = sp > 0 ? raw.slice(0, sp) : raw;
+  let params = {}; try { params = sp > 0 ? JSON.parse(raw.slice(sp + 1)) : {}; } catch (_) {}
+  const act = (/(?:^|&)act=([^&]+)/.exec(data) || [])[1] || '';
+  let label = labels[data] || ACT_LABEL[act] || (act ? act.replace(/_/g, ' ') : data.slice(0, 40));
+  const when = params.datetime || params.date || params.time;
+  if (when) {
+    const dt = new Date(params.datetime || params.date);
+    label += ' · ' + (isNaN(dt) ? when : dt.toLocaleDateString('th-TH', { day: 'numeric', month: 'short' }) + (params.datetime ? ' ' + params.datetime.slice(11, 16) : ''));
+  }
+  return '<span class="pb">👆 กดปุ่ม: ' + esc(label) + '</span>';
+}
 function renderThread(d) {
   thread = d;
+  const labels = {};
+  d.messages.forEach((m) => { if (m.dir === 'OUT' && m.rich) collectActions(m.rich, labels); });
   const c = d.contact || { u: current, type: 'NON_TENANT' };
   const tav = $('tav'); tav.textContent = ''; tav.style.background = colorOf(current); tav.textContent = initial(c.name, current);
   $('tname').textContent = (c.name || 'ลูกค้า') + (c.room ? ' · ' + c.room : '');
@@ -391,8 +425,9 @@ function renderThread(d) {
       (m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '') + '</div>';
     const wrap = (b) => '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? b + sideHtml : sideHtml + b) + '</div>';
     if (stk) { html += wrap('<div class="b stk ' + side + '">' + (label ? '<span class="w">' + esc(label) + '</span>' : '') + '<img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'); continue; }
-    const rich = m.rich ? richHtml(m.rich) : '';
-    const body = rich || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
+    const rich = m.rich ? richHtml(m.rich) : (m.dir === 'OUT' ? summaryCard(m.text) : '');
+    const pb = m.dir === 'IN' && m.kind === 'postback';
+    const body = rich || (pb ? postbackText(m.text, labels) : '') || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
     const q = m.quote;
     const qt = !q ? '' : '<div class="qt">' + (q.media ? '<img src="' + esc(q.media) + '" alt="">' : '') + '<span>↩ ' +
       (q.found ? esc(q.media ? 'รูป' : q.text) : 'ตอบกลับข้อความเก่า') + '</span></div>';
@@ -447,7 +482,8 @@ function holdPosition(box, stick, fromBottom) {
 async function loadThread() {
   if (!current) return;
   const d = await api('/inbox/api/messages?u=' + current);
-  const sig = d.messages.length + ':' + (d.messages.at(-1) || {}).id + ':' + (d.contact || {}).humanUntil + ':' + (d.draft || {}).id;
+  const c = d.contact || {};
+  const sig = d.messages.length + ':' + (d.messages.at(-1) || {}).id + ':' + c.humanUntil + ':' + (d.draft || {}).id + ':' + c.type + ':' + c.room + ':' + c.tenant + ':' + c.status;
   if (sig !== lastSig) { lastSig = sig; renderThread(d); }
 }
 function openThread(u) {
