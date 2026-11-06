@@ -1945,6 +1945,24 @@ describe('Worker routes', () => {
 		expect(__testables.classifyTextCommand('แจ้งออก A310 ย้ายงาน')?.kind).toBe('moveout_notice');
 	});
 
+	it('parses the late-rent reason quick reply and the typed reason', () => {
+		const pb = __testables.parseLateReasonPostback;
+		expect(pb({ action: 'LATE_REASON', bill: '2026-11-a203', r: 'income' }))
+			.toEqual({ reason: 'INCOME', billId: '2026-11-A203', roomId: 'A203' });
+		expect(pb({ action: 'LATE_REASON', bill: '2026-11-A203', r: 'DEFER' })).toEqual({ invalid: true });
+		expect(pb({ action: 'LATE_REASON', bill: 'A203', r: 'TODAY' })).toEqual({ invalid: true });
+		expect(pb({ action: 'LEAVE_REASON' })).toBe(null);
+
+		const txt = __testables.parseLateReasonText;
+		expect(txt('เหตุผลจ่ายช้า A203: รอเงินคืนจาก  เพื่อน')).toEqual({ roomId: 'A203', detail: 'รอเงินคืนจาก เพื่อน' });
+		expect(txt('เหตุผลจ่ายช้า A203: ')).toEqual({ roomId: 'A203', detail: '' });
+		expect(txt('เหตุผลย้ายออก A203: ย้ายงาน')).toBe(null);
+		expect(__testables.classifyTextCommand('เหตุผลจ่ายช้า A203: ป่วย')?.kind).toBe('late_reason');
+
+		const msg = __testables.payRentSlipPromptMessage();
+		expect(msg.quickReply.items.map((i) => i.action.type)).toEqual(['cameraRoll', 'camera']);
+	});
+
 	it('parses flood water reports typed in the MM API group', () => {
 		const parse = __testables.parseFloodCommand;
 		expect(parse('น้ำขัง')).toEqual({ action: 'report', water: 'road', note: '' });

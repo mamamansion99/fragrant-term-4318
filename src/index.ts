@@ -1269,6 +1269,70 @@ async function notifyN8nLeaveReason(env, payload) {
   }
 }
 
+// เหตุผลจ่ายค่าเช่าช้า — quick reply ใต้การ์ดทวงวันที่ 6/8 (n8n MM_RentReminder)
+// postback action=LATE_REASON&bill=2026-11-A203&r=<CODE>
+// "อื่น ๆ" เปิดคีย์บอร์ดพร้อมคำนำ "เหตุผลจ่ายช้า A203: " ข้อความที่พิมพ์ต่อส่งเป็น detail
+// ทั้งคู่ส่งเข้า n8n Rent_LateReason → Revenue Master!Rent_LateReasons (บันทึกอย่างเดียว ไม่เลื่อนกำหนด ไม่ยกค่าปรับ)
+// รหัสต้องตรงกับ LATE_REASONS ใน MM_RentReminder และ Rent_LateReason
+const DEFAULT_N8N_LATE_REASON_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/rent-late-reason';
+const LATE_REASON_CODES = new Set(['INCOME', 'FAMILY', 'TODAY', 'PAID_APP', 'OTHER']);
+const LATE_REASON_TEXT_RE = /^\s*เหตุผล\s*จ่าย\s*ช้า\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*[:：]?\s*([\s\S]*)$/i;
+const LATE_REASON_BILL_RE = /^(\d{4}-\d{2})-([AB]\d{3,4})$/i;
+const LATE_REASON_THANKS = 'รับทราบค่ะ 🙏 ค่าปรับยังคิดวันละ 50 บาทจนกว่าจะชำระ\nโอนแล้วกดปุ่ม “แนบสลิป” ในการ์ด หรือพิมพ์ “ชำระค่าเช่า” แล้วส่งสลิปได้เลยค่ะ';
+const LATE_REASON_OTHER_PROMPT = 'พิมพ์เหตุผลต่อท้ายข้อความที่ขึ้นให้ แล้วกดส่งได้เลยค่ะ';
+const LATE_REASON_FAIL_REPLY = 'บันทึกคำตอบไม่สำเร็จ รบกวนลองใหม่อีกครั้งค่ะ';
+
+function parseLateReasonPostback(data) {
+  if (String(data?.action || '').trim().toUpperCase() !== 'LATE_REASON') return null;
+  const reason = String(data.r || '').trim().toUpperCase();
+  const m = String(data.bill || '').trim().match(LATE_REASON_BILL_RE);
+  if (!LATE_REASON_CODES.has(reason) || !m) return { invalid: true };
+  return { reason, billId: `${m[1]}-${m[2].toUpperCase()}`, roomId: m[2].toUpperCase() };
+}
+
+function parseLateReasonText(text) {
+  const m = String(text || '').match(LATE_REASON_TEXT_RE);
+  if (!m) return null;
+  const roomId = parseRoomToken(m[1]);
+  if (!roomId) return null;
+  const detail = m[2].replace(/\s+/g, ' ').trim().slice(0, 500);
+  return { roomId, detail };
+}
+
+async function notifyN8nLateReason(env, payload) {
+  const url = env.N8N_LATE_REASON_URL || DEFAULT_N8N_LATE_REASON_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) console.error('late_reason_forward_non_200', res.status);
+    return res.ok;
+  } catch (err) {
+    console.error('late_reason_forward_error', String(err));
+    return false;
+  }
+}
+
+// ข้อความ "ส่งสลิปได้เลย" ของค่าเช่า + ปุ่มคลังรูป/กล้อง ผู้เช่าไม่ต้องหาไอคอนแนบรูปเอง
+function payRentSlipPromptMessage() {
+  return {
+    type: 'text',
+    text: PAY_RENT_SLIP_PROMPT,
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'cameraRoll', label: '🖼 เลือกรูปสลิป' } },
+        { type: 'action', action: { type: 'camera', label: '📷 ถ่ายรูป' } }
+      ]
+    }
+  };
+}
+
 function parseMoveOutNoticeCommand(text) {
   const t = String(text || '').replace(/เเ/g, 'แ');
   const m = t.match(MOVE_OUT_NOTICE_RE);
@@ -3448,6 +3512,9 @@ function classifyTextCommand(text, options = {}) {
   }
   if (parseLeaveReasonText(raw)) {
     return { kind: 'leave_reason', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
+  }
+  if (parseLateReasonText(raw)) {
+    return { kind: 'late_reason', statePolicy: TEXT_COMMAND_BYPASS_FLOW };
   }
   if (isPayRentCommand(raw)) {
     return { kind: 'pay_rent', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
@@ -6316,6 +6383,38 @@ const worker = {
           continue;
         }
 
+        const lateReason = parseLateReasonPostback(data);
+        if (lateReason) {
+          const chatIdLT = getChatId(ev);
+          const userIdLT = String(ev?.source?.userId || '');
+          if (lateReason.invalid) {
+            await replyOrPushText(env, replyToken, chatIdLT, LATE_REASON_FAIL_REPLY, 'late_reason_reply_failed');
+            continue;
+          }
+          const ok = await notifyN8nLateReason(env, {
+            billId: lateReason.billId,
+            roomId: lateReason.roomId,
+            reason: lateReason.reason,
+            userId: userIdLT,
+            source: 'postback'
+          });
+          if (!ok) {
+            await replyOrPushText(env, replyToken, chatIdLT, LATE_REASON_FAIL_REPLY, 'late_reason_reply_failed');
+            continue;
+          }
+          if (lateReason.reason === 'PAID_APP') {
+            // จ่ายในแอปแล้ว → เปิดหน้าต่างรับสลิปค่าเช่าให้เลย เหมือนพิมพ์ "ชำระค่าเช่า"
+            const payRentKeyLT = getStateKey(ev) + ':payrent_flow';
+            await clearPaymentStatesForEvent(env, ev, [payRentKeyLT]);
+            await kvPut(env, payRentKeyLT, { ts: Date.now(), chatId: chatIdLT, userId: userIdLT }, 15 * 60);
+            await replyOrPushMessages(env, replyToken, chatIdLT, [payRentSlipPromptMessage()], 'late_reason_reply_failed');
+            continue;
+          }
+          const replyText = lateReason.reason === 'OTHER' ? LATE_REASON_OTHER_PROMPT : LATE_REASON_THANKS;
+          await replyOrPushText(env, replyToken, chatIdLT, replyText, 'late_reason_reply_failed');
+          continue;
+        }
+
         // Mark paid → quick ack then forward to n8n
         const markPaidUrl = env.N8N_MMV2_MARK_PAID_URL || '';
         if (action === 'MARK_PAID') {
@@ -7637,6 +7736,22 @@ const worker = {
             await replyOrPushText(env, replyToken, chatId, ok ? LEAVE_REASON_THANKS : LEAVE_REASON_FAIL_REPLY, 'leave_reason_reply_failed');
             continue;
           }
+          const lateReasonText = parseLateReasonText(textIn);
+          if (lateReasonText) {
+            if (!lateReasonText.detail) {
+              await replyOrPushText(env, replyToken, chatId, LATE_REASON_OTHER_PROMPT, 'late_reason_reply_failed');
+              continue;
+            }
+            const ok = await notifyN8nLateReason(env, {
+              roomId: lateReasonText.roomId,
+              reason: 'OTHER',
+              detail: lateReasonText.detail,
+              userId,
+              source: 'text'
+            });
+            await replyOrPushText(env, replyToken, chatId, ok ? LATE_REASON_THANKS : LATE_REASON_FAIL_REPLY, 'late_reason_reply_failed');
+            continue;
+          }
 
           const coAdminShortcut = parseCoAdminShortcut(textIn);
           if (coAdminShortcut) {
@@ -8185,8 +8300,7 @@ const worker = {
             await clearPaymentStatesForEvent(env, ev, [payRentKey]);
             await kvPut(env, payRentKey, { ts: Date.now(), chatId, userId }, 15 * 60);
 
-            const notifyMsg = { type: 'text', text: PAY_RENT_SLIP_PROMPT };
-            await replyOrPushMessages(env, replyToken, chatId, [notifyMsg], 'pay_rent_start_ack_failed');
+            await replyOrPushMessages(env, replyToken, chatId, [payRentSlipPromptMessage()], 'pay_rent_start_ack_failed');
             continue;
           }
 
@@ -13686,6 +13800,9 @@ export const __testables = {
   buildMoveOutCalendarReply,
   parseLeaveReasonPostback,
   parseLeaveReasonText,
+  parseLateReasonPostback,
+  parseLateReasonText,
+  payRentSlipPromptMessage,
   resolveMoveOutReason,
   moveOutReasonLine,
   isCheckoutStartShortcut,
