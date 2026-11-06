@@ -1,6 +1,6 @@
 // @ts-nocheck
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from './inbox';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -10582,7 +10582,8 @@ function getPrebookUrl(env) {
 }
 
 // ตอบคำถาม "มีห้องว่างไหม" — เดิมส่งลิงก์ฟอร์ม prebook (ห้องเต็ม) เปลี่ยนเป็นถามข้อมูลตรง ๆ ตามที่เจ้าของขอ 2026-10-20
-function buildPrebookPromptMessages(env, reason = 'prebook') {
+function buildPrebookPromptMessages(env, reason = 'prebook', alreadyAsked = false) {
+  if (alreadyAsked) return [{ type: 'text', text: 'ตอนนี้มีห้องว่างครับ' }];
   return [
     {
       type: 'text',
@@ -10778,7 +10779,7 @@ async function quickKeywordReply(text, env, userId) {
         text: roomDetailByKey('ROOM_RENT'),
         quickReply: buildRoomRentQuickReply()
       },
-      ...buildPrebookPromptMessages(env, 'availability')
+      ...buildPrebookPromptMessages(env, 'availability', await screeningAskedRecently(env, userId, 3 * 24 * 3600 * 1000))
     ];
   }
 
@@ -10793,7 +10794,7 @@ async function quickKeywordReply(text, env, userId) {
   }
 
   if (isAvailabilityAsk && !isAvailabilityExcluded) {
-    return buildPrebookPromptMessages(env, 'availability');
+    return buildPrebookPromptMessages(env, 'availability', await screeningAskedRecently(env, userId, 3 * 24 * 3600 * 1000));
     const enabled = await getScreeningEnabled(env);
     if (enabled) {
       const lead = userId ? await getLead(env, userId) : null;
@@ -10960,10 +10961,15 @@ async function quickKeywordReply(text, env, userId) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
+    // Asked already (by this template, the availability one or the AI): point back
+    // instead of sending the same question again.
+    const asked = await screeningAskedRecently(env, userId, 3 * 24 * 3600 * 1000);
     return [
       {
         type: 'text',
-        text: 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่'
+        text: asked
+          ? 'ได้เลยครับ แจ้งข้อมูลที่สอบถามไว้ด้านบนได้เลยนะครับ'
+          : 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่'
       }
     ];
   }

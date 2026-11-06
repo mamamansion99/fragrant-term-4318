@@ -175,6 +175,27 @@ export async function inboxContactType(env, userId) {
   }
 }
 
+// The screening questions (move-in date, job) already went out — from the bot's
+// "ตอนนี้มีห้องว่างครับ" template or from the AI — within `windowMs`. Asking the
+// same list again reads as not listening (forfresh 2026-11-05 got it 3 times).
+// instr(), not LIKE: D1 caps LIKE patterns at 50 bytes and Thai is 3 bytes a letter.
+export async function screeningAskedRecently(env, userId, windowMs) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return false;
+  try {
+    const row = await db.prepare(
+      `SELECT 1 AS x FROM messages WHERE user_id = ?1 AND direction = 'OUT' AND ts > ?2
+         AND (instr(text, 'รบกวนสอบถาม') OR instr(text, 'เข้าอยู่เมื่อไ') OR instr(text, 'ทำอาชีพ')
+              OR instr(text, 'ที่เรียนหรือที่ทำงาน') OR instr(text, 'เรียน/ทำงาน'))
+       LIMIT 1`
+    ).bind(userId, Date.now() - windowMs).first();
+    return !!row;
+  } catch (err) {
+    console.error('screening_asked_check_failed', { userId, error: String(err?.message || err) });
+    return false;
+  }
+}
+
 export async function payRentCommandInWindow(env, userId, windowMs) {
   const db = env?.INBOX_DB;
   if (!db || !String(userId || '').startsWith('U')) return null;
