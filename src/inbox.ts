@@ -571,21 +571,22 @@ const EDITED_BONUS = 0.15;
 // Real staff answers to new customers, each paired with the customer message
 // it answered. Answers staff wrote over an AI draft come first at equal
 // similarity: they say exactly what the AI got wrong.
-export async function staffExamples(env, query, excludeUserId) {
+export async function staffExamples(env, query, excludeUserId, contactType = 'NON_TENANT') {
   const db = env.INBOX_DB;
   const pairs = ((await db.prepare(
     `SELECT o.user_id, o.text AS answer, o.ts,
        (SELECT i.text FROM messages i WHERE i.user_id = o.user_id AND i.direction = 'IN' AND i.actionable = 1
           AND i.ts < o.ts AND i.ts > o.ts - 86400000 ORDER BY i.ts DESC LIMIT 1) AS question
      FROM messages o JOIN contacts c ON c.user_id = o.user_id
-     WHERE o.author LIKE 'staff:%' AND o.kind = 'text' AND COALESCE(c.contact_type, 'NON_TENANT') = 'NON_TENANT'
+     WHERE o.author LIKE 'staff:%' AND o.kind = 'text' AND COALESCE(c.contact_type, 'NON_TENANT') = ?2
      ORDER BY o.ts DESC LIMIT ?1`
-  ).bind(EXAMPLE_POOL).all()).results || []).map((r) => ({ ...r, edited: false }));
+  ).bind(EXAMPLE_POOL, contactType).all()).results || []).map((r) => ({ ...r, edited: false }));
   const edited = ((await db.prepare(
     `SELECT d.user_id, d.final_text AS answer, d.draft, d.sent_at AS ts, m.text AS question
      FROM drafts d LEFT JOIN messages m ON m.user_id = d.user_id AND m.log_id = d.in_log_id
-     WHERE d.edited = 1 AND d.final_text IS NOT NULL ORDER BY d.sent_at DESC LIMIT 200`
-  ).all()).results || []).map((r) => ({ ...r, edited: true }));
+     LEFT JOIN contacts c ON c.user_id = d.user_id
+     WHERE d.edited = 1 AND d.final_text IS NOT NULL AND COALESCE(c.contact_type, 'NON_TENANT') = ?1 ORDER BY d.sent_at DESC LIMIT 200`
+  ).bind(contactType).all()).results || []).map((r) => ({ ...r, edited: true }));
   const seen = new Set();
   return [...edited, ...pairs]
     .filter((p) => p.question && p.answer && p.user_id !== excludeUserId && String(p.answer).trim().length > 3)
@@ -617,7 +618,8 @@ async function aiContext(env, request, url) {
   return json({
     ok: true,
     thread: userId.startsWith('U') ? await threadForAi(env, userId) : [],
-    examples: query ? await staffExamples(env, query, userId) : []
+    // type=TENANT: tenant drafts learn from how staff answer tenants.
+    examples: query ? await staffExamples(env, query, userId, url.searchParams.get('type') === 'TENANT' ? 'TENANT' : 'NON_TENANT') : []
   });
 }
 
