@@ -646,10 +646,10 @@ describe('Worker routes', () => {
 		expect(wifi.fastReply[0].text).toContain('WiFi');
 
 		for (const t of ['มีว่างไหมครับ', 'หอพักเต็มรึยังครับ', 'ยังมีก้องว่างไหมคะ', 'เต็มยังครับ', 'ห้องว่างตอนนี้มีอยู่มั้ยครับ']) {
-			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('ตอนนี้มีห้องว่างครับ');
+			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('MAMA MANSION | สอบถามห้องพัก');
 		}
 		for (const t of ['พี่ก้อยว่างวันไหนบ้างคะ', 'ว่างค่ะ', 'พรุ่งนี้ไม่ว่างค่ะ']) {
-			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('ตอนนี้มีห้องว่างครับ');
+			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('MAMA MANSION | สอบถามห้องพัก');
 		}
 
 		for (const t of ['ราคาเท่าไหร่คะ', 'เดือนละเท่าไหร่คะ', 'ขอทราบราคาด้วยครับ', 'ราคาห้อง']) {
@@ -2877,8 +2877,8 @@ describe('Worker routes', () => {
 
 		expect(messages).toHaveLength(2);
 		expect(messages[0].text).toContain('Standard (เฟอร์ครบ): 4,000 บ./ด.');
-		expect(messages[1].text).toContain('ตอนนี้มีห้องว่างครับ');
-		expect(messages[1].text).toContain('ทำอาชีพอะไรอยู่');
+		expect(messages[1].text).toContain('🏡 MAMA MANSION | สอบถามห้องพัก');
+		expect(messages[1].text).toContain('2. ตำแหน่งงาน:');
 		expect(messages[1].text).not.toContain(String(env.PREBOOK_URL));
 	});
 
@@ -2917,11 +2917,12 @@ describe('Worker routes', () => {
 		expect(await reply('ขอโทษนะคะ ปกติค่าน้ำขั้นต่ำ50บาทใช่มั้ยคะ', 'Uutilunknown000000000000000000001')).not.toBeNull();
 	});
 
-	it('replies to วิธีจอง with the plain screening question', async () => {
+	it('replies to วิธีจอง with the screening form', async () => {
 		const messages = await __testables.quickKeywordReply('วิธีจอง', env, '') as Array<Record<string, any>>;
 
 		expect(messages).toHaveLength(1);
-		expect(messages[0].text).toBe('รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่');
+		expect(messages[0].text).toContain('รบกวนขอข้อมูลเบื้องต้นดังนี้ค่ะ');
+		expect(messages[0].text).toContain('5. มีสัตว์เลี้ยงหรือไม่:');
 		expect(messages[0]).not.toHaveProperty('quickReply');
 	});
 

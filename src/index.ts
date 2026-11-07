@@ -10662,7 +10662,7 @@ function leadQuestion(step) {
   if (step === 1) {
     return {
       type: 'text',
-      text: 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่',
+      text: SCREENING_FORM,
       quickReply: {
         items: [
           mk('นักศึกษา', 'status', 'STUDENT'),
@@ -10728,23 +10728,28 @@ function getPrebookUrl(env) {
   return 'https://mm-v2.pages.dev/prebook.html';
 }
 
-// ตอบคำถาม "มีห้องว่างไหม" — เดิมส่งลิงก์ฟอร์ม prebook (ห้องเต็ม) เปลี่ยนเป็นถามข้อมูลตรง ๆ ตามที่เจ้าของขอ 2026-10-20
+// Opening screening form, word for word as staff wrote it (2026-11-07). The AI
+// (n8n MM_AI_Shadow) sends the same form and then asks only what is missing.
+const SCREENING_FORM = [
+  '🏡 MAMA MANSION | สอบถามห้องพัก',
+  '',
+  'สวัสดีค่ะ 😊 เพื่อให้เจ้าหน้าที่ตรวจสอบห้องว่างที่ตรงกับความต้องการ รบกวนขอข้อมูลเบื้องต้นดังนี้ค่ะ',
+  '',
+  '1. สถานที่ทำงาน / สถานศึกษา:',
+  '2. ตำแหน่งงาน:',
+  '3. จำนวนผู้เข้าพัก:',
+  '4. วันที่ต้องการเข้าพัก:',
+  '5. มีสัตว์เลี้ยงหรือไม่:',
+  '',
+  '✨ เมื่อได้รับข้อมูลครบแล้ว เจ้าหน้าที่จะตรวจสอบห้องว่าง พร้อมแจ้งรายละเอียดและนัดหมายเข้าชมห้องให้ค่ะ',
+  '',
+  'ขอบคุณที่สนใจ Mama Mansion นะคะ 💙'
+].join('\n');
+
+// ตอบคำถาม "มีห้องว่างไหม" — ส่งฟอร์มคัดกรอง (ถามไปแล้วตอบสั้น ๆ)
 function buildPrebookPromptMessages(env, reason = 'prebook', alreadyAsked = false) {
   if (alreadyAsked) return [{ type: 'text', text: 'ตอนนี้มีห้องว่างครับ' }];
-  return [
-    {
-      type: 'text',
-      text: [
-        'ตอนนี้มีห้องว่างครับ',
-        '',
-        'รบกวนสอบถามว่า',
-        '1️⃣ ต้องการเข้าอยู่เมื่อไหร่',
-        '2️⃣ ทำอาชีพอะไรอยู่',
-        '',
-        'หลังได้ข้อมูลแล้วทางเจ้าหน้าที่จะรีบติดต่อกลับครับ'
-      ].join('\n')
-    }
-  ];
+  return [{ type: 'text', text: SCREENING_FORM }];
 }
 
 function buildRoomRentQuickReply() {
@@ -11116,7 +11121,7 @@ async function quickKeywordReply(text, env, userId) {
         type: 'text',
         text: asked
           ? 'ได้เลยครับ แจ้งข้อมูลที่สอบถามไว้ด้านบนได้เลยนะครับ'
-          : 'รบกวนสอบถามได้ไหมครับว่าตอนนี้ทำอาชีพอะไรอยู่ และต้องการเข้าอยู่เมื่อไหร่'
+          : SCREENING_FORM
       }
     ];
   }

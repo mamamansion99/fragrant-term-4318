@@ -186,7 +186,7 @@ export async function screeningAskedRecently(env, userId, windowMs) {
     const row = await db.prepare(
       `SELECT 1 AS x FROM messages WHERE user_id = ?1 AND direction = 'OUT' AND ts > ?2
          AND (instr(text, 'รบกวนสอบถาม') OR instr(text, 'เข้าอยู่เมื่อไ') OR instr(text, 'ทำอาชีพ')
-              OR instr(text, 'ที่เรียนหรือที่ทำงาน') OR instr(text, 'เรียน/ทำงาน'))
+              OR instr(text, 'ที่เรียนหรือที่ทำงาน') OR instr(text, 'เรียน/ทำงาน') OR instr(text, 'รบกวนขอข้อมูลเบื้องต้น'))
        LIMIT 1`
     ).bind(userId, Date.now() - windowMs).first();
     return !!row;
