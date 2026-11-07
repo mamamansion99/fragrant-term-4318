@@ -7,7 +7,7 @@ export const INBOX_PAGE_HTML = `<!doctype html>
 <html lang="th">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
 <meta name="theme-color" content="#06b54c">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -28,7 +28,7 @@ export const INBOX_PAGE_HTML = `<!doctype html>
 @media (prefers-color-scheme:dark){:root{
   --ground:#0c110e;--surface:#151b17;--raised:#1c241f;--ink:#e8efe9;--mute:#93a198;--line:#26302a;
   --mine:#17482a;--bot:#212a24;--ai:#1b2747;--ai-ink:#9db4ff;--wait-soft:#3a1a1c;--human-soft:#16264a;--idle:#4a554e;color-scheme:dark}}
-*{box-sizing:border-box}html,body{height:100%;margin:0}[hidden]{display:none!important}
+*{box-sizing:border-box}html,body{height:100%;margin:0;overflow:hidden;overscroll-behavior:none}[hidden]{display:none!important}
 body{background:var(--ground);color:var(--ink);font:15px/1.5 var(--body)}
 button{font:inherit;color:inherit;border:0;background:none;cursor:pointer;padding:0}
 button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--green);outline-offset:2px}
@@ -126,6 +126,19 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .compose textarea{flex:1;resize:none;border:1px solid var(--line);border-radius:20px;padding:9px 14px;font:inherit;background:var(--raised);color:var(--ink);max-height:120px}
 .send{width:42px;height:42px;border-radius:50%;background:var(--green);color:var(--green-ink);font-size:18px;display:grid;place-items:center;flex:none}
 .send:disabled{opacity:.5}
+/* Keyboard up (phone.kb, set from visualViewport): the phone is sized to the
+   area above the keyboard, so drop everything but the header, the latest
+   messages, a one-line AI suggestion and the composer. */
+.phone.kb .facts,.phone.kb .hold,.phone.kb .quick,.phone.kb .stkpanel,.phone.kb .closed{display:none!important}
+.phone.kb .th{padding:4px 10px}.phone.kb .th .av,.phone.kb .th p,.phone.kb .endbtn{display:none}
+.phone.kb .th h2{font-size:15px}.phone.kb .back{width:30px;height:30px}
+.phone.kb .msgs{padding:8px 10px}
+.phone.kb .suggest{margin:4px 8px 0;padding:6px 8px 6px 10px;display:flex;align-items:center;gap:8px}
+.phone.kb .suggest .lbl{display:none}
+.phone.kb .suggest p{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.35;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.phone.kb .suggest p::before{content:"✨ ";}
+.phone.kb .suggest .acts{flex:none;gap:4px}.phone.kb .suggest .btn{padding:6px 10px;font-size:13px}
+.phone.kb .compose{padding:6px 8px}.phone.kb .compose .stkbtn{display:none}
 /* Sending feels instant, like Messages on iPhone: the bubble rises from the
    composer on a spring the moment Send is tapped, while the request runs. */
 .send,.stkbtn{transition:transform .18s cubic-bezier(.3,.7,.4,1)}
@@ -820,6 +833,31 @@ function pollLogin(s) {
     } catch (_) {}
   }, 2000);
 }
+// iOS (and LINE's in-app browser) keeps the layout viewport full height when
+// the keyboard opens and covers the bottom of the page with it, which hid the
+// messages, the AI card and Send. Size the app to the visual viewport instead
+// and switch to a compact layout while typing.
+(function fitKeyboard() {
+  const vv = window.visualViewport, ph = $('phone');
+  if (!vv) return;
+  let full = vv.height;
+  const typing = () => { const a = document.activeElement; return !!a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'file')); };
+  const fit = () => {
+    const box = $('msgs'), fromBottom = box.scrollHeight - box.scrollTop - box.clientHeight;
+    if (!typing()) full = Math.max(vv.height, window.innerHeight * 0.6);
+    const kb = typing() && vv.height < full - 120;
+    ph.classList.toggle('kb', kb);
+    ph.style.height = kb ? Math.round(vv.height) + 'px' : '';
+    ph.style.transform = kb && vv.offsetTop ? 'translateY(' + Math.round(vv.offsetTop) + 'px)' : '';
+    if (window.scrollY) window.scrollTo(0, 0);
+    box.scrollTop = fromBottom < 80 ? box.scrollHeight : Math.max(0, box.scrollHeight - box.clientHeight - fromBottom);
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+  window.addEventListener('orientationchange', () => { setTimeout(() => { full = Math.max(vv.height, window.innerHeight); fit(); }, 300); });
+  document.addEventListener('focusin', () => setTimeout(fit, 50));
+  document.addEventListener('focusout', () => setTimeout(fit, 50));
+})();
 if (!token) { showLogin(''); }
 else {
   loadMe().catch(() => {});
