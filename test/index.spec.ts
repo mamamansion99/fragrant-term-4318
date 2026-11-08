@@ -301,6 +301,50 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('does not start a booking for a blocked LINE user', async () => {
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+			new Response(JSON.stringify({ ok: true }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' }
+			})
+		);
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			CONFIRMBOOKING_URL: 'https://example.com/reservation-gas',
+			MM_WORKER_SECRET: 'test123',
+			N8N_CHAT_LOG_URL: 'https://example.com/chat-log',
+			OWNER_GROUP_ID: 'Cowner',
+			BOOKING_BLOCKED_USERS: 'Uother, Ublocked'
+		};
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message',
+				replyToken: 'reply-token-blocked',
+				webhookEventId: 'event-blocked-code',
+				timestamp: Date.now(),
+				source: { type: 'user', userId: 'Ublocked' },
+				message: { type: 'text', id: 'message-blocked-code', text: '#MM777' }
+			}]);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, mockEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const urls = fetchMock.mock.calls.map(([url]) => String(url));
+			expect(urls).not.toContain('https://example.com/reservation-gas');
+			const reply = fetchMock.mock.calls.find(([url]) => String(url).includes('/v2/bot/message/reply'));
+			expect(JSON.parse(String(reply?.[1]?.body)).messages[0].text).toContain('เจ้าหน้าที่');
+			const push = fetchMock.mock.calls.find(([url]) => String(url).includes('/v2/bot/message/push'));
+			const pushBody = JSON.parse(String(push?.[1]?.body));
+			expect(pushBody.to).toBe('Cowner');
+			expect(pushBody.messages[0].text).toContain('#MM777');
+		} finally {
+			fetchMock.mockRestore();
+		}
+	});
+
 	it('pushes an explicit fallback when reservation GAS rejects a booking code', async () => {
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
 			const url = String(input);

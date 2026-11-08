@@ -7242,6 +7242,18 @@ const worker = {
           if (priorityBookingCode) {
             const resvUrl = getReservationGas(env);
             const bookingCode = priorityBookingCode;
+            // The booking site is public and anonymous; the code typed here is the
+            // first point where the booker's LINE identity is known.
+            if (isBookingBlockedUser(env, userId)) {
+              tagEventLog('booking_blocked');
+              console.log('booking_code_blocked_user', { bookingCode, userId });
+              await replyOrPushText(env, replyToken, chatId, 'รับรหัสจองแล้วครับ เดี๋ยวเจ้าหน้าที่ตรวจสอบแล้วติดต่อกลับนะครับ', 'booking_blocked_reply_failed');
+              const blockedAlert = `🚫 ลูกค้าในรายชื่อบล็อกส่งรหัสจอง ${bookingCode}\nLINE: ${userId}\nระบบยังไม่เริ่มการจองให้ (ไม่ได้ขอสลิป) ห้องจะปล่อยคืนตามรอบหมดอายุ`;
+              ctx.waitUntil(Promise.allSettled(
+                getOwnerGroupIds(env).map((to) => safeLinePushText(env.LINE_ACCESS_TOKEN, to, blockedAlert, 'booking_blocked_alert_failed'))
+              ));
+              continue;
+            }
             if (!resvUrl) {
               await errorReplyOrPush(env, replyToken, chatId, 'Reservation system is not configured. Please contact admin.');
               continue;
@@ -9601,7 +9613,10 @@ function roomDetailByKey(key) {
 🛏️เตียง 5 ฟุต + ที่นอน
 🚪ตู้เสื้อผ้า
 🪑โต๊ะทำงาน + เก้าอี้
-🪟ผ้าม่าน`,
+🪟ผ้าม่าน
+
+ห้องไม่มีเฟอร์ (Starter) เป็นห้องเปล่า
+มีแค่แอร์กับเครื่องทำน้ำอุ่น ไม่มีเตียง ไม่มีตู้`,
     ROOM_APPLIANCE: `[เครื่องใช้ไฟฟ้า]
 ❄️แอร์, เครื่องทำน้ำอุ่น
 ตู้เย็น 250 บาท/เดือน`,
@@ -13753,6 +13768,12 @@ async function maybeOfferRepair(env, ev, replyToken, textIn) {
   }
   await replyOrPushMessages(env, replyToken, chatId, messages, 'repair_offer_reply_failed');
   return true;
+}
+
+// BOOKING_BLOCKED_USERS="Uxxx,Uyyy" (wrangler vars): these LINE users cannot start a booking.
+function isBookingBlockedUser(env, userId) {
+  if (!userId) return false;
+  return String(env?.BOOKING_BLOCKED_USERS || '').split(',').map((s) => s.trim()).includes(userId);
 }
 
 async function alertUrgentRepair(env, ev, textIn) {
