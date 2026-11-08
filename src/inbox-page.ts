@@ -442,6 +442,28 @@ function postbackText(text, labels) {
   }
   return '<span class="pb">👆 กดปุ่ม: ' + esc(label) + '</span>';
 }
+// AI replies are stored as one text but reach the customer as several LINE
+// messages. Same split as the n8n Decide node. No lookbehind: older iOS Safari
+// fails to parse it, which would take the whole page down.
+function aiBubbles(text) {
+  let body = String(text || '').trim();
+  let out = [];
+  const fi = body.indexOf('🏡 MAMA MANSION');
+  if (fi >= 0) {
+    const fe = body.indexOf('💙', fi);
+    const end = fe >= 0 ? fe + '💙'.length : body.length;
+    out.push(body.slice(fi, end).trim());
+    body = (body.slice(0, fi) + '\\n\\n' + body.slice(end)).trim();
+  }
+  body.split(/\\n\\s*\\n/).map((p) => p.trim()).filter(Boolean).forEach((p) => {
+    const lines = p.split('\\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length >= 3 || /^ขอข้อมูลเพิ่มอีกนิด/.test(lines[0] || '')) { out.push(lines.join('\\n')); return; }
+    lines.forEach((l) => l.replace(/(ครับผม|ครับ|ค่ะ|คะ)([!?.]*)\\s+(?=\\S)/g, '$1$2\\u0001').split('\\u0001')
+      .map((s) => s.trim()).filter(Boolean).forEach((s) => out.push(s)));
+  });
+  if (out.length > 5) out = [out.slice(0, -4).join('\\n\\n'), ...out.slice(-4)];
+  return out;
+}
 function renderThread(d) {
   thread = d;
   const labels = {};
@@ -464,8 +486,17 @@ function renderThread(d) {
     const stk = stickerImg(m.text);
     const sideHtml = '<div class="side"><span class="tm">' + t2(m.at) + '</span>' +
       (m.canQuote ? '<button class="rp" data-q="' + m.id + '" title="ตอบกลับข้อความนี้">↩</button>' : '') + '</div>';
-    const wrap = (b) => '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? b + sideHtml : sideHtml + b) + '</div>';
+    const wrap = (b, s = sideHtml) => '<div class="rrow ' + (m.dir === 'IN' ? 'ri' : 'ro') + '">' + (m.dir === 'IN' ? b + s : s + b) + '</div>';
     if (stk) { html += wrap('<div class="b stk ' + side + '">' + (label ? '<span class="w">' + esc(label) + '</span>' : '') + '<img src="' + stk + '" alt="สติกเกอร์" loading="lazy"></div>'); continue; }
+    const parts = m.author === 'ai' && m.dir === 'OUT' && !m.rich && !m.quote ? aiBubbles(m.text) : [];
+    if (parts.length > 1) {
+      // As in LINE OA: the name on the first bubble, the time and reply button on the last.
+      parts.forEach((p, i) => {
+        html += wrap('<div class="b ' + side + '">' + (i === 0 ? '<span class="w">' + esc(label) + '</span>' : '') + esc(p) + '</div>',
+          i === parts.length - 1 ? sideHtml : '<div class="side"></div>');
+      });
+      continue;
+    }
     const rich = m.rich ? richHtml(m.rich) : (m.dir === 'OUT' ? summaryCard(m.text) : '');
     const pb = m.dir === 'IN' && m.kind === 'postback';
     const body = rich || (pb ? postbackText(m.text, labels) : '') || (m.media ? '<img src="' + esc(m.media) + '" loading="lazy" alt="รูป">' : esc(m.text));
