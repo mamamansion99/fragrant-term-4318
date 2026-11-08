@@ -1704,8 +1704,9 @@ function isShortcutAllowedForUser(shortcut, userId) {
 const CAR_STICKER_BARE_RE = /^\s*(MM-\d{1,4})\s*$/i;
 const CAR_STICKER_LABELLED_RE = /^\s*สติกเกอร์\s*(MM[-\s]?\d{1,4})\s*$/i;
 const CAR_STICKER_RECEIVE_RE = /^\s*รับสติกเกอร์\s+(\S+)\s*$/i;
-const CAR_STICKER_ISSUE_RE = /^\s*ออกสติกเกอร์\s+(\S+)(?:\s+(เงินสด|โอน|cash|transfer))?\s*$/i;
+const CAR_STICKER_ISSUE_RE = /^\s*ออกสติกเกอร์\s+(\S+)(?:\s+(เงินสด|โอน|ผ่านสลิป|cash|transfer))?\s*$/i;
 const CAR_PAYMENT_METHOD_MAP = {
+  'ผ่านสลิป': 'SLIP_APPROVED',
   เงินสด: 'CASH',
   cash: 'CASH',
   โอน: 'MOBILE_BANKING',

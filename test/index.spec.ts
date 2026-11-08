@@ -3739,6 +3739,16 @@ describe('parseCarCommand with a VehicleID', () => {
 		});
 	});
 
+	it('lets staff release a slip they have checked', () => {
+		expect(parseCarCommand('ออกสติกเกอร์ B510 ผ่านสลิป')).toEqual({
+			kind: 'car_sticker',
+			action: 'issue',
+			roomId: 'B510',
+			vehicleId: null,
+			paymentMethod: 'SLIP_APPROVED'
+		});
+	});
+
 	it('still issues by room number, with no vehicleId attached', () => {
 		expect(parseCarCommand('ออกสติกเกอร์ A101 เงินสด')).toEqual({
 			kind: 'car_sticker',
