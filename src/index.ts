@@ -392,6 +392,17 @@ function isCheckinKeycardWaitingPhotoStateForEvent(state, groupId, userId) {
   return true;
 }
 
+// พี่เจ้าหน้าที่กดปุ่มคีย์การ์ด "หลัง" ปุ่มใบคำนวณ/เงินสด → รูปถัดไปเป็นของคีย์การ์ด
+// เทียบเฉพาะ state ของคนส่งรูปเอง คนอื่นในกลุ่มกดปุ่มคีย์การ์ดไม่เกี่ยว
+function isCheckinKeycardPressedAfterPhotoWait(keycardState, photoWait, userId, now = Date.now()) {
+  if (!keycardState || !photoWait) return false;
+  if (keycardState.mode !== 'WAITING_CHECKIN_KEYCARD_PHOTO') return false;
+  if (!userId || String(keycardState.managerUserId || '').trim() !== String(userId).trim()) return false;
+  const keycardTs = Number(keycardState.ts || 0);
+  if (!keycardTs || now - keycardTs >= CHECKIN_KEYCARD_PHOTO_TTL_MS) return false;
+  return keycardTs > Number(photoWait.ts || 0);
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -9149,11 +9160,36 @@ const worker = {
               ? buildCheckinPhotoWaitKey(chatId, String(ev.source.userId))
               : '';
           const checkinPhotoWait = checkinPhotoWaitKey ? await kvGet(env, checkinPhotoWaitKey) : null;
-          if (
+          const checkinPhotoWaitActive = !!(
             checkinPhotoWait &&
             checkinPhotoWait.roomId &&
             Date.now() - Number(checkinPhotoWait.ts || 0) < CHECKIN_CASH_TTL_SECONDS * 1000
-          ) {
+          );
+          // กดสองปุ่มค้างไว้: รูปไปตามปุ่มที่กดล่าสุด ปุ่มเก่ายังรอรูปถัดไป
+          // อ่าน KV ครั้งเดียว ไม่ใช้ตัวที่ retry 2.9 วิ เพราะรูปใบคำนวณปกติไม่มี state คีย์การ์ด
+          let checkinKeycardPressedLater = false;
+          if (checkinPhotoWaitActive && ev?.source?.groupId) {
+            const photoGroupId = String(ev.source.groupId);
+            const photoSenderId = String(ev.source.userId);
+            const senderKeycardState =
+              (await kvGet(env, getCheckinKeycardWaitingPhotoKey(photoGroupId, photoSenderId))) ||
+              getRememberedCheckinKeycardWaitingPhotoState(photoGroupId, photoSenderId);
+            checkinKeycardPressedLater = isCheckinKeycardPressedAfterPhotoWait(
+              senderKeycardState,
+              checkinPhotoWait,
+              photoSenderId
+            );
+            if (checkinKeycardPressedLater) {
+              // ขยับเวลาปุ่มเก่า กัน state คีย์การ์ดที่ KV ยังค้างแย่งรูปถัดไปหลังส่งคีย์การ์ดแล้ว
+              await kvPut(
+                env,
+                checkinPhotoWaitKey,
+                { ...checkinPhotoWait, ts: Date.now() },
+                CHECKIN_CASH_TTL_SECONDS
+              );
+            }
+          }
+          if (checkinPhotoWaitActive && !checkinKeycardPressedLater) {
             await kvDel(env, checkinPhotoWaitKey);
             const photoUserId = String(ev.source.userId);
             const photoMessageId = String(ev?.message?.id || '');
@@ -13867,6 +13903,7 @@ export const __testables = {
   normalizeLeadAnswer,
   isKeyRentWaitingPhotoStateForUser,
   isCheckinKeycardWaitingPhotoStateForEvent,
+  isCheckinKeycardPressedAfterPhotoWait,
   getCheckinKeycardWaitingPhotoState,
   handlePenaltyPaymentImage,
   normalizePenaltyReason,

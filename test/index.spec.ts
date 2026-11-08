@@ -1156,6 +1156,104 @@ describe('Worker routes', () => {
 		}
 	});
 
+	describe('checkin staff presses calc and keycard buttons together', () => {
+		const groupId = 'C355d5b5c8a01d88bf61296b4e10f1575';
+		const userId = 'U-checkin-both-buttons';
+		const keycardState = (ts: number) => ({
+			mode: 'WAITING_CHECKIN_KEYCARD_PHOTO',
+			groupId,
+			managerUserId: userId,
+			roomId: 'A506',
+			flowId: 'flow-A506',
+			ts
+		});
+
+		async function sendPhotos(seed: Record<string, unknown>, count: number) {
+			const store = new Map<string, unknown>(Object.entries(seed));
+			const intents: string[] = [];
+			const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+				const url = String(input);
+				if (url.includes('/v2/bot/message/') && url.endsWith('/content')) {
+					return new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/jpeg' } });
+				}
+				if (typeof init?.body === 'string' && init.body.includes('"intent"')) {
+					intents.push(JSON.parse(init.body).intent);
+				}
+				return new Response('{"ok":true}', { status: 200 });
+			});
+			const mockKv = {
+				get: async (key: string) => store.get(key) ?? null,
+				put: async (key: string, value: string) => {
+					store.set(key, typeof value === 'string' ? JSON.parse(value) : value);
+				},
+				delete: async (key: string) => {
+					store.delete(key);
+				}
+			};
+			try {
+				for (let i = 0; i < count; i++) {
+					const request = await buildSignedLineRequest([{
+						type: 'message',
+						replyToken: `reply-both-${i}`,
+						webhookEventId: `evt-both-${i}-${Date.now()}`,
+						timestamp: Date.now(),
+						source: { type: 'group', groupId, userId },
+						message: { type: 'image', id: `10000000000${i}` }
+					}]);
+					const ctx = createExecutionContext();
+					await worker.fetch(request, {
+						...env,
+						KV: mockKv,
+						LINE_CHANNEL_SECRET: 'line-secret',
+						LINE_ACCESS_TOKEN: 'line-token',
+						N8N_CHECKIN_KEYCARD_PHOTO_URL: 'https://example.com/checkin-keycard',
+						WORKER_SECRET: 'worker-secret'
+					} as any, ctx);
+					await waitOnExecutionContext(ctx);
+				}
+			} finally {
+				fetchMock.mockRestore();
+			}
+			return intents;
+		}
+
+		const photoWaitKey = `checkin_photo_wait:${groupId}:${userId}`;
+		const keycardKeys = [
+			`checkin:keycard:waiting-photo:${groupId}:${userId}`,
+			`checkin:keycard:waiting-photo:${groupId}:_latest`,
+			`checkin:keycard:waiting-photo:user:${userId}`
+		];
+
+		it('sends the photo to keycard when keycard was pressed last, then calc gets the next one', async () => {
+			const now = Date.now();
+			const seed: Record<string, unknown> = {
+				[photoWaitKey]: { kind: 'calc', roomId: 'A506', ts: now - 18_000 }
+			};
+			for (const key of keycardKeys) seed[key] = keycardState(now - 1_000);
+
+			expect(await sendPhotos(seed, 2)).toEqual(['checkin_keycard_photo', 'checkin_calc_photo']);
+		});
+
+		it('keeps calc first when calc was pressed last, then keycard gets the next one', async () => {
+			const now = Date.now();
+			const seed: Record<string, unknown> = {
+				[photoWaitKey]: { kind: 'calc', roomId: 'A506', ts: now - 1_000 }
+			};
+			for (const key of keycardKeys) seed[key] = keycardState(now - 18_000);
+
+			expect(await sendPhotos(seed, 2)).toEqual(['checkin_calc_photo', 'checkin_keycard_photo']);
+		});
+
+		it('ignores a keycard press by someone else or an expired one', () => {
+			const now = Date.now();
+			const photoWait = { kind: 'calc', roomId: 'A506', ts: now - 18_000 };
+			expect(__testables.isCheckinKeycardPressedAfterPhotoWait(keycardState(now - 1_000), photoWait, userId, now)).toBe(true);
+			expect(__testables.isCheckinKeycardPressedAfterPhotoWait(keycardState(now - 1_000), photoWait, 'U-other', now)).toBe(false);
+			expect(__testables.isCheckinKeycardPressedAfterPhotoWait(keycardState(now - 21 * 60_000), { ...photoWait, ts: now - 22 * 60_000 }, userId, now)).toBe(false);
+			expect(__testables.isCheckinKeycardPressedAfterPhotoWait(null, photoWait, userId, now)).toBe(false);
+		});
+	});
+
 	it('does not let another user key-rent photo state capture a checkin slip', () => {
 		const state = {
 			mode: 'WAITING_KEY_PHOTO',
