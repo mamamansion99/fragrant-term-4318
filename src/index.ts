@@ -13770,10 +13770,14 @@ async function maybeOfferRepair(env, ev, replyToken, textIn) {
   return true;
 }
 
-// BOOKING_BLOCKED_USERS="Uxxx,Uyyy" (wrangler vars): these LINE users cannot start a booking.
+// LINE users who cannot start a booking. Kept in code: the Workers Free plan
+// allows 64 variables and this worker is already at that limit.
+const BOOKING_BLOCKED_USERS = ['Uf81d9619e0fd975c7d4bf44d64a4dc9c'];
+
 function isBookingBlockedUser(env, userId) {
   if (!userId) return false;
-  return String(env?.BOOKING_BLOCKED_USERS || '').split(',').map((s) => s.trim()).includes(userId);
+  const extra = String(env?.BOOKING_BLOCKED_USERS || '').split(',').map((s) => s.trim());
+  return BOOKING_BLOCKED_USERS.includes(userId) || extra.includes(userId);
 }
 
 async function alertUrgentRepair(env, ev, textIn) {
