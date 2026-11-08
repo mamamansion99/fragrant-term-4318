@@ -301,6 +301,22 @@ describe('Worker routes', () => {
 		}
 	});
 
+	it('answers motorcycle parking in one message and sends cars only the card', () => {
+		const { parkingInfoMessages, isParkingIntent } = __testables;
+		for (const text of ['มีที่จอดมอไซว่างไหมคะ', 'เป็นคนนอกค่ะ อยากสอบถามเกี่ยวกับการเช่าที่จอดมอไซค์1คันค่ะ']) {
+			expect(isParkingIntent(text)).toBe(true);
+			const messages = parkingInfoMessages(text);
+			expect(messages).toHaveLength(1);
+			expect(messages[0].type).toBe('text');
+			expect(messages[0].text).toContain('300');
+			expect(messages[0].text).not.toContain('1,000');
+		}
+		const car = parkingInfoMessages('มีที่จอดรถว่างไหมคะ');
+		expect(car).toHaveLength(1);
+		expect(car[0].type).toBe('flex');
+		expect(parkingInfoMessages('จอดมอไซกับรถยนต์ได้ไหม')[0].type).toBe('flex');
+	});
+
 	it('does not start a booking for a blocked LINE user', async () => {
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 			new Response(JSON.stringify({ ok: true }), {

@@ -186,7 +186,7 @@ function formatTimeBangkok(date = new Date()) {
 const PHONE_RE = /^0\d{9}$/; // 10 digits, starts with 0
 const maskPhone = (p) => (p || '').replace(/^(\d{3})\d{4}(\d{3})$/, '$1••••$2');
 const QUESTION_WORD_RE = /(ไหม|มั้ย|มั๊ย|หรือไม่|หรือเปล่า|รึเปล่า|ปะ|ป่ะ|\?)/i;
-const PARKING_KEYWORD_RE = /(ที่จอด|ลานจอด|จอดรถ|ค่าจอด|โรงจอด|ซองจอด)/i;
+const PARKING_KEYWORD_RE = /(ที่จอด|ลานจอด|จอดรถ|จอดมอ|ค่าจอด|โรงจอด|ซองจอด)/i;
 const PARKING_INTENT_RE = /(บริการ|อยาก|ต้องการ|สนใจ|รายละเอียด|เช่า|ขอ|หา|สอบถาม|ข้อมูล|ราคา|กี่บาท|เท่าไหร่|ว่าง|เต็ม|เอารถมา|นำรถมา)/i;
 const PARKING_AVAILABILITY_RE = /(มี|พอมี|เหลือ|ว่าง|เต็ม|มั้ย|ไหม)/i;
 const URGENT_CONTACT_RE = /(ด่วน|ฉุกเฉิน|ช่วยด้วย|ไฟไหม้|ตำรวจ|ขโมย|urgent|emergency|help|sos|call|phone|เบอร์|แอดมิน|admin|manager|ผู้จัดการ|นิติ|เจ้าหน้าที่|staff|human)/i;
@@ -7692,7 +7692,9 @@ const worker = {
               if (await handleParkingOutsiderPhoneText(env, ctx, ev, replyToken, textIn)) {
                 continue;
               }
-            } else {
+            } else if (/\d{5,}/.test(textIn.replace(/[\s-]/g, ''))) {
+              // Only a mistyped number gets this. "ไม่ใช่ลูกหอ กดผิด" is a person
+              // talking and goes through normal routing.
               deferredStatePrompt = 'กรุณาส่งเบอร์โทรศัพท์ให้ถูกต้อง เช่น 0812345678 ภายใน 2 นาทีครับ';
             }
           }
@@ -8442,10 +8444,7 @@ const worker = {
               lineUserId: ev?.source?.userId || null,
               chatId: getChatId(ev) || null
             };
-            const replies = [
-              parkingPlanTextMessage(),
-              parkingButtonsMessage(commonOptions)
-            ];
+            const replies = parkingInfoMessages(textIn, commonOptions);
             await replyOrPushMessages(env, replyToken, chatId, replies, 'parking_info_reply_failed');
             continue;
           }
@@ -9647,7 +9646,7 @@ function roomDetailByKey(key) {
 🚗ลูกหอ 800 บาท/เดือน (เช่าต่อเนื่องเกิน 3 เดือน)
 หากเช่าไม่ต่อเนื่อง คิดค่าบริการ 200 บาท/ครั้ง
 🚗บุคคลภายนอก 1,000 บาท/เดือน
-🏍️มอเตอร์ไซต์ฟรี`,
+🏍️มอเตอร์ไซค์: ลูกหอฟรี บุคคลภายนอก 300 บาท/เดือน`,
     ROOM_EARLIEST: `[เข้าอยู่เร็วสุด]
     ชำระครบเต็มจำนวนแล้วสามารถเข้าอยู่ได้
     และต้องเข้าอยู่ภายใน 7 วันจากวันที่ระบุว่าว่างในเว็บไซต์จองห้อง
@@ -10954,10 +10953,7 @@ async function quickKeywordReply(text, env, userId) {
     return [{ type: 'text', text: wifiText }];
   }
   if (wantsParkingInfo && !isUrgent) {
-    return [
-      parkingPlanTextMessage(),
-      parkingButtonsMessage({ lineUserId: userId || null })
-    ];
+    return parkingInfoMessages(normalized, { lineUserId: userId || null });
   }
 
   if (isUrgent) {
@@ -11542,11 +11538,14 @@ async function handleParkingOutsiderPhoneText(env, ctx, event, replyToken, textI
   return true;
 }
 
-function parkingPlanTextMessage() {
-  return {
-    type: 'text',
-    text: 'ค่าจอดรถรายเดือน\n1) ลูกหอ 800 บาท/เดือน (เช่าต่อเนื่องเกิน 3 เดือน)\nหากเช่าไม่ต่อเนื่อง คิดค่าบริการ 200 บาท/ครั้ง\n2) บุคคลภายนอก 1,000 บาท/เดือน\nเลือกประเภทผู้เช่าจากการ์ดด้านล่างได้เลย'
-  };
+// The card already lists every car price, so it goes alone. Motorcycles have
+// their own price and no card: the car packages would only mislead.
+function parkingInfoMessages(text, options = {}) {
+  const raw = String(text || '');
+  if (/(มอไซ|มอเตอร์ไซ|จักรยานยนต์|motorcycle|motorbike)/i.test(raw) && !/(รถยนต์|รถเก๋ง|กระบะ)/.test(raw)) {
+    return [{ type: 'text', text: 'ที่จอดมอเตอร์ไซค์ ลูกหอจอดฟรีครับ\nบุคคลภายนอกเดือนละ 300 บาทครับ\nสนใจเช่าพิมพ์แจ้งได้เลยครับ' }];
+  }
+  return [parkingButtonsMessage(options)];
 }
 
 function parkingButtonsMessage(options = {}) {
@@ -13810,6 +13809,8 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  parkingInfoMessages,
+  isParkingIntent,
   isUtilityRateAsk,
   buildRoomRentImageMessages,
   detectRepairIntent,
