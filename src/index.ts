@@ -1,4 +1,5 @@
 // @ts-nocheck
+import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound } from './inbox';
 
@@ -4816,6 +4817,16 @@ const worker = {
 
     if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith('/media/line/')) {
       return serveSignedLineMedia(request, env, url);
+    }
+
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/guide/parking') {
+      return new Response(request.method === 'HEAD' ? null : PARKING_GUIDE_HTML, {
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cache-control': 'public, max-age=300',
+          'x-robots-tag': 'noindex, nofollow'
+        }
+      });
     }
 
     if (isInboxPath(url.pathname)) {
