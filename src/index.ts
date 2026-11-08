@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound } from './inbox';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -7246,6 +7246,13 @@ const worker = {
             await handleFloodEvent(env, ev, replyToken, floodCommand);
             continue;
           }
+          // "ขอเอกสารเยียวยาน้ำท่วม" contains น้ำท่วม and used to get the emergency card.
+          if (ev.source?.type === 'user' && isFloodReliefDocsAsk(textIn)) {
+            tagEventLog('flood_relief_docs');
+            await replyOrPushMessages(env, replyToken, chatId, floodReliefDocsMessages(), 'flood_relief_reply_failed');
+            ctx.waitUntil(alertFloodReliefContract(env, userId, textIn).catch((err) => console.error('flood_relief_alert_failed', err)));
+            continue;
+          }
           if (isUrgentRepairText(textIn)) {
             ctx.waitUntil(alertUrgentRepair(env, ev, textIn).catch((err) => console.error('repair_urgent_alert_failed', err)));
           }
@@ -13802,6 +13809,36 @@ function isBookingBlockedUser(env, userId) {
   return BOOKING_BLOCKED_USERS.includes(userId) || extra.includes(userId);
 }
 
+const FLOOD_RELIEF_ALERT_DEDUPE_SECONDS = 24 * 3600;
+
+function isFloodReliefDocsAsk(text) {
+  const raw = String(text || '');
+  if (/เงินเยียวยา/.test(raw)) return true;
+  if (/เยียวยา/.test(raw) && /(เอกสาร|สัญญา|ยื่น|ลงทะเบียน|ใบเสร็จ|บัตร|ทะเบียน|รหัสประจำบ้าน)/.test(raw)) return true;
+  return /น้ำท่วม/.test(raw) && /(ยื่นเอกสาร|เอกสาร.*(ยื่น|ขอ)|ขอเอกสาร|เงินช่วยเหลือ)/.test(raw);
+}
+
+// Wording and steps are the ones staff send in LINE OA (latest version 2026-11-08).
+function floodReliefDocsMessages() {
+  return [
+    { type: 'text', text: 'ยื่นเอกสารน้ำท่วม เตรียมตามนี้ครับ\n1. สัญญาเช่า\n2. สำเนาบัตรประชาชนของลูกหอ\n3. รูปถ่ายน้ำท่วมประมาณ 2-3 รูป\n4. ปริ้นสลิปการจ่ายค่าเช่าย้อนหลังสัก 3 เดือน\n\nเตรียมไปเท่านี้เพียงพอครับ ไม่ต้องใช้บัตรประชาชนของเจ้าของหอ' },
+    { type: 'text', text: 'ขั้นตอนการยื่น\n1. ลงทะเบียนในแอปทางลัดก่อนไปสำนักงานเขต\n2. ถึงสำนักงานเขตให้ไปเอาบัตรคิวก่อน\n3. เอาเอกสารมากรอกข้อมูล แล้วนั่งรอเรียกคิว\n\nวันอาทิตย์คนค่อนข้างเยอะ เคยรอตั้งแต่ 8 โมงครึ่งถึง 4 โมงเย็น ถ้าไปวันธรรมดาคนอาจจะน้อยกว่าครับ' },
+    { type: 'text', text: 'ไฟล์สัญญาเช่า เดี๋ยวเจ้าหน้าที่ส่งเป็น PDF ให้ในแชทนี้นะครับ' }
+  ];
+}
+
+// The lease PDF has to be downloaded from Horganice by a person, so staff get a to-do.
+async function alertFloodReliefContract(env, userId, textIn) {
+  if (!userId) return;
+  const dedupeKey = `flood_relief:alert:${userId}`;
+  if (await kvGet(env, dedupeKey)) return;
+  await kvPut(env, dedupeKey, { ts: Date.now() }, FLOOD_RELIEF_ALERT_DEDUPE_SECONDS);
+  const c = await inboxContactInfo(env, userId);
+  const who = [c?.room_id ? `ห้อง ${c.room_id}` : 'ไม่ทราบห้อง', c?.tenant_name || c?.display_name || ''].filter(Boolean).join(' · ');
+  const text = `📄 ต้องโหลดสัญญาเช่าจาก Horganice ส่งให้ลูกหอ\n${who}\nขอเอกสารเยียวยาน้ำท่วม: "${String(textIn || '').slice(0, 120)}"\nบอทส่งรายการเอกสารให้แล้ว เหลือไฟล์ PDF สัญญา\nตอบแชท: https://fragrant-term-4318.mamamansion99.workers.dev/inbox#${userId}`;
+  await Promise.allSettled(getOwnerGroupIds(env).map((to) => safeLinePushText(env.LINE_ACCESS_TOKEN, to, text, 'flood_relief_alert_failed')));
+}
+
 async function alertUrgentRepair(env, ev, textIn) {
   // ปิดการแจ้งเตือนด่วนเข้า LINE ตามที่เจ้าของสั่ง (อ่านเองใน LINE OA)
   // เปิดกลับได้ด้วย env URGENT_REPAIR_ALERT=on
@@ -13820,6 +13857,8 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  isFloodReliefDocsAsk,
+  floodReliefDocsMessages,
   parkingInfoMessages,
   isParkingIntent,
   isUtilityRateAsk,

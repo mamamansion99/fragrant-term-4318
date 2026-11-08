@@ -163,6 +163,17 @@ export async function recordInboxEvent(env, log) {
 // unexpected image. D1 is read-your-writes: if this user typed the command in
 // the last `windowMs` and no slip has been forwarded since, the flow is still on.
 // TENANT / NON_TENANT as MM_LOG last reported it, or '' when unknown.
+export async function inboxContactInfo(env, userId) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return null;
+  try {
+    return await db.prepare('SELECT room_id, tenant_name, display_name FROM contacts WHERE user_id = ?1').bind(userId).first();
+  } catch (err) {
+    console.error('inbox_contact_info_failed', { userId, error: String(err?.message || err) });
+    return null;
+  }
+}
+
 export async function inboxContactType(env, userId) {
   const db = env?.INBOX_DB;
   if (!db || !String(userId || '').startsWith('U')) return '';

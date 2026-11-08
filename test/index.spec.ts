@@ -329,6 +329,25 @@ describe('Worker routes', () => {
 		expect(parkingInfoMessages('จอดมอไซกับรถยนต์ได้ไหม')[0].type).toBe('flex');
 	});
 
+	it('recognises flood relief document requests but not real floods', () => {
+		const { isFloodReliefDocsAsk, floodReliefDocsMessages, isUrgentRepairText } = __testables;
+		for (const text of [
+			'รบกวนขอเอกสารยื่นเงินเยียวยาน้ำท่วมหน่อยค่ะ',
+			'ขอสอบถามครับ หอมีสัญญาเช่ามั้ยครับ พอดีว่าผมจะเอาไปใช้ยื่นเยียวยาน้ำท่วมอะครับ',
+			'อยากได้สัญญาเช่ากับใบเสร็จค่าห้องเพื่อขอเงินเยียวยา ต้องเอาเอกสารตรงไหนหรอคะ',
+			'สวัสดีครับผม ผมอยากได้สำเนาบัตรประชาชนของเจ้าของหอเพื่อไปยื่นขอเงินเยียวยาที่เขตครับ',
+			'จะเอาไปลงทะเบียนรับเงินเยียวยา'
+		]) expect(isFloodReliefDocsAsk(text)).toBe(true);
+		for (const text of ['น้ำท่วมห้องค่ะ', 'น้ำท่วมซอยไหมครับ', 'นโยบายการเยียวยามีแค่นี้เหรอ']) {
+			expect(isFloodReliefDocsAsk(text)).toBe(false);
+		}
+		expect(isUrgentRepairText('น้ำท่วมห้องค่ะ')).toBe(true);
+		const messages = floodReliefDocsMessages();
+		expect(messages.length).toBeLessThanOrEqual(5);
+		expect(messages[0].text).toContain('สัญญาเช่า');
+		expect(messages[2].text).toContain('PDF');
+	});
+
 	it('does not start a booking for a blocked LINE user', async () => {
 		const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
 			new Response(JSON.stringify({ ok: true }), {
