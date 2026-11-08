@@ -8444,7 +8444,7 @@ const worker = {
               lineUserId: ev?.source?.userId || null,
               chatId: getChatId(ev) || null
             };
-            const replies = parkingInfoMessages(textIn, commonOptions);
+            const replies = parkingInfoMessages(textIn, commonOptions, await inboxContactType(env, userId));
             await replyOrPushMessages(env, replyToken, chatId, replies, 'parking_info_reply_failed');
             continue;
           }
@@ -10953,7 +10953,7 @@ async function quickKeywordReply(text, env, userId) {
     return [{ type: 'text', text: wifiText }];
   }
   if (wantsParkingInfo && !isUrgent) {
-    return parkingInfoMessages(normalized, { lineUserId: userId || null });
+    return parkingInfoMessages(normalized, { lineUserId: userId || null }, await inboxContactType(env, userId));
   }
 
   if (isUrgent) {
@@ -11540,10 +11540,21 @@ async function handleParkingOutsiderPhoneText(env, ctx, event, replyToken, textI
 
 // The card already lists every car price, so it goes alone. Motorcycles have
 // their own price and no card: the car packages would only mislead.
-function parkingInfoMessages(text, options = {}) {
+// contactType comes from the inbox (TENANT includes confirmed bookings). When it
+// is missing, or what the person says contradicts it, both prices are given
+// rather than promising free parking or charging a tenant.
+function parkingInfoMessages(text, options = {}, contactType = '') {
   const raw = String(text || '');
   if (/(มอไซ|มอเตอร์ไซ|จักรยานยนต์|motorcycle|motorbike)/i.test(raw) && !/(รถยนต์|รถเก๋ง|กระบะ)/.test(raw)) {
-    return [{ type: 'text', text: 'ที่จอดมอเตอร์ไซค์ ลูกหอจอดฟรีครับ\nบุคคลภายนอกเดือนละ 300 บาทครับ\nสนใจเช่าพิมพ์แจ้งได้เลยครับ' }];
+    const claimsTenant = /ลูกหอ/.test(raw.replace(/ไม่(ใช่|ได้เป็น)\s*ลูกหอ/g, ''));
+    const forSomeoneElse = /(เพื่อน|แฟน|ญาติ|คนนอก|บุคคลภายนอก)/.test(raw);
+    if (contactType === 'TENANT' && !forSomeoneElse) {
+      return [{ type: 'text', text: 'ที่จอดมอเตอร์ไซค์สำหรับลูกหอจอดฟรีครับ' }];
+    }
+    if (contactType === 'NON_TENANT' && !claimsTenant) {
+      return [{ type: 'text', text: 'ที่จอดมอเตอร์ไซค์สำหรับบุคคลภายนอกเดือนละ 300 บาทครับ\nสนใจเช่าพิมพ์แจ้งได้เลยครับ' }];
+    }
+    return [{ type: 'text', text: 'ที่จอดมอเตอร์ไซค์ ลูกหอจอดฟรีครับ\nบุคคลภายนอกเดือนละ 300 บาทครับ' }];
   }
   return [parkingButtonsMessage(options)];
 }

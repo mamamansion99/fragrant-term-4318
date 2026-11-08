@@ -305,12 +305,24 @@ describe('Worker routes', () => {
 		const { parkingInfoMessages, isParkingIntent } = __testables;
 		for (const text of ['มีที่จอดมอไซว่างไหมคะ', 'เป็นคนนอกค่ะ อยากสอบถามเกี่ยวกับการเช่าที่จอดมอไซค์1คันค่ะ']) {
 			expect(isParkingIntent(text)).toBe(true);
-			const messages = parkingInfoMessages(text);
+			const messages = parkingInfoMessages(text, {}, 'NON_TENANT');
 			expect(messages).toHaveLength(1);
 			expect(messages[0].type).toBe('text');
 			expect(messages[0].text).toContain('300');
+			expect(messages[0].text).not.toContain('ฟรี');
 			expect(messages[0].text).not.toContain('1,000');
 		}
+		const tenant = parkingInfoMessages('มีที่จอดมอไซไหมคะ', {}, 'TENANT')[0].text;
+		expect(tenant).toContain('ฟรี');
+		expect(tenant).not.toContain('300');
+		const both = (t: string, type: string) => {
+			const out = parkingInfoMessages(t, {}, type)[0].text;
+			return out.includes('ฟรี') && out.includes('300');
+		};
+		expect(both('มีที่จอดมอไซไหมคะ', '')).toBe(true);
+		expect(both('เป็นลูกหอค่ะ จอดมอไซเสียเงินไหม', 'NON_TENANT')).toBe(true);
+		expect(both('ไม่ใช่ลูกหอค่ะ จอดมอไซเท่าไหร่', 'NON_TENANT')).toBe(false);
+		expect(both('เพื่อนจะเอามอไซมาจอด ที่จอดเท่าไหร่', 'TENANT')).toBe(true);
 		const car = parkingInfoMessages('มีที่จอดรถว่างไหมคะ');
 		expect(car).toHaveLength(1);
 		expect(car[0].type).toBe('flex');
