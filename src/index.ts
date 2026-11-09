@@ -4378,6 +4378,101 @@ function isMaidRelayGroup(ev, chatId) {
   return ev?.source?.type === 'group' && MAID_RELAY_GROUP_IDS.includes(String(ev.source.groupId || ''));
 }
 
+/* =========================
+ * Staff job list: "จด ..." writes building and repair work to Management!Staff_Tasks
+ * through the maid board's Apps Script, "เสร็จ 12" closes it. Must run before the
+ * urgent-repair check, or "จด ตู้ไฟมีควัน" would alert the owner as a tenant emergency.
+ * ========================= */
+const STAFF_TASK_ADD_RE = /^จด(?:งาน)?\s+([\s\S]+)$/;
+const STAFF_TASK_SET_RE = /^(เสร็จ|รอช่าง|ไว้ก่อน|ต้องทำ)\s+#?(\d+(?:[\s,]+#?\d+)*)\s*$/;
+const STAFF_TASK_STATUS_BY_WORD = { เสร็จ: 'DONE', รอช่าง: 'WAITING', ไว้ก่อน: 'LATER', ต้องทำ: 'TODO' };
+const STAFF_TASK_STATUS_REPLY = { DONE: '✅ ปิดงานแล้ว', WAITING: '🔧 ย้ายไปรอช่าง', LATER: '🗂 ย้ายไปไว้ก่อน', TODO: '📌 ย้ายกลับมาต้องทำ' };
+const STAFF_TASK_MAX_LINES = 10;
+const STAFF_TASK_TIMEOUT_MS = 20 * 1000;
+// Only one or two digits: a bare "203 ประตู" is a room number, not list numbering.
+const STAFF_TASK_NUMBERING_RE = /^\d{1,2}(?:[.)]\s*|\s+)/;
+const STAFF_TASK_ROOM_RE = /^([ABab])\s*-?\s*(\d{3,4})(?![\d])\s*(.*)$/;
+
+function parseStaffTaskItem(line, batch) {
+  const room = STAFF_TASK_ROOM_RE.exec(line);
+  if (!room) return { room: '', detail: line, batch };
+  return { room: `${room[1].toUpperCase()}${room[2]}`, detail: room[3].trim() || line, batch };
+}
+
+function parseStaffTaskAdd(text) {
+  const match = STAFF_TASK_ADD_RE.exec(String(text || '').trim());
+  if (!match) return null;
+  const lines = match[1].split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const isListItem = (l) => STAFF_TASK_NUMBERING_RE.test(l) || STAFF_TASK_ROOM_RE.test(l);
+  // A first line that is neither numbered nor a room heads the list: "งานมุ้งลวดตึก B".
+  const hasHeading = lines.length > 1 && !isListItem(lines[0]) && lines.slice(1).every(isListItem);
+  const batch = hasHeading ? lines[0].slice(0, 60) : '';
+  const items = (hasHeading ? lines.slice(1) : lines)
+    .map((l) => l.replace(STAFF_TASK_NUMBERING_RE, '').trim())
+    .filter(Boolean)
+    .map((l) => parseStaffTaskItem(l, batch));
+  return items.length ? { items } : null;
+}
+
+function parseStaffTaskSet(text) {
+  const match = STAFF_TASK_SET_RE.exec(String(text || '').trim());
+  if (!match) return null;
+  const nos = match[2].split(/[\s,]+/).map((n) => Number(n.replace('#', ''))).filter((n) => n > 0);
+  return nos.length ? { status: STAFF_TASK_STATUS_BY_WORD[match[1]], nos } : null;
+}
+
+function canUseStaffTasks(env, ev, chatId, userId) {
+  if (ev?.source?.type === 'user') return chatLogStaffIds(env).has(userId);
+  return isMaidRelayGroup(ev, chatId);
+}
+
+async function callStaffTaskApi(env, body) {
+  const res = await fetch(getMaidApiUrl(env), {
+    method: 'POST',
+    redirect: 'follow',
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(STAFF_TASK_TIMEOUT_MS)
+  });
+  const data = JSON.parse(await res.text());
+  if (!res.ok || !data?.ok) throw new Error(`staff task api ${res.status} ${data?.error || ''}`);
+  return data;
+}
+
+const staffTaskLine = (item) => `#${item.no} ${item.room ? `${item.room} ` : ''}${item.detail}`;
+const staffTaskListUrl = (env) => `${getMaidBoardUrl(env)}/?src=line#/issues`;
+
+function buildStaffTaskAddReply(env, added) {
+  const shown = added.slice(0, STAFF_TASK_MAX_LINES).map(staffTaskLine);
+  if (added.length > shown.length) shown.push(`และอีก ${added.length - shown.length} งาน`);
+  return [`📝 จดแล้ว ${added.length} งาน`, ...shown, '', `ปิดงานพิมพ์ เสร็จ ${added[0].no}`, staffTaskListUrl(env)].join('\n');
+}
+
+function buildStaffTaskSetReply(env, data) {
+  const lines = [];
+  if (data.items?.length) lines.push(STAFF_TASK_STATUS_REPLY[data.status], ...data.items.slice(0, STAFF_TASK_MAX_LINES).map(staffTaskLine));
+  if (data.missing?.length) lines.push(`❗ ไม่พบงาน ${data.missing.map((n) => `#${n}`).join(' ')}`);
+  return lines.join('\n') || `❗ ไม่พบงานนี้ ดูเลขงานที่ ${staffTaskListUrl(env)}`;
+}
+
+async function handleStaffTaskCommand(env, ev, replyToken, chatId, command) {
+  const by = await checkinStaffName(env, ev);
+  let text;
+  try {
+    if (command.add) {
+      const data = await callStaffTaskApi(env, { action: 'staffTaskAdd', items: command.add.items, by, source: 'LINE' });
+      text = buildStaffTaskAddReply(env, data.items);
+    } else {
+      const data = await callStaffTaskApi(env, { action: 'staffTaskSet', nos: command.set.nos, status: command.set.status, by });
+      text = buildStaffTaskSetReply(env, data);
+    }
+  } catch (err) {
+    console.error('staff_task_failed', err);
+    text = command.add ? '❗ จดไม่สำเร็จ ลองพิมพ์ใหม่อีกครั้งค่ะ' : '❗ เปลี่ยนสถานะไม่สำเร็จ ลองพิมพ์ใหม่อีกครั้งค่ะ';
+  }
+  await replyOrPushText(env, replyToken, chatId, text, 'staff_task_reply_failed');
+}
+
 async function lookupRoomOccupant(env, roomId) {
   const url = env.N8N_MAID_RELAY_WEBHOOK_URL || DEFAULT_N8N_MAID_RELAY_WEBHOOK_URL;
   const headers = { 'Content-Type': 'application/json' };
@@ -7251,6 +7346,14 @@ const worker = {
             tagEventLog('flood_relief_docs');
             await replyOrPushMessages(env, replyToken, chatId, floodReliefDocsMessages(), 'flood_relief_reply_failed');
             ctx.waitUntil(alertFloodReliefContract(env, userId, textIn).catch((err) => console.error('flood_relief_alert_failed', err)));
+            continue;
+          }
+          const staffTaskCommand = canUseStaffTasks(env, ev, chatId, userId)
+            ? { add: parseStaffTaskAdd(textIn), set: parseStaffTaskSet(textIn) }
+            : null;
+          if (staffTaskCommand?.add || staffTaskCommand?.set) {
+            tagEventLog('staff_task');
+            await handleStaffTaskCommand(env, ev, replyToken, chatId, staffTaskCommand);
             continue;
           }
           if (isUrgentRepairText(textIn)) {
@@ -14010,6 +14113,9 @@ export const __testables = {
   parseRoomToken,
   parseMaidRoomRelay,
   isMaidRelayGroup,
+  parseStaffTaskAdd,
+  parseStaffTaskSet,
+  canUseStaffTasks,
   parseVehicleToken,
   parseCarCommand,
   parseCheckinHorganiceCommand,

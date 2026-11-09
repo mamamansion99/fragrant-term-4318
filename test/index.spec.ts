@@ -4058,6 +4058,47 @@ describe('ID card window opened by the customer', () => {
 	});
 });
 
+describe('staff job list commands', () => {
+	it('reads one job with a room, one without, and ignores other text', () => {
+		expect(__testables.parseStaffTaskAdd('จด b112 มุ้งลวดขาด')).toEqual({ items: [{ room: 'B112', detail: 'มุ้งลวดขาด', batch: '' }] });
+		expect(__testables.parseStaffTaskAdd('จด ตู้ไฟตึก A น้ำหยด')).toEqual({ items: [{ room: '', detail: 'ตู้ไฟตึก A น้ำหยด', batch: '' }] });
+		expect(__testables.parseStaffTaskAdd('จดมิเตอร์แล้ว')).toBeNull();
+		expect(__testables.parseStaffTaskAdd('จด')).toBeNull();
+	});
+
+	it('splits a pasted list and uses an unnumbered first line as its heading', () => {
+		const parsed = __testables.parseStaffTaskAdd('จด งานมุ้งลวดตึก b\n1 b 112 มุ้งลวดขาด\n2 b108 หน้าต่างน้ำไหล\n3 203 ลูกยางหลุด');
+		expect(parsed.items).toEqual([
+			{ room: 'B112', detail: 'มุ้งลวดขาด', batch: 'งานมุ้งลวดตึก b' },
+			{ room: 'B108', detail: 'หน้าต่างน้ำไหล', batch: 'งานมุ้งลวดตึก b' },
+			{ room: '', detail: '203 ลูกยางหลุด', batch: 'งานมุ้งลวดตึก b' },
+		]);
+	});
+
+	it('keeps a three digit number that is not list numbering', () => {
+		expect(__testables.parseStaffTaskAdd('จด 203 ลูกยางหลุด').items[0].detail).toBe('203 ลูกยางหลุด');
+	});
+
+	it('reads status words with one or many numbers', () => {
+		expect(__testables.parseStaffTaskSet('เสร็จ 12')).toEqual({ status: 'DONE', nos: [12] });
+		expect(__testables.parseStaffTaskSet('รอช่าง #3, 4 5')).toEqual({ status: 'WAITING', nos: [3, 4, 5] });
+		expect(__testables.parseStaffTaskSet('ไว้ก่อน 7')).toEqual({ status: 'LATER', nos: [7] });
+		expect(__testables.parseStaffTaskSet('เสร็จแล้วครับ')).toBeNull();
+		expect(__testables.parseStaffTaskSet('เสร็จ 12 แล้ว')).toBeNull();
+	});
+
+	it('is open to the staff group and staff in 1:1 only', () => {
+		const env = { STAFF_LINE_USER_IDS: 'Ustaff' };
+		const staffGroup = { source: { type: 'group', groupId: 'C355d5b5c8a01d88bf61296b4e10f1575' } };
+		const otherGroup = { source: { type: 'group', groupId: 'Cother' } };
+		const oneToOne = { source: { type: 'user', userId: 'Ustaff' } };
+		expect(__testables.canUseStaffTasks(env, staffGroup, staffGroup.source.groupId, 'Uanyone')).toBe(true);
+		expect(__testables.canUseStaffTasks(env, otherGroup, 'Cother', 'Ustaff')).toBe(false);
+		expect(__testables.canUseStaffTasks(env, oneToOne, 'Ustaff', 'Ustaff')).toBe(true);
+		expect(__testables.canUseStaffTasks(env, oneToOne, 'Utenant', 'Utenant')).toBe(false);
+	});
+});
+
 describe('maid room relay parser', () => {
 	it('parses building + room + message from a staff group line', () => {
 		expect(__testables.parseMaidRoomRelay('B214 ขอให้เช็ดห้องน้ำก่อนบ่ายสอง')).toEqual({
