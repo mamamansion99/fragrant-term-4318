@@ -13904,7 +13904,7 @@ async function maybeOfferRepair(env, ev, replyToken, textIn) {
 
 // LINE users who cannot start a booking. Kept in code: the Workers Free plan
 // allows 64 variables and this worker is already at that limit.
-const BOOKING_BLOCKED_USERS = ['Uf81d9619e0fd975c7d4bf44d64a4dc9c'];
+const BOOKING_BLOCKED_USERS = [];
 
 function isBookingBlockedUser(env, userId) {
   if (!userId) return false;
