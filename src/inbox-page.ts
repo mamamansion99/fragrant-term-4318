@@ -107,7 +107,12 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .hold button{padding:6px 12px;border-radius:999px;font-weight:600;font-size:13px;flex:none}
 .suggest{margin:8px 12px 0;padding:10px 12px;border-radius:14px;background:var(--ai);border:1px solid color-mix(in srgb,var(--ai-ink) 25%,transparent)}
 .suggest .lbl{font-size:12px;color:var(--ai-ink);font-weight:600;display:flex;justify-content:space-between;gap:8px}
-.suggest p{margin:4px 0 8px;font-size:14.5px;white-space:pre-wrap}
+.suggest p{margin:4px 0 8px;font-size:14.5px;line-height:1.45;white-space:pre-wrap;display:-webkit-box;-webkit-line-clamp:4;-webkit-box-orient:vertical;overflow:hidden}
+/* A long draft used to take the whole thread and push the composer off the phone screen:
+   four lines by default, tap to read the rest inside a scroll box capped at a quarter of the screen. */
+.suggest.open p{display:block;-webkit-line-clamp:unset;max-height:24vh;max-height:24dvh;overflow-y:auto}
+.suggest .smore{font-size:12px;color:var(--ai-ink);font-weight:600;margin:-4px 0 8px;display:none}
+.suggest.long .smore{display:block}
 .acts{display:flex;gap:8px}.btn{padding:8px 16px;border-radius:999px;font-weight:600;font-size:14px;background:var(--surface)}
 .btn.go{background:var(--green);color:var(--green-ink)}
 .quick{display:flex;gap:8px;overflow-x:auto;padding:10px 12px 4px;scrollbar-width:none}
@@ -134,7 +139,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .phone.kb .th h2{font-size:15px}.phone.kb .back{width:30px;height:30px}
 .phone.kb .msgs{padding:8px 10px}
 .phone.kb .suggest{margin:4px 8px 0;padding:6px 8px 6px 10px;display:flex;align-items:center;gap:8px}
-.phone.kb .suggest .lbl{display:none}
+.phone.kb .suggest .lbl,.phone.kb .suggest .smore{display:none!important}
 .phone.kb .suggest p{flex:1;min-width:0;margin:0;font-size:13px;line-height:1.35;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .phone.kb .suggest p::before{content:"✨ ";}
 .phone.kb .suggest .acts{flex:none;gap:4px}.phone.kb .suggest .btn{padding:6px 10px;font-size:13px}
@@ -464,6 +469,7 @@ function aiBubbles(text) {
   if (out.length > 5) out = [out.slice(0, -4).join('\\n\\n'), ...out.slice(-4)];
   return out;
 }
+let suggOpen = '';
 function renderThread(d) {
   thread = d;
   const labels = {};
@@ -523,9 +529,14 @@ function renderThread(d) {
   $('hbtn').textContent = c.human ? 'ให้ AI ตอบต่อ' : 'ฉันตอบเอง';
   $('hbtn').style.background = c.human ? 'var(--raised)' : 'var(--human-soft)'; $('hbtn').style.color = c.human ? 'var(--ink)' : 'var(--human)';
   $('hbtn').dataset.on = c.human ? '0' : '1';
-  $('sugg').innerHTML = d.draft ? '<div class="suggest"><div class="lbl"><span>✨ AI แนะนำคำตอบ</span><span>ยังไม่ได้ส่ง</span></div><p>' + esc(d.draft.text) + '</p>' +
+  $('sugg').innerHTML = d.draft ? '<div class="suggest" id="suggbox"><div class="lbl"><span>✨ AI แนะนำคำตอบ</span><span>ยังไม่ได้ส่ง</span></div><p id="suggtxt">' + esc(d.draft.text) + '</p><div class="smore" id="suggmore">ดูทั้งหมด ▾</div>' +
     '<div class="acts"><button class="btn go" id="useDraft">ส่งเลย</button><button class="btn" id="editDraft">แก้ก่อนส่ง</button></div></div>' : '';
   if (d.draft) {
+    const box = $('suggbox'), txt = $('suggtxt');
+    if (txt.scrollHeight > txt.clientHeight + 2) box.classList.add('long');
+    const flip = () => { if (!box.classList.contains('long')) return; const o = box.classList.toggle('open'); suggOpen = o ? d.draft.id : ''; $('suggmore').textContent = o ? 'ย่อ ▴' : 'ดูทั้งหมด ▾'; };
+    if (suggOpen === d.draft.id) { suggOpen = ''; flip(); }
+    $('suggmore').onclick = flip; txt.onclick = () => { if (!box.classList.contains('open')) flip(); };
     $('useDraft').onclick = () => send(d.draft.text, d.draft.id);
     $('editDraft').onclick = () => { $('text').value = d.draft.text; $('text').dataset.draft = d.draft.id; grow(); $('text').focus(); };
   }
