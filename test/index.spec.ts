@@ -4133,9 +4133,9 @@ describe('เงินสดเช็คอิน <RoomID> [ยอด]', () => {
 	const { parseCheckinCashCommand, parseCheckinCashAmount, parseCheckinCommand } = __testables;
 
 	it('parses room with and without amount', () => {
-		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505 9550')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: 9550 });
-		expect(parseCheckinCashCommand('เงินสดเช็คอิน ห้อง b101 9,550 บาท')).toEqual({ kind: 'checkin_cash', roomId: 'B101', amount: 9550 });
-		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: null });
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505 9550')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: 9550, flow: 'checkin' });
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน ห้อง b101 9,550 บาท')).toEqual({ kind: 'checkin_cash', roomId: 'B101', amount: 9550, flow: 'checkin' });
+		expect(parseCheckinCashCommand('เงินสดเช็คอิน A505')).toEqual({ kind: 'checkin_cash', roomId: 'A505', amount: null, flow: 'checkin' });
 	});
 
 	it('treats an out-of-range amount as missing so the bot asks again', () => {
@@ -4149,6 +4149,35 @@ describe('เงินสดเช็คอิน <RoomID> [ยอด]', () => {
 		expect(parseCheckinCashCommand('เงินสดเช็คอิน C101 9550')).toBeNull();
 		expect(parseCheckinCashCommand('เช็คอินห้อง A505')).toBeNull();
 		expect(parseCheckinCommand('เงินสดเช็คอิน A505 9550')).toBeNull();
+	});
+});
+
+describe('เงินสดเช็คเอาท์ <RoomID> [ยอด]', () => {
+	const { parseCheckinCashCommand, parseStaffCashAmount, parseCheckoutPaymentText, buildCheckinCashConfirmMessage } = __testables;
+
+	it('accepts the usual spellings and small amounts', () => {
+		expect(parseCheckinCashCommand('เงินสดเช็คเอาท์ A406 735')).toEqual({ kind: 'checkin_cash', roomId: 'A406', amount: 735, flow: 'checkout' });
+		expect(parseCheckinCashCommand('เงินสดเช็กเอาต์ ห้อง b210 1,240 บาท')).toEqual({ kind: 'checkin_cash', roomId: 'B210', amount: 1240, flow: 'checkout' });
+		expect(parseCheckinCashCommand('เงินสดเช็คเอาต์ A406')).toEqual({ kind: 'checkin_cash', roomId: 'A406', amount: null, flow: 'checkout' });
+		expect(parseCheckinCashCommand('เงินสด checkout A406 50')?.amount).toBe(50);
+	});
+
+	it('keeps the check-in minimum for check-in only', () => {
+		expect(parseStaffCashAmount('50', 'checkout')).toBe(50);
+		expect(parseStaffCashAmount('50', 'checkin')).toBeNull();
+		expect(parseStaffCashAmount('0', 'checkout')).toBeNull();
+		expect(parseStaffCashAmount('9999999', 'checkout')).toBeNull();
+	});
+
+	it('does not collide with the transfer checkout commands', () => {
+		expect(parseCheckoutPaymentText('เงินสดเช็คเอาท์ A406 735')).toBeNull();
+		expect(parseCheckinCashCommand('จ่ายค่าเช็คเอาท์ A406')).toBeNull();
+	});
+
+	it('labels the confirm card for checkout', () => {
+		const msg = buildCheckinCashConfirmMessage('A406', 735, 'abc123def456', 'checkout');
+		expect(msg.contents.body.contents[0].text).toBe('ยืนยันรับเงินสดเช็คเอาท์');
+		expect(msg.contents.footer.contents[0].action.data).toBe('act=checkin_cash_ok&n=abc123def456');
 	});
 });
 
