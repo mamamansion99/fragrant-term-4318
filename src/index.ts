@@ -5124,6 +5124,14 @@ const worker = {
     }
 
 
+    // Maid board: photos on ซ่อมบำรุง jobs. Kept in KV because the board's Apps Script has no Drive permission.
+    if (request.method === 'POST' && url.pathname === '/maid/issue-photo') {
+      return handleIssuePhotoUpload(request, env);
+    }
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname.startsWith(ISSUE_PHOTO_PATH)) {
+      return serveIssuePhoto(request, env, url);
+    }
+
     // Maid board: how the renewal deposit was settled at the signing (โอน / เงินสด / ยังไม่จ่าย).
     if (request.method === 'POST' && url.pathname === '/maid/deposit-payment') {
       return handleMaidDepositPayment(request, env);
@@ -10363,6 +10371,60 @@ function buildMaidDepositPayload(body) {
     payload.mimeType = 'image/jpeg';
   }
   return { ok: true, payload, method };
+}
+
+const ISSUE_PHOTO_PATH = '/maid/issue-photo/';
+const ISSUE_PHOTO_KEY = 'issue-photo:';
+const ISSUE_PHOTO_MAX_BYTES = 3 * 1024 * 1024;
+const ISSUE_PHOTO_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+
+/**
+ * POST /maid/issue-photo  body (text/plain, so no preflight): {"type":"image/jpeg","data":"<base64>"}
+ * The board shrinks the photo before sending. Answers {ok,id,url}; the board then saves the id on the job.
+ */
+async function handleIssuePhotoUpload(request, env) {
+  const respond = (status, data) => new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+  });
+  let body = {};
+  try { body = JSON.parse(await request.text()); } catch (_) { return respond(400, { ok: false, message: 'ข้อมูลผิดรูปแบบ' }); }
+  const type = String(body?.type || '').toLowerCase();
+  if (!ISSUE_PHOTO_TYPES.includes(type)) return respond(400, { ok: false, message: 'รองรับเฉพาะรูป JPG PNG WEBP' });
+  let bytes;
+  try {
+    const bin = atob(String(body?.data || ''));
+    bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  } catch (_) {
+    return respond(400, { ok: false, message: 'อ่านรูปไม่ได้' });
+  }
+  if (!bytes.length) return respond(400, { ok: false, message: 'ไม่มีรูป' });
+  if (bytes.length > ISSUE_PHOTO_MAX_BYTES) return respond(413, { ok: false, message: 'รูปใหญ่เกินไป' });
+  const id = crypto.randomUUID().replace(/-/g, '');
+  try {
+    await env.KV.put(ISSUE_PHOTO_KEY + id, bytes, { metadata: { type, at: new Date().toISOString() } });
+  } catch (err) {
+    console.error('issue_photo_put_failed', String(err));
+    return respond(502, { ok: false, message: 'เก็บรูปไม่สำเร็จ ลองใหม่อีกครั้ง' });
+  }
+  const origin = new URL(request.url).origin;
+  return respond(200, { ok: true, id, url: `${origin}${ISSUE_PHOTO_PATH}${id}` });
+}
+
+async function serveIssuePhoto(request, env, url) {
+  const id = url.pathname.slice(ISSUE_PHOTO_PATH.length);
+  if (!/^[a-f0-9]{32}$/.test(id)) return new Response('Not found', { status: 404 });
+  const found = await env.KV.getWithMetadata(ISSUE_PHOTO_KEY + id, 'arrayBuffer');
+  if (!found || !found.value) return new Response('Not found', { status: 404 });
+  return new Response(request.method === 'HEAD' ? null : found.value, {
+    headers: {
+      'content-type': found.metadata?.type || 'image/jpeg',
+      'cache-control': 'public, max-age=31536000, immutable',
+      'access-control-allow-origin': '*',
+      'x-robots-tag': 'noindex, nofollow'
+    }
+  });
 }
 
 async function handleMaidDepositPayment(request, env) {
