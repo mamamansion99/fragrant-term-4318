@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound } from './inbox';
+import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -3579,6 +3579,9 @@ function classifyTextCommand(text, options = {}) {
   if (parseBookingCodeCommand(raw)) {
     return { kind: 'booking_code', statePolicy: TEXT_COMMAND_REPLACE_FLOW };
   }
+
+  // Held lead: booking codes above still work, canned info answers do not.
+  if (options.leadOnHold) return null;
 
   const fridgeIntent = detectFridgeIntent(raw);
   if (fridgeIntent.matches) {
@@ -7574,9 +7577,13 @@ const worker = {
             continue;
           }
 
-          const precomputedFastReply = await quickKeywordReply(textIn, env, userId);
+          // A lead handed to staff (or a chat staff are answering) gets no canned
+          // replies: BEER failed screening, then got "ตอนนี้มีห้องว่างครับ".
+          const heldLead = ev.source?.type === 'user' && await leadOnHold(env, userId);
+          const precomputedFastReply = heldLead ? null : await quickKeywordReply(textIn, env, userId);
           const commandRoute = classifyTextCommand(textIn, {
             fastReply: precomputedFastReply,
+            leadOnHold: heldLead,
             isOwnerGroup: isOwnerGroupChat(env, chatId)
           });
           // No command matched: whatever consumes the text from here on is a
@@ -8159,8 +8166,8 @@ const worker = {
 
           const changeLineKey = userId ? TENANT_CHANGE_KEY_PREFIX + userId : '';
           const changeLineState = userId ? await kvGet(env, changeLineKey) : null;
-          const fridgeIntent = detectFridgeIntent(textIn);
-          const parkingServiceKeyword = isParkingIntent(textIn);
+          const fridgeIntent = heldLead ? { matches: false } : detectFridgeIntent(textIn);
+          const parkingServiceKeyword = !heldLead && isParkingIntent(textIn);
           const isPaymentMenuBypass = /^\s*จ่าย\s*เงิน\s*มามา\s*แมนชั่น\s*$/i.test(textIn);
           const isPaymentMenu = isPaymentMenuBypass;
           const checkoutPaymentShortcut = parseCheckoutPaymentText(textIn);
@@ -10982,7 +10989,9 @@ const SCREENING_FORM = [
 
 // ตอบคำถาม "มีห้องว่างไหม" — ส่งฟอร์มคัดกรอง (ถามไปแล้วตอบสั้น ๆ)
 function buildPrebookPromptMessages(env, reason = 'prebook', alreadyAsked = false) {
-  if (alreadyAsked) return [{ type: 'text', text: 'ตอนนี้มีห้องว่างครับ' }];
+  // Screening already asked: never claim a room is free before staff have
+  // checked who is asking and what is actually open.
+  if (alreadyAsked) return [{ type: 'text', text: 'เดี๋ยวเจ้าหน้าที่ตรวจสอบห้องว่างให้แล้วแจ้งกลับนะครับ' }];
   return [{ type: 'text', text: SCREENING_FORM }];
 }
 

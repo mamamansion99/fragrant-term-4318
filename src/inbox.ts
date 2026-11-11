@@ -636,6 +636,43 @@ async function aiContext(env, request, url) {
 
 // n8n posts here: contact facts from MM_LOG (room, tenant) and the live AI's
 // replies, which it sends to LINE itself.
+// The AI handed a lead that did not clear screening to staff (BEER 2026-11-11:
+// factory worker, ESCALATE, then the keyword bot told him "ตอนนี้มีห้องว่างครับ").
+// From here the bot says nothing to this person until staff press "ให้ AI ตอบต่อ"
+// (human_until = 0) or the hold runs out.
+const HANDOFF_HOLD_VERDICTS = ['ESCALATE', 'FOLLOWUP', 'HUMAN'];
+const HANDOFF_HOLD_MS = 7 * 24 * 3600 * 1000;
+const HANDOFF_HOLD_BY = 'รอเจ้าหน้าที่ (AI ส่งต่อ)';
+
+async function holdForStaff(env, userId) {
+  const until = Date.now() + HANDOFF_HOLD_MS;
+  await env.INBOX_DB.prepare(
+    `INSERT INTO contacts (user_id, human_until, human_by) VALUES (?1, ?2, ?3)
+     ON CONFLICT(user_id) DO UPDATE SET
+       human_by = CASE WHEN COALESCE(contacts.human_until, 0) < ?2 THEN ?3 ELSE contacts.human_by END,
+       human_until = MAX(COALESCE(contacts.human_until, 0), ?2)`
+  ).bind(userId, until, HANDOFF_HOLD_BY).run();
+  // n8n pauses itself for 24 h on a handoff; keep the AI quiet for the week too.
+  const pauseUrl = String(env.AI_PAUSE_URL || '').trim();
+  if (pauseUrl) {
+    await fetch(`${pauseUrl}&u=${encodeURIComponent(userId)}&m=week`).catch((err) => console.error('inbox_ai_pause_failed', err));
+  }
+}
+
+// A non-tenant whose chat a person is holding (staff replied, or the AI handed
+// it over): canned keyword replies must stay quiet.
+export async function leadOnHold(env, userId) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return false;
+  try {
+    const row = await db.prepare('SELECT contact_type, human_until FROM contacts WHERE user_id = ?1').bind(userId).first();
+    return !!row && row.contact_type !== 'TENANT' && (row.human_until || 0) > Date.now();
+  } catch (err) {
+    console.error('lead_on_hold_check_failed', { userId, error: String(err?.message || err) });
+    return false;
+  }
+}
+
 async function ingest(env, request) {
   const secret = String(env.INBOX_INGEST_SECRET || '');
   if (!secret || request.headers.get('x-inbox-secret') !== secret) return json({ ok: false }, 401);
@@ -657,6 +694,7 @@ async function ingest(env, request) {
     ).bind(userId, JSON.stringify(merged)).run();
   }
   if (body.verdict === 'NO_REPLY' && body.inLogId) await markNoReply(env.INBOX_DB, userId, String(body.inLogId));
+  if (HANDOFF_HOLD_VERDICTS.includes(String(body.verdict || ''))) await holdForStaff(env, userId);
   if (body.draft) {
     await env.INBOX_DB.prepare(
       'INSERT INTO drafts (user_id, in_log_id, created_at, draft, verdict, meta, ai_sent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)'
