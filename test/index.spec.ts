@@ -4169,6 +4169,17 @@ describe('เงินสดเช็คเอาท์ <RoomID> [ยอด]', (
 		expect(parseStaffCashAmount('9999999', 'checkout')).toBeNull();
 	});
 
+	it('asks how the tenant pays after the calc photo, with the transfer button still routed as CHECKOUT2', () => {
+		const { buildCheckoutPayMethodMessage } = __testables;
+		const msg = buildCheckoutPayMethodMessage('A406');
+		const actions = msg.contents.body.contents.filter((c) => c.type === 'button').map((c) => c.action);
+		expect(actions.map((a) => a.data)).toEqual([
+			'act=checkout_cashin_start&room=A406',
+			'act=CHECKOUT2&Category=CHECKOUT2&paymentMethod=TRANSFER&room=A406&roomId=A406'
+		]);
+		for (const a of actions) expect(a.data.length).toBeLessThanOrEqual(300);
+	});
+
 	it('does not collide with the transfer checkout commands', () => {
 		expect(parseCheckoutPaymentText('เงินสดเช็คเอาท์ A406 735')).toBeNull();
 		expect(parseCheckinCashCommand('จ่ายค่าเช็คเอาท์ A406')).toBeNull();

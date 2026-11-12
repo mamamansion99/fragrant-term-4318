@@ -1881,8 +1881,48 @@ const CHECKIN_CALC_START_ACT = 'checkin_calc_start';
 const CHECKOUT_CASH_TEXT_RE = /^\s*เงินสด\s*(?:เช็[คก]\s*เอา?[ทต]์|checkout)\s*(?:ห้อง\s*)?([A-Za-z]\d{3,4})(?:\s+([\d,]+(?:\.\d{1,2})?))?\s*(?:บาท)?\s*$/i;
 const CHECKOUT_CALC_START_ACT = 'checkout_calc_start';
 const CHECKOUT_CASHIN_START_ACT = 'checkout_cashin_start';
+// คำถามท้ายการ์ดเช็คเอาท์ "ผู้เช่าต้องจ่ายเพิ่มไหม" — ถามทีละขั้นให้แม่บ้านไม่ต้องจำลำดับ
+//   ต้องจ่ายเพิ่ม → รอรูปใบคำนวณ → ได้รูปแล้ว worker ส่งปุ่มเงินสด/โอนต่อให้
+//   หอต้องคืนเงิน → รอรูปใบคำนวณ → คืนประกันตามขั้นตอนเดิม
+//   ไม่ต้องจ่ายเพิ่ม → n8n บันทึก PaidMethod=NONE
+const CHECKOUT_CHARGE_YES_ACT = 'checkout_charge_yes';
+const CHECKOUT_CHARGE_REFUND_ACT = 'checkout_charge_refund';
+const CHECKOUT_CHARGE_NONE_ACT = 'checkout_charge_none';
 const CHECKOUT_SETTLE_MIN_AMOUNT = 1;
 const DEFAULT_N8N_CHECKOUT_SETTLE_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-settle';
+
+function buildCheckoutPayMethodMessage(roomId) {
+  const pb = (label, data, displayText, style, color) => ({
+    type: 'button',
+    style,
+    ...(color ? { color } : {}),
+    action: { type: 'postback', label, data, displayText }
+  });
+  return {
+    type: 'flex',
+    altText: `ห้อง ${roomId} ผู้เช่าจ่ายยังไง`,
+    contents: {
+      type: 'bubble',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: `✅ ได้ใบคำนวณห้อง ${roomId} แล้ว`, weight: 'bold', size: 'md', wrap: true },
+          { type: 'text', text: 'ผู้เช่าจ่ายยังไงคะ?', weight: 'bold', size: 'xl', wrap: true },
+          pb('💵 จ่ายเงินสด', `act=${CHECKOUT_CASHIN_START_ACT}&room=${roomId}`, `💵 ห้อง ${roomId} จ่ายเงินสด`, 'primary', '#2b8a3e'),
+          pb(
+            '🏦 โอน (ส่งสลิป)',
+            `act=CHECKOUT2&Category=CHECKOUT2&paymentMethod=TRANSFER&room=${roomId}&roomId=${roomId}`,
+            `ชำระค่าเช็คเอาท์2 ${roomId}`,
+            'primary',
+            '#2f6fed'
+          )
+        ]
+      }
+    }
+  };
+}
 
 function staffCashFlowLabel(flow) {
   return flow === 'checkout' ? 'เช็คเอาท์' : 'เช็คอิน';
@@ -5691,19 +5731,69 @@ const worker = {
           continue;
         }
 
+        if (act === CHECKOUT_CHARGE_NONE_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const roomId = String(data.room || '').trim().toUpperCase();
+          if (!isCheckinStaffChat(chatId) || !userId || !/^[AB]\d{3,4}$/.test(roomId)) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ', 'checkin_staff_pb_wrong_chat_failed');
+            continue;
+          }
+          // n8n ตอบผลเข้าแชทเอง worker พูดเฉพาะตอน webhook ล่ม
+          const noneOk = await notifyN8nCheckoutSettle(env, {
+            source: 'line_postback',
+            intent: 'checkout_no_charge',
+            roomId,
+            actorLineUserId: userId,
+            actorName: await checkinStaffName(env, ev),
+            chatId,
+            eventId: ev?.webhookEventId || null,
+            receivedAt: new Date().toISOString()
+          });
+          if (!noneOk) {
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              `ระบบไม่ตอบสนอง ยังไม่ได้บันทึกห้อง ${roomId} กด ✅ ไม่ต้องจ่ายเพิ่ม ใหม่อีกครั้งค่ะ`,
+              'checkout_no_charge_webhook_failed'
+            );
+          }
+          continue;
+        }
+
         if (
           act === CHECKIN_CALC_START_ACT ||
           act === CHECKIN_CASH_START_ACT ||
           act === CHECKOUT_CALC_START_ACT ||
-          act === CHECKOUT_CASHIN_START_ACT
+          act === CHECKOUT_CASHIN_START_ACT ||
+          act === CHECKOUT_CHARGE_YES_ACT ||
+          act === CHECKOUT_CHARGE_REFUND_ACT
         ) {
           const chatId = getChatId(ev);
           const userId = String(ev?.source?.userId || '').trim();
           const roomId = String(data.room || '').trim().toUpperCase();
-          const staffFlow = act === CHECKOUT_CALC_START_ACT || act === CHECKOUT_CASHIN_START_ACT ? 'checkout' : 'checkin';
+          const staffFlow = act === CHECKIN_CALC_START_ACT || act === CHECKIN_CASH_START_ACT ? 'checkin' : 'checkout';
           const flowLabel = staffCashFlowLabel(staffFlow);
           if (!isCheckinStaffChat(chatId) || !userId || !/^[AB]\d{3,4}$/.test(roomId)) {
             await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ', 'checkin_staff_pb_wrong_chat_failed');
+            continue;
+          }
+          if (act === CHECKOUT_CHARGE_YES_ACT || act === CHECKOUT_CHARGE_REFUND_ACT) {
+            const outcome = act === CHECKOUT_CHARGE_YES_ACT ? 'charge' : 'refund';
+            await kvPut(
+              env,
+              buildCheckinPhotoWaitKey(chatId, userId),
+              { kind: 'calc', roomId, flow: 'checkout', outcome, ts: Date.now() },
+              CHECKIN_CASH_TTL_SECONDS
+            );
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              `📷 ถ่ายรูปใบคำนวณห้อง ${roomId} ส่งมาในแชทนี้เลยค่ะ`,
+              'checkout_charge_ack_failed'
+            );
             continue;
           }
           if (act === CHECKIN_CALC_START_ACT || act === CHECKOUT_CALC_START_ACT) {
@@ -9422,10 +9512,31 @@ const worker = {
               imageMessageId: photoMessageId,
               ...photoUrls,
               actorLineUserId: photoUserId,
+              outcome: checkinPhotoWait.outcome || '',
               actorName: await checkinStaffName(env, ev),
               chatId,
               receivedAt: new Date().toISOString()
             });
+            if (calcOk && calcCheckout && checkinPhotoWait.outcome === 'charge') {
+              await replyOrPushMessages(
+                env,
+                replyToken,
+                chatId,
+                [buildCheckoutPayMethodMessage(photoRoomId)],
+                'checkout_pay_method_prompt_failed'
+              );
+              continue;
+            }
+            if (calcOk && calcCheckout && checkinPhotoWait.outcome === 'refund') {
+              await replyOrPushText(
+                env,
+                replyToken,
+                chatId,
+                `✅ ได้ใบคำนวณห้อง ${photoRoomId} แล้ว\nยอดคืนเงินผู้เช่า ทำตามขั้นตอนคืนประกันเดิมค่ะ`,
+                'checkout_refund_calc_ack_failed'
+              );
+              continue;
+            }
             await replyOrPushText(
               env,
               replyToken,
@@ -14183,6 +14294,7 @@ export const __testables = {
   isCheckoutCashPaymentPostback,
   parseCheckinCashCommand,
   parseStaffCashAmount,
+  buildCheckoutPayMethodMessage,
   parseCheckinCashAmount,
   buildCheckinStaffStartCard,
   buildCheckinCashConfirmMessage,
