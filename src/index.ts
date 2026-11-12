@@ -1888,6 +1888,49 @@ const CHECKOUT_CASHIN_START_ACT = 'checkout_cashin_start';
 const CHECKOUT_CHARGE_YES_ACT = 'checkout_charge_yes';
 const CHECKOUT_CHARGE_REFUND_ACT = 'checkout_charge_refund';
 const CHECKOUT_CHARGE_NONE_ACT = 'checkout_charge_none';
+// ลิงก์ฟอร์มจากการ์ดในกลุ่มไม่รู้ว่าใครกด (ปุ่ม uri ไม่ส่ง userId) จึงให้กดผ่าน worker ก่อน
+// worker รู้ userId → ตอบลิงก์ที่ต่อ &by=<ชื่อ> ให้ ฟอร์มตรวจห้องกรอกชื่อผู้ตรวจเอง
+const CHECKOUT_FORM_OPEN_ACT = 'checkout_form_open';
+
+// รับเฉพาะ https บน vercel.app (ฟอร์มเช็คเอาท์ทุกตัวอยู่ที่นั่น) กันปุ่มถูกใช้เป็นตัวเด้งไปเว็บอื่น
+function buildStaffFormUrl(rawUrl, staffName) {
+  let url;
+  try {
+    url = new URL(String(rawUrl || ''));
+  } catch {
+    return '';
+  }
+  if (url.protocol !== 'https:' || !url.hostname.endsWith('.vercel.app')) return '';
+  const name = String(staffName || '').trim().slice(0, 40);
+  if (name) url.searchParams.set('by', name);
+  return url.toString();
+}
+
+function buildStaffFormLinkMessage(roomId, label, url, staffName) {
+  return {
+    type: 'flex',
+    altText: `${label} ห้อง ${roomId}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        contents: [
+          { type: 'text', text: `${label} ห้อง ${roomId}`, weight: 'bold', size: 'lg', wrap: true },
+          { type: 'text', text: `ผู้ตรวจ: ${staffName}`, size: 'md', color: '#555555', wrap: true },
+          {
+            type: 'button',
+            style: 'primary',
+            color: '#2f6fed',
+            action: { type: 'uri', label: 'กดเปิดฟอร์ม', uri: url }
+          }
+        ]
+      }
+    }
+  };
+}
 const CHECKOUT_SETTLE_MIN_AMOUNT = 1;
 const DEFAULT_N8N_CHECKOUT_SETTLE_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-settle';
 
@@ -5728,6 +5771,27 @@ const worker = {
           } else if (chatId) {
             ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, prompt).catch(console.error));
           }
+          continue;
+        }
+
+        if (act === CHECKOUT_FORM_OPEN_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const roomId = String(data.room || '').trim().toUpperCase();
+          const label = String(data.label || '📝 ตรวจห้อง').slice(0, 30);
+          const staffName = userId ? await checkinStaffName(env, ev) : '';
+          const formUrl = buildStaffFormUrl(data.u, staffName);
+          if (!isCheckinStaffChat(chatId) || !userId || !formUrl) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ', 'checkout_form_open_wrong_chat_failed');
+            continue;
+          }
+          await replyOrPushMessages(
+            env,
+            replyToken,
+            chatId,
+            [buildStaffFormLinkMessage(roomId, label, formUrl, staffName)],
+            'checkout_form_open_reply_failed'
+          );
           continue;
         }
 
@@ -14295,6 +14359,7 @@ export const __testables = {
   parseCheckinCashCommand,
   parseStaffCashAmount,
   buildCheckoutPayMethodMessage,
+  buildStaffFormUrl,
   parseCheckinCashAmount,
   buildCheckinStaffStartCard,
   buildCheckinCashConfirmMessage,

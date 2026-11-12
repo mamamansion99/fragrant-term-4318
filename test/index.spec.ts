@@ -4169,6 +4169,16 @@ describe('เงินสดเช็คเอาท์ <RoomID> [ยอด]', (
 		expect(parseStaffCashAmount('9999999', 'checkout')).toBeNull();
 	});
 
+	it('adds the staff name to checkout form links and refuses other hosts', () => {
+		const { buildStaffFormUrl } = __testables;
+		expect(buildStaffFormUrl('https://checkout-lac.vercel.app/?flowId=CO-A101-X&token=abc', 'พี่ก้อย')).toBe(
+			'https://checkout-lac.vercel.app/?flowId=CO-A101-X&token=abc&by=%E0%B8%9E%E0%B8%B5%E0%B9%88%E0%B8%81%E0%B9%89%E0%B8%AD%E0%B8%A2'
+		);
+		expect(buildStaffFormUrl('https://evil.example.com/?flowId=1', 'Ma')).toBe('');
+		expect(buildStaffFormUrl('http://checkout-lac.vercel.app/', 'Ma')).toBe('');
+		expect(buildStaffFormUrl('not a url', 'Ma')).toBe('');
+	});
+
 	it('asks how the tenant pays after the calc photo, with the transfer button still routed as CHECKOUT2', () => {
 		const { buildCheckoutPayMethodMessage } = __testables;
 		const msg = buildCheckoutPayMethodMessage('A406');
