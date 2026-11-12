@@ -4179,6 +4179,15 @@ describe('เงินสดเช็คเอาท์ <RoomID> [ยอด]', (
 		expect(buildStaffFormUrl('not a url', 'Ma')).toBe('');
 	});
 
+	it('checkout calc photo prompt opens camera via quick reply', () => {
+		const { buildCheckoutCalcPhotoPrompt } = __testables;
+		const msg = buildCheckoutCalcPhotoPrompt('A101');
+		expect(msg.text).toContain('A101');
+		const types = msg.quickReply.items.map((x) => x.action.type);
+		expect(types).toEqual(['camera', 'cameraRoll']);
+		for (const x of msg.quickReply.items) expect([...x.action.label].length).toBeLessThanOrEqual(20);
+	});
+
 	it('asks how the tenant pays after the calc photo, with the transfer button still routed as CHECKOUT2', () => {
 		const { buildCheckoutPayMethodMessage } = __testables;
 		const msg = buildCheckoutPayMethodMessage('A406');

@@ -1934,6 +1934,20 @@ function buildStaffFormLinkMessage(roomId, label, url, staffName) {
 const CHECKOUT_SETTLE_MIN_AMOUNT = 1;
 const DEFAULT_N8N_CHECKOUT_SETTLE_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-settle';
 
+// ถ่ายใบคำนวณ: ปุ่ม quick reply เปิดกล้อง/อัลบั้มทันที ไม่ต้องหาไอคอนกล้องเอง (ใช้ได้บนมือถือ)
+function buildCheckoutCalcPhotoPrompt(roomId) {
+  return {
+    type: 'text',
+    text: `📷 กดปุ่ม "ถ่ายใบคำนวณ" ด้านล่าง แล้วถ่ายรูปใบคำนวณห้อง ${roomId} ส่งมาได้เลยค่ะ`,
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'camera', label: '📷 ถ่ายใบคำนวณ' } },
+        { type: 'action', action: { type: 'cameraRoll', label: '🖼️ เลือกจากอัลบั้ม' } }
+      ]
+    }
+  };
+}
+
 function buildCheckoutPayMethodMessage(roomId) {
   const pb = (label, data, displayText, style, color) => ({
     type: 'button',
@@ -5851,11 +5865,11 @@ const worker = {
               { kind: 'calc', roomId, flow: 'checkout', outcome, ts: Date.now() },
               CHECKIN_CASH_TTL_SECONDS
             );
-            await replyOrPushText(
+            await replyOrPushMessages(
               env,
               replyToken,
               chatId,
-              `📷 ถ่ายรูปใบคำนวณห้อง ${roomId} ส่งมาในแชทนี้เลยค่ะ`,
+              [buildCheckoutCalcPhotoPrompt(roomId)],
               'checkout_charge_ack_failed'
             );
             continue;
@@ -14272,6 +14286,7 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  buildCheckoutCalcPhotoPrompt,
   isFloodReliefDocsAsk,
   floodReliefDocsMessages,
   parkingInfoMessages,
