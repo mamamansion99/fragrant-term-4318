@@ -4079,7 +4079,16 @@ function isContinueTermReplyAction(action) {
   );
 }
 
+// นัดเซ็นต่อสัญญา: ผู้เช่ายืนยันนัด (RENEWAL_ATT_CONFIRM) + เจ้าหน้าที่/แม่บ้านตอบผลนัด (RENEWAL_ATT_OK / _FORM_ISSUE / _NOSHOW)
+const DEFAULT_N8N_RENEWAL_ATTENDANCE_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/RENEWAL_ATTENDANCE';
+function isRenewalAttendanceAction(action) {
+  return String(action || '').trim().toUpperCase().startsWith('RENEWAL_ATT_');
+}
+
 function getRenewalPostbackWebhookUrl(env, action) {
+  if (isRenewalAttendanceAction(action)) {
+    return env.N8N_RENEWAL_ATTENDANCE_URL || DEFAULT_N8N_RENEWAL_ATTENDANCE_URL;
+  }
   if (isContinueTermReplyAction(action)) {
     return env.N8N_CONTINUE_TERM_REPLY_URL || DEFAULT_N8N_CONTINUE_TERM_REPLY_URL;
   }
@@ -6850,6 +6859,7 @@ const worker = {
           isSignAskAdmin ||
           isRenewalAdminAction ||
           isManagerBatchAction ||
+          isRenewalAttendanceAction(action) ||
           isManagerDecisionEvent;
         const looksLikeContractRenewal =
           isContractRenewalAction ||
@@ -7008,7 +7018,11 @@ const worker = {
             RENEWAL_ASK_MORE: `รับทราบค่ะ 📝 ห้อง ${roomLabel} ขอรายละเอียดเพิ่มเติมแล้ว แอดมินจะติดต่อกลับ`,
             RENEWAL_SIGN_SLOT_CONFIRM: `รับทราบค่ะ ✅ ยืนยันวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`,
             RENEWAL_SIGN_SLOT_CHANGE: `รับทราบค่ะ 🗓️ รับคำขอเปลี่ยนวันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว`,
-            RENEWAL_ADMIN_PICK_SIGNING: `รับทราบค่ะ ✅ ส่งวันและเวลาใหม่ของห้อง ${roomLabel} แล้ว`
+            RENEWAL_ADMIN_PICK_SIGNING: `รับทราบค่ะ ✅ ส่งวันและเวลาใหม่ของห้อง ${roomLabel} แล้ว`,
+            RENEWAL_ATT_CONFIRM: `รับทราบค่ะ ✅ ยืนยันนัดเซ็นสัญญาห้อง ${roomLabel} แล้ว ขอบคุณค่ะ`,
+            RENEWAL_ATT_OK: `บันทึกแล้ว ✅ ห้อง ${roomLabel} มาตามนัด`,
+            RENEWAL_ATT_FORM_ISSUE: `บันทึกแล้ว 📝 ห้อง ${roomLabel} มาตามนัด (ส่งฟอร์มมีปัญหา)`,
+            RENEWAL_ATT_NOSHOW: `บันทึกแล้ว ⚠️ ห้อง ${roomLabel} ผิดนัด ระบบกำลังแจ้งผู้เช่า`
           };
 
           try {
@@ -11060,6 +11074,7 @@ function buildRenewalPostbackMeta(data, ev, act = '') {
       action === 'RENEWAL_SIGN_SLOT_CONFIRM' ||
       action === 'RENEWAL_SIGN_SLOT_CHANGE' ||
       action === 'RENEWAL_ADMIN_PICK_SIGNING' ||
+      isRenewalAttendanceAction(action) ||
       action === 'LEAVE_PICK_CHECKOUT' ||
       action === 'SIGN_SLOT' ||
       action === 'SIGN_ASK_ADMIN'
