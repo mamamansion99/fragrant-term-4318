@@ -8,7 +8,7 @@ export default defineWorkersConfig(async () => {
 			poolOptions: {
 				workers: {
 					wrangler: { configPath: './wrangler.jsonc' },
-					miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+					miniflare: { bindings: { TEST_MIGRATIONS: migrations, LINE_ACCESS_TOKEN: 'test-line-token' } },
 				},
 			},
 		},

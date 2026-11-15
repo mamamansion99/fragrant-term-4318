@@ -5101,6 +5101,10 @@ const worker = {
       });
     }
 
+    if (url.pathname.startsWith(LINE_PROXY_PREFIX)) {
+      return handleLineProxy(request, env, ctx, url);
+    }
+
     if (isInboxPath(url.pathname)) {
       return handleInboxRequest(request, env, url, {
         linePush,
@@ -13583,6 +13587,92 @@ function flushEventLog(env, ctx, log) {
   ctx.waitUntil(
     recordInboxEvent(env, { ...payload, quotedMessageId, quoteToken }).catch((err) => console.error('inbox_inbound_failed', err))
   );
+}
+
+/* -------------------------------------------------------
+ * LINE Messaging API pass-through: /line/v2/bot/message/push etc.
+ *
+ * n8n and Apps Script push to customers straight to api.line.me, so the
+ * staff inbox never saw those cards. They call this path instead, with the
+ * same body and the same `Authorization: Bearer <channel token>`. The request
+ * goes to LINE unchanged and LINE's answer comes back unchanged (status, body,
+ * request-id / retry headers) so retries and error branches in n8n behave as
+ * before. After a 2xx push to a user (U…) made with this OA's token, the
+ * messages are logged like the worker's own pushes, without counting as a
+ * staff answer (a rent reminder must not clear รอตอบ).
+ * Optional header x-mm-handler names the sender in the chat log.
+ * ----------------------------------------------------- */
+const LINE_PROXY_PREFIX = '/line/v2/bot/';
+const LINE_PROXY_FORWARD_HEADERS = ['authorization', 'content-type', 'x-line-retry-key'];
+const LINE_PROXY_RETURN_HEADERS = ['content-type', 'x-line-request-id', 'x-line-accepted-request-id', 'retry-after'];
+
+async function handleLineProxy(request, env, ctx, url) {
+  if (request.method !== 'POST' && request.method !== 'GET') {
+    return new Response(JSON.stringify({ message: 'method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
+  }
+  const linePath = url.pathname.slice('/line'.length); // /v2/bot/...
+  const target = `https://api.line.me${linePath}${url.search}`;
+  const headers = {};
+  for (const h of LINE_PROXY_FORWARD_HEADERS) {
+    const v = request.headers.get(h);
+    if (v) headers[h] = v;
+  }
+  const bodyText = request.method === 'POST' ? await request.text() : undefined;
+
+  let res;
+  try {
+    res = await fetch(target, { method: request.method, headers, body: bodyText });
+  } catch (err) {
+    console.error('line_proxy_fetch_failed', err);
+    return new Response(JSON.stringify({ message: 'line proxy could not reach LINE' }), { status: 502, headers: { 'content-type': 'application/json' } });
+  }
+  const resText = await res.text();
+  const out = new Headers();
+  for (const h of LINE_PROXY_RETURN_HEADERS) {
+    const v = res.headers.get(h);
+    if (v) out.set(h, v);
+  }
+
+  if (res.ok && linePath === '/v2/bot/message/push' && bodyText) {
+    ctx.waitUntil(logProxiedPush(env, request, bodyText, resText).catch((err) => console.error('line_proxy_log_failed', err)));
+  }
+  return new Response(resText, { status: res.status, headers: out });
+}
+
+async function logProxiedPush(env, request, bodyText, resText) {
+  const auth = String(request.headers.get('authorization') || '');
+  // Only this OA's pushes belong in its inbox.
+  if (!env.LINE_ACCESS_TOKEN || auth.replace(/^Bearer\s+/i, '').trim() !== String(env.LINE_ACCESS_TOKEN).trim()) return;
+  let body;
+  try { body = JSON.parse(bodyText); } catch (_) { return; }
+  const to = String(body?.to || '');
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  if (!to.startsWith('U') || !messages.length) return;
+  let sent = [];
+  try { sent = JSON.parse(resText)?.sentMessages || []; } catch (_) {}
+  const handler = String(request.headers.get('x-mm-handler') || 'line_proxy').slice(0, 60);
+  const payload = {
+    timestamp: new Date().toISOString(),
+    direction: 'OUT',
+    eventType: 'push',
+    messageType: messages.map((m) => m?.type || '').join(','),
+    text: summarizeOutboundMessages(messages),
+    replyToken: '',
+    userId: to,
+    groupId: '',
+    lineRoomId: '',
+    chatId: to,
+    sourceType: 'user',
+    messageId: '',
+    logId: `proxy:${(Array.isArray(sent) && sent[0]?.id) || `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`}`,
+    inReplyTo: '',
+    contactHint: chatLogStaffIds(env).has(to) ? 'STAFF' : '',
+    handler
+  };
+  await Promise.all([
+    notifyN8nChatLog(env, payload).catch((err) => console.error('line_proxy_chat_log_failed', err)),
+    recordInboxOutbound(env, payload, 'bot', messages, sent, '', { countsAsReply: false })
+  ]);
 }
 
 function summarizeOutboundMessages(messages) {

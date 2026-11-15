@@ -101,7 +101,7 @@ function kindOf(eventType, messageType) {
   return eventType || 'event';
 }
 
-async function touchContact(db, userId, ts, text, author, actionable) {
+async function touchContact(db, userId, ts, text, author, actionable, countsAsReply = true) {
   const isCustomer = author === 'customer';
   await db.prepare(
     `INSERT INTO contacts (user_id, last_message_at, last_text, last_author, last_customer_at, last_reply_at, last_ask_at)
@@ -114,7 +114,7 @@ async function touchContact(db, userId, ts, text, author, actionable) {
        last_reply_at = MAX(contacts.last_reply_at, ?6),
        last_ask_at = MAX(COALESCE(contacts.last_ask_at, 0), ?7),
        status = CASE WHEN ?7 > 0 AND contacts.status = 'closed' THEN 'open' ELSE contacts.status END`
-  ).bind(userId, ts, String(text || '').slice(0, 200), author, isCustomer ? ts : 0, isCustomer ? 0 : ts, isCustomer && actionable ? ts : 0).run();
+  ).bind(userId, ts, String(text || '').slice(0, 200), author, isCustomer ? ts : 0, isCustomer || !countsAsReply ? 0 : ts, isCustomer && actionable ? ts : 0).run();
 }
 
 async function insertMessage(db, m) {
@@ -126,7 +126,7 @@ async function insertMessage(db, m) {
   ).bind(m.userId, m.ts, m.direction, m.author, m.kind || '', String(m.text || '').slice(0, 4000),
     m.lineMessageId || '', m.logId || null, m.handler || '', m.inReplyTo || '', actionable, m.payload || null,
     m.quotedId || null, m.quoteToken || null, m.sentIds || null).run();
-  if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author, actionable);
+  if (res?.meta?.changes) await touchContact(db, m.userId, m.ts, m.text, m.author, actionable, m.countsAsReply !== false);
 }
 
 // The AI read a customer message and judged that it needs no answer.
@@ -235,7 +235,9 @@ function richPayload(messages) {
   return s.length <= 60000 ? s : null;
 }
 
-export async function recordInboxOutbound(env, payload, author, messages, sent, quotedId) {
+// opts.countsAsReply = false: a system push (rent reminder, renewal card…) shows in
+// the thread but does not take a waiting customer out of รอตอบ.
+export async function recordInboxOutbound(env, payload, author, messages, sent, quotedId, opts: any = {}) {
   const db = env?.INBOX_DB;
   if (!db || !payload || payload.sourceType !== 'user' || !String(payload.userId || '').startsWith('U')) return;
   await insertMessage(db, {
@@ -252,7 +254,8 @@ export async function recordInboxOutbound(env, payload, author, messages, sent, 
     quotedId: quotedId || '',
     // One row can hold several bubbles; the first one's token is what staff quote.
     quoteToken: (Array.isArray(sent) && sent[0]?.quoteToken) || '',
-    sentIds: Array.isArray(sent) && sent.length ? ',' + sent.map((x) => x?.id).filter(Boolean).join(',') + ',' : ''
+    sentIds: Array.isArray(sent) && sent.length ? ',' + sent.map((x) => x?.id).filter(Boolean).join(',') + ',' : '',
+    countsAsReply: opts?.countsAsReply !== false
   });
 }
 

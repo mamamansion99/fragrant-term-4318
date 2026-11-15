@@ -373,6 +373,68 @@ describe('booking cards pushed by Apps Script', () => {
 	});
 });
 
+describe('LINE pass-through for n8n / Apps Script pushes', () => {
+	const push = (body: any, token = 'test-line-token', extra: Record<string, string> = {}) => SELF.fetch('https://example.com/line/v2/bot/message/push', {
+		method: 'POST',
+		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...extra },
+		body: JSON.stringify(body)
+	});
+	const rows = async (u: string) => (await e.INBOX_DB.prepare('SELECT author, handler, text, payload, log_id FROM messages WHERE user_id = ?1').bind(u).all()).results as any[];
+	const waitRows = async (u: string, n: number) => {
+		for (let i = 0; i < 40; i++) { const r = await rows(u); if (r.length >= n) return r; await new Promise((ok) => setTimeout(ok, 25)); }
+		return rows(u);
+	};
+
+	it('forwards unchanged, returns LINE\'s answer, and logs user pushes without clearing รอตอบ', async () => {
+		const U = 'Uproxytest00000000000000000000001';
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+		let seen: any = null;
+		fetchMock.get('https://api.line.me').intercept({ path: '/v2/bot/message/push', method: 'POST' })
+			.reply(200, (opts: any) => { seen = opts; return { sentMessages: [{ id: '9901', quoteToken: 'qt1' }] }; }, { headers: { 'x-line-request-id': 'req-1' } });
+		fetchMock.get('https://n8n.srv1112305.hstgr.cloud').intercept({ path: '/webhook/MM_LOG', method: 'POST' }).reply(200, 'ok').persist();
+		try {
+			await recordInboxEvent(e, { timestamp: new Date(Date.now() - 60000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: 'แอร์ไม่เย็นครับ ช่างมาได้ไหม', userId: U, sourceType: 'user', logId: 'px-in-1', handler: 'unhandled' });
+			const card = { type: 'template', altText: 'เลือกวัน', template: { type: 'confirm', text: 'ห้อง A310', actions: [{ type: 'datetimepicker', label: 'เลือกวัน–เวลา', data: 'act=checkin_pick', mode: 'datetime' }, { type: 'postback', label: 'ยกเลิก', data: 'x' }] } };
+			const res = await push({ to: U, messages: [card] }, 'test-line-token', { 'x-mm-handler': 'n8n:Reservation' });
+			expect(res.status).toBe(200);
+			expect(res.headers.get('x-line-request-id')).toBe('req-1');
+			expect((await res.json() as any).sentMessages[0].id).toBe('9901');
+			expect(JSON.parse(String(seen.body)).to).toBe(U);
+
+			const r = await waitRows(U, 2);
+			const out = r.find((x) => x.author === 'bot');
+			expect(out.handler).toBe('n8n:Reservation');
+			expect(out.log_id).toBe('proxy:9901');
+			expect(JSON.parse(out.payload)[0].template.text).toBe('ห้อง A310');
+			const c = await e.INBOX_DB.prepare('SELECT last_reply_at, last_ask_at FROM contacts WHERE user_id = ?1').bind(U).first() as any;
+			expect(c.last_ask_at).toBeGreaterThan(c.last_reply_at || 0);
+		} finally {
+			fetchMock.deactivate();
+		}
+	});
+
+	it('passes LINE errors through and logs nothing for groups, failures or another OA token', async () => {
+		const U = 'Uproxytest00000000000000000000002';
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+		fetchMock.get('https://api.line.me').intercept({ path: '/v2/bot/message/push', method: 'POST' }).reply(429, { message: 'too many' }, { headers: { 'retry-after': '3' } });
+		fetchMock.get('https://api.line.me').intercept({ path: '/v2/bot/message/push', method: 'POST' }).reply(200, { sentMessages: [{ id: '9902' }] });
+		fetchMock.get('https://api.line.me').intercept({ path: '/v2/bot/message/push', method: 'POST' }).reply(200, { sentMessages: [{ id: '9903' }] });
+		try {
+			const bad = await push({ to: U, messages: [{ type: 'text', text: 'a' }] });
+			expect(bad.status).toBe(429);
+			expect(bad.headers.get('retry-after')).toBe('3');
+			expect((await push({ to: 'Cgroup0000000000000000000000000001', messages: [{ type: 'text', text: 'b' }] })).status).toBe(200);
+			expect((await push({ to: U, messages: [{ type: 'text', text: 'c' }] }, 'other-oa-token')).status).toBe(200);
+			await new Promise((ok) => setTimeout(ok, 200));
+			expect(await rows(U)).toEqual([]);
+		} finally {
+			fetchMock.deactivate();
+		}
+	});
+});
+
 describe('inbox page script', () => {
 	it('parses (a backslash lost inside the HTML template breaks the whole page)', async () => {
 		const { INBOX_PAGE_HTML } = await import('../src/inbox-page');
