@@ -13611,7 +13611,12 @@ async function handleLineProxy(request, env, ctx, url) {
     return new Response(JSON.stringify({ message: 'method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
   }
   const linePath = url.pathname.slice('/line'.length); // /v2/bot/...
-  const target = `https://api.line.me${linePath}${url.search}`;
+  // ?src=<workflow> names the sender in the chat log; LINE never sees it.
+  const src = url.searchParams.get('src') || '';
+  const lineSearch = new URLSearchParams(url.search);
+  lineSearch.delete('src');
+  const qs = lineSearch.toString();
+  const target = `https://api.line.me${linePath}${qs ? `?${qs}` : ''}`;
   const headers = {};
   for (const h of LINE_PROXY_FORWARD_HEADERS) {
     const v = request.headers.get(h);
@@ -13634,12 +13639,12 @@ async function handleLineProxy(request, env, ctx, url) {
   }
 
   if (res.ok && linePath === '/v2/bot/message/push' && bodyText) {
-    ctx.waitUntil(logProxiedPush(env, request, bodyText, resText).catch((err) => console.error('line_proxy_log_failed', err)));
+    ctx.waitUntil(logProxiedPush(env, request, bodyText, resText, src).catch((err) => console.error('line_proxy_log_failed', err)));
   }
   return new Response(resText, { status: res.status, headers: out });
 }
 
-async function logProxiedPush(env, request, bodyText, resText) {
+async function logProxiedPush(env, request, bodyText, resText, src = '') {
   const auth = String(request.headers.get('authorization') || '');
   // Only this OA's pushes belong in its inbox.
   if (!env.LINE_ACCESS_TOKEN || auth.replace(/^Bearer\s+/i, '').trim() !== String(env.LINE_ACCESS_TOKEN).trim()) return;
@@ -13650,7 +13655,7 @@ async function logProxiedPush(env, request, bodyText, resText) {
   if (!to.startsWith('U') || !messages.length) return;
   let sent = [];
   try { sent = JSON.parse(resText)?.sentMessages || []; } catch (_) {}
-  const handler = String(request.headers.get('x-mm-handler') || 'line_proxy').slice(0, 60);
+  const handler = String(request.headers.get('x-mm-handler') || (src ? `n8n:${src}` : 'line_proxy')).slice(0, 60);
   const payload = {
     timestamp: new Date().toISOString(),
     direction: 'OUT',

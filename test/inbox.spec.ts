@@ -374,7 +374,7 @@ describe('booking cards pushed by Apps Script', () => {
 });
 
 describe('LINE pass-through for n8n / Apps Script pushes', () => {
-	const push = (body: any, token = 'test-line-token', extra: Record<string, string> = {}) => SELF.fetch('https://example.com/line/v2/bot/message/push', {
+	const push = (body: any, token = 'test-line-token', extra: Record<string, string> = {}, qs = '') => SELF.fetch(`https://example.com/line/v2/bot/message/push${qs}`, {
 		method: 'POST',
 		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...extra },
 		body: JSON.stringify(body)
@@ -396,7 +396,7 @@ describe('LINE pass-through for n8n / Apps Script pushes', () => {
 		try {
 			await recordInboxEvent(e, { timestamp: new Date(Date.now() - 60000).toISOString(), direction: 'IN', eventType: 'message', messageType: 'text', text: 'แอร์ไม่เย็นครับ ช่างมาได้ไหม', userId: U, sourceType: 'user', logId: 'px-in-1', handler: 'unhandled' });
 			const card = { type: 'template', altText: 'เลือกวัน', template: { type: 'confirm', text: 'ห้อง A310', actions: [{ type: 'datetimepicker', label: 'เลือกวัน–เวลา', data: 'act=checkin_pick', mode: 'datetime' }, { type: 'postback', label: 'ยกเลิก', data: 'x' }] } };
-			const res = await push({ to: U, messages: [card] }, 'test-line-token', { 'x-mm-handler': 'n8n:Reservation' });
+			const res = await push({ to: U, messages: [card] }, 'test-line-token', {}, '?src=Reservation');
 			expect(res.status).toBe(200);
 			expect(res.headers.get('x-line-request-id')).toBe('req-1');
 			expect((await res.json() as any).sentMessages[0].id).toBe('9901');
