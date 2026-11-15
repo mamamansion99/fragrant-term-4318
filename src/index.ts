@@ -207,6 +207,7 @@ const FRIDGE_CANCEL_VERB_RE =
 const FRIDGE_QUESTION_RE =
   /(ราคา|เท่าไหร่|คิดยังไง|คิดเงินยังไง|คิดตังยังไง|มี(?:ไหม|มั้ย|มั๊ย)|มีหรือเปล่า|พร้อมไหม|ว่างไหม|ว่างมั้ย)/i;
 const KMITL_TRAVEL_GUIDE_URL = 'https://mm-v2.pages.dev/kmitl-guide';
+const LEAD_ROOM_TALK_RE = /(ห้องว่าง|ห้องพัก|มัดจำ|ค่าเช่า|ค่าแรกเข้า|ประกัน|เข้าพัก|เข้าอยู่|สัตว์เลี้ยง|สถานศึกษา|สถานที่ทำงาน)/;
 
 const DEFAULT_FRIDGE_CANCEL_NOTIFY_ID = 'Ue90558b73d62863e2287ac32e69541a3';
 
@@ -11401,7 +11402,10 @@ async function quickKeywordReply(text, env, userId) {
     }
     return [{ type: 'text', text: ROOM_VISIT_REPLY_TEXT }];
   }
-  if (isKmitlTravelGuideIntent(normalized)) {
+  // "สถานศึกษา เจ้าคุณทหารลาดกระบัง … ราคา+มัดจำเท่าไหร่" is a lead answering the
+  // screening form and asking the room price, not a travel question (Weyanit
+  // 2026-11-15 got the KMITL route card). Room talk goes to the AI.
+  if (isKmitlTravelGuideIntent(normalized) && !LEAD_ROOM_TALK_RE.test(normalized)) {
     return resDetailByKey('RES_COMMUTE_KMITL');
   }
 
@@ -11462,6 +11466,12 @@ async function quickKeywordReply(text, env, userId) {
 
   const forgotKeyReply = buildForgotKeyHelpReply(normalized);
   if (forgotKeyReply) return forgotKeyReply;
+
+  // A lead asking about free rooms is answered by the AI (n8n MM_AI_Shadow): it
+  // knows the real earliest move-in date and sends the booking link once the
+  // lead passes screening. The canned form / "staff will check" answered
+  // Weyanit's "เดือนธันวามีห้องว่างไหมค่ะ" after she had passed (2026-11-15).
+  if (isAvailabilityQuestion(normalized) && await inboxContactType(env, userId) !== 'TENANT') return null;
 
   const isAvailabilityExcluded =
     AVAILABILITY_EXCLUDE_KEYWORDS.some((kw) => normalized.includes(kw)) ||
@@ -14356,6 +14366,7 @@ async function alertUrgentRepair(env, ev, textIn) {
 }
 
 export const __testables = {
+  isAvailabilityQuestion,
   buildCheckoutCalcPhotoPrompt,
   isFloodReliefDocsAsk,
   floodReliefDocsMessages,

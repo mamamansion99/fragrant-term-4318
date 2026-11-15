@@ -737,7 +737,9 @@ describe('Worker routes', () => {
 		expect(wifi.fastReply[0].text).toContain('WiFi');
 
 		for (const t of ['มีว่างไหมครับ', 'หอพักเต็มรึยังครับ', 'ยังมีก้องว่างไหมคะ', 'เต็มยังครับ', 'ห้องว่างตอนนี้มีอยู่มั้ยครับ']) {
-			expect(JSON.stringify((await kind(t)).fastReply), t).toContain('MAMA MANSION | สอบถามห้องพัก');
+			// Recognised as an availability ask, and a lead's ask is left to the AI.
+			expect(__testables.isAvailabilityQuestion(t), t).toBe(true);
+			expect((await kind(t)).fastReply, t).toBeNull();
 		}
 		for (const t of ['พี่ก้อยว่างวันไหนบ้างคะ', 'ว่างค่ะ', 'พรุ่งนี้ไม่ว่างค่ะ']) {
 			expect(JSON.stringify((await kind(t)).fastReply || ''), t).not.toContain('MAMA MANSION | สอบถามห้องพัก');
@@ -3068,11 +3070,17 @@ describe('Worker routes', () => {
 			'Utest'
 		) as Array<Record<string, unknown>>;
 
-		expect(messages).toHaveLength(2);
-		expect(messages[0].text).toContain('Standard (เฟอร์ครบ): 4,000 บ./ด.');
-		expect(messages[1].text).toContain('🏡 MAMA MANSION | สอบถามห้องพัก');
-		expect(messages[1].text).toContain('2. ตำแหน่งงาน:');
-		expect(messages[1].text).not.toContain(String(env.PREBOOK_URL));
+		// Leads' availability questions go to the AI (it knows the real free date).
+		expect(messages).toBeNull();
+	});
+
+	it('leaves a screening answer that names KMITL and asks the price to the AI', async () => {
+		const messages = await __testables.quickKeywordReply(
+			'สถานศึกษา เจ้าคุณทหารลาดกระบัง\nเข้าพัก1คน\nไม่มีสัตว์เลี้ยง\n-ต้องการสอบถามห้องว่างค่ะ\n-และราคา+มัดจำทั้งหมดเท่าไหร่ค่ะ',
+			env,
+			'Utest'
+		);
+		expect(messages).toBeNull();
 	});
 
 	it('sends the new rate sheet first from the ภาพ + เรทราคา button', () => {
