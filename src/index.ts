@@ -1222,7 +1222,10 @@ const FLOOD_SURVEY_POSTBACK_ACT = 'FSV';
 // A bare "แจ้งออก" used to open the tenant move-out form (GAS magic link). That
 // form is retired: tenants now tell staff in chat. The bare word is answered
 // here and never forwarded, so GAS cannot keep sending the old link.
-const MOVE_OUT_BARE_RE = /^\s*แจ้ง\s*ออก\s*$/;
+// 1:1 chats: the bare word is tagged `moveout_bare` and left to n8n
+// MM_MoveOut_Intent (via MM_LOG), which knows whether the sender is a current
+// tenant and answers with a pick-date card. Groups keep the fixed reply.
+const MOVE_OUT_BARE_RE = /^\s*(?:แจ้ง\s*(?:ย้าย\s*)?ออก|ย้าย\s*ออก)\s*(?:ค่ะ|คะ|ครับ|นะคะ|นะครับ)?\s*$/;
 const MOVE_OUT_BARE_REPLY = 'รับทราบค่ะ 🙏 พิมพ์วันที่จะย้ายออกไว้ในแชทนี้ได้เลย แอดมินจะติดต่อกลับค่ะ';
 const MOVE_OUT_NOTICE_RE = /^\s*แจ้ง\s*ออก\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*([\s\S]*)$/i;
 
@@ -1391,6 +1394,13 @@ function parseMoveOutNoticeCommand(text) {
 const DEFAULT_N8N_MOVEOUT_CALENDAR_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/moveout-calendar';
 const MOVEOUT_CALENDAR_ACT = 'MOVEOUT_DATE';
 const MOVEOUT_CALENDAR_RE = /^\s*move\s*-?\s*out\s*(?:ห้อง\s*)?([AB]\d{3,4})(?!\d)\s*$/i;
+// Tenant self-service move-out (n8n MM_MoveOut_Intent). The card comes from
+// n8n; its buttons post back act=MOVEOUT_TENANT&step=confirm|pick|cancel and
+// n8n checks the presser is the room's tenant, writes Leases/MoveOut_Notices/
+// calendar and answers with the messages to reply.
+const DEFAULT_N8N_MOVEOUT_TENANT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/moveout-tenant';
+const MOVEOUT_TENANT_ACT = 'MOVEOUT_TENANT';
+const MOVEOUT_TENANT_FAIL = '❗ระบบบันทึกการแจ้งย้ายออกไม่สำเร็จ รบกวนลองกดใหม่อีกครั้ง หรือพิมพ์วันที่จะย้ายออกไว้ในแชทนี้ เจ้าหน้าที่จะติดต่อกลับค่ะ';
 const MOVEOUT_CALENDAR_DENIED = 'คำสั่งนี้ใช้ได้เฉพาะเจ้าหน้าที่ค่ะ';
 const MOVEOUT_CALENDAR_FAIL = '❗ลงปฏิทินไม่สำเร็จ ลองกดเลือกวันใหม่อีกครั้งค่ะ';
 const THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -1470,6 +1480,30 @@ async function notifyN8nMoveOutCalendar(env, payload) {
     return data;
   } catch (err) {
     console.error('moveout_calendar_error', String(err));
+    return null;
+  }
+}
+
+async function notifyN8nMoveOutTenant(env, payload) {
+  const url = env.N8N_MOVEOUT_TENANT_URL || DEFAULT_N8N_MOVEOUT_TENANT_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(25000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !Array.isArray(data?.messages) || !data.messages.length) {
+      console.error('moveout_tenant_failed', res.status);
+      return null;
+    }
+    return data.messages.slice(0, 5);
+  } catch (err) {
+    console.error('moveout_tenant_error', String(err));
     return null;
   }
 }
@@ -6735,6 +6769,23 @@ const worker = {
           continue;
         }
 
+        if (String(data?.act || '').trim().toUpperCase() === MOVEOUT_TENANT_ACT) {
+          const chatIdMT = getChatId(ev);
+          const messages = await notifyN8nMoveOutTenant(env, {
+            userId: String(ev?.source?.userId || ''),
+            data,
+            params: ev?.postback?.params || {}
+          });
+          await replyOrPushMessages(
+            env,
+            replyToken,
+            chatIdMT,
+            messages || [{ type: 'text', text: MOVEOUT_TENANT_FAIL }],
+            'moveout_tenant_reply_failed'
+          );
+          continue;
+        }
+
         const leaveReason = parseLeaveReasonPostback(data);
         if (leaveReason) {
           const chatIdLR = getChatId(ev);
@@ -8124,6 +8175,10 @@ const worker = {
           }
 
           if (MOVE_OUT_BARE_RE.test(textIn.replace(/เเ/g, 'แ'))) {
+            if (ev?.source?.type === 'user') {
+              tagEventLog('moveout_bare');
+              continue;
+            }
             await replyOrPushText(env, replyToken, chatId, MOVE_OUT_BARE_REPLY, 'moveout_bare_reply_failed');
             continue;
           }

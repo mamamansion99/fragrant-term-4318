@@ -2087,6 +2087,10 @@ describe('Worker routes', () => {
 		expect(parse('ขอแจ้งออก A101')).toBe(null);
 		expect(__testables.classifyTextCommand('แจ้งออก A101 ย้ายงาน')?.kind).toBe('moveout_notice');
 		expect(__testables.classifyTextCommand('แจ้งออก')?.kind).toBe('moveout_notice');
+		for (const t of ['แจ้งย้ายออก', 'ย้ายออกค่ะ', 'แจ้ง ย้าย ออก ครับ']) {
+			expect(__testables.classifyTextCommand(t)?.kind, t).toBe('moveout_notice');
+		}
+		expect(__testables.classifyTextCommand('แจ้งย้ายออกสิ้นเดือนนี้ค่ะ')?.kind).not.toBe('moveout_notice');
 	});
 
 	it('parses the moveout calendar command and date picker postback', () => {
