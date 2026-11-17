@@ -298,6 +298,21 @@ describe('home-screen app and LINE login', () => {
 		expect(await poll(old)).toMatchObject({ ok: false, expired: true });
 	});
 
+	it('tells the maid web app who a staff token belongs to, and nothing for a bad token', async () => {
+		const token = await issueInboxToken(e, STAFF);
+		const me = await SELF.fetch(`https://example.com/maid/me?t=${encodeURIComponent(token)}`);
+		expect(me.headers.get('access-control-allow-origin')).toBe('*');
+		expect(await me.json()).toMatchObject({ ok: true, name: 'Ma', who: 'ma' });
+		const bad = await SELF.fetch('https://example.com/maid/me?t=nope');
+		expect(bad.status).toBe(401);
+	});
+
+	it('maid sign-in uses the inbox login and refuses a bad state the same way', async () => {
+		const res = await SELF.fetch('https://example.com/maid/auth/start?s=nope', { redirect: 'manual' });
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain('ลิงก์เข้าสู่ระบบไม่ถูกต้อง');
+	});
+
 	it('says LINE Login is not set up instead of sending staff to a broken LINE page', async () => {
 		const res = await SELF.fetch(`https://example.com/inbox/auth/start?s=${'c'.repeat(32)}`, { redirect: 'manual' });
 		expect(res.status).toBe(200);

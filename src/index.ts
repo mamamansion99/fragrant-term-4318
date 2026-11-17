@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
+import { handleInboxRequest, maidLoginStart, maidMe, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -5303,6 +5303,10 @@ const worker = {
       }
     }
 
+
+    // Maid web app: LINE sign-in through the Mama Inbox login and staff list.
+    if (request.method === 'GET' && url.pathname === '/maid/auth/start') return maidLoginStart(env, url);
+    if (request.method === 'GET' && url.pathname === '/maid/me') return maidMe(env, url);
 
     // Maid board: photos on ซ่อมบำรุง jobs. Kept in KV because the board's Apps Script has no Drive permission.
     if (request.method === 'POST' && url.pathname === '/maid/issue-photo') {

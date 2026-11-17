@@ -819,7 +819,7 @@ async function loginStart(env, url) {
 
 // LINE returns here with a code. The LINE user id in the verified ID token
 // has to be on the staff list, the same check as the "inbox" command.
-async function loginCallback(env, url) {
+async function loginCallback(env, url, request) {
   const state = url.searchParams.get('state') || '';
   const code = url.searchParams.get('code') || '';
   const row = STATE_RE.test(state)
@@ -853,11 +853,47 @@ async function loginCallback(env, url) {
   const token = await issueInboxToken(env, lineUserId);
   await env.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(state, token, name).run();
   await logAccess(env, { name }, 'login_line', '');
+  // Started from the maid web app (/maid/auth/start): hand the token back to it instead.
+  if (/(?:^|;\s*)mm_login_next=maid(?:;|$)/.test(request?.headers.get('cookie') || '')) {
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: `${MAID_HOME_URL}#t=${encodeURIComponent(token)}`,
+        'Set-Cookie': 'mm_login_next=; Path=/inbox/auth; Max-Age=0; Secure; HttpOnly; SameSite=Lax',
+        'cache-control': 'no-store'
+      }
+    });
+  }
   // Finished in the app itself: keep the token and go straight in. Finished in
   // Safari or LINE: the home-screen app picks the token up by polling. The
   // button is only a fallback for a browser that blocks the redirect.
   return htmlPage('Mama Inbox', `<p>✅ เข้าสู่ระบบแล้ว (${name})</p><p>กำลังเปิด Mama Inbox…</p><a href="/inbox">เปิด Mama Inbox</a>`,
     `try{localStorage.setItem('inboxToken',${JSON.stringify(token)});localStorage.removeItem('pendingLogin')}catch(e){}location.replace('/inbox');`);
+}
+
+/* ---------- the maid web app signs in with the same LINE login and staff list ----------
+   maid-webapp-umber.vercel.app/home/ sends people to /maid/auth/start?s=<state>; the usual
+   LINE login runs (callback stays /inbox/auth/callback, the URL registered with LINE) and a
+   short-lived cookie tells the callback to return to the maid app with the token in the
+   URL fragment. The app then asks /maid/me who that is. */
+const MAID_HOME_URL = 'https://maid-webapp-umber.vercel.app/home/';
+const MAID_PEOPLE = { Ma: 'ma', KP: 'kaopan', "P'Koy": 'koy', "P'Yu": 'yu' };
+
+export async function maidLoginStart(env, url) {
+  const res = await loginStart(env, url);
+  if (res.status !== 302) return res;
+  const headers = new Headers(res.headers);
+  headers.append('Set-Cookie', 'mm_login_next=maid; Path=/inbox/auth; Max-Age=600; Secure; HttpOnly; SameSite=Lax');
+  return new Response(null, { status: 302, headers });
+}
+
+/** GET /maid/me?t=<token> (no headers, so no CORS preflight) -> { ok, who, name } */
+export async function maidMe(env, url) {
+  const headers = { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' };
+  const token = url.searchParams.get('t') || '';
+  const staff = await staffFromRequest(env, new Request(url.toString(), { headers: { authorization: `Bearer ${token}` } }));
+  if (!staff) return new Response(JSON.stringify({ ok: false }), { status: 401, headers });
+  return new Response(JSON.stringify({ ok: true, who: MAID_PEOPLE[staff.name] || '', name: staff.name }), { headers });
 }
 
 async function loginPoll(env, url) {
@@ -878,7 +914,7 @@ export async function handleInboxRequest(request, env, url, deps) {
   if (request.method === 'GET' && path === '/inbox/icon-180.png') return pngResponse(INBOX_ICON_180);
   if (request.method === 'GET' && path === '/inbox/icon-512.png') return pngResponse(INBOX_ICON_512);
   if (request.method === 'GET' && path === '/inbox/auth/start') return loginStart(env, url);
-  if (request.method === 'GET' && path === '/inbox/auth/callback') return loginCallback(env, url);
+  if (request.method === 'GET' && path === '/inbox/auth/callback') return loginCallback(env, url, request);
   if (request.method === 'GET' && path === '/inbox/auth/poll') return loginPoll(env, url);
   if ((request.method === 'GET' || request.method === 'HEAD') && path.startsWith('/inbox/photo/')) return servePhoto(env, path);
   if (request.method === 'GET' && path === '/inbox/api/login-config') return json({ ok: true, lineLogin: lineLoginConfigured(env) });
