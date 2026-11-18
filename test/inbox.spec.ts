@@ -307,6 +307,19 @@ describe('home-screen app and LINE login', () => {
 		expect(bad.status).toBe(401);
 	});
 
+	it('maid app picks up a login LINE finished in another browser, once, with who it is', async () => {
+		const s = 'd'.repeat(32);
+		const poll = async () => (await SELF.fetch(`https://example.com/maid/auth/poll?s=${s}`));
+		await e.INBOX_DB.prepare('INSERT INTO auth_states (state, created_at) VALUES (?1, ?2)').bind(s, Date.now()).run();
+		const first = await poll();
+		expect(first.headers.get('access-control-allow-origin')).toBe('*');
+		expect(await first.json()).toMatchObject({ ok: false, pending: true });
+		const token = await issueInboxToken(e, STAFF);
+		await e.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(s, token, 'Ma').run();
+		expect(await (await poll()).json()).toMatchObject({ ok: true, token, who: 'ma' });
+		expect(await (await poll()).json()).toMatchObject({ ok: false, expired: true });
+	});
+
 	it('maid sign-in uses the inbox login and refuses a bad state the same way', async () => {
 		const res = await SELF.fetch('https://example.com/maid/auth/start?s=nope', { redirect: 'manual' });
 		expect(res.status).toBe(200);

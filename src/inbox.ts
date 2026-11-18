@@ -854,7 +854,11 @@ async function loginCallback(env, url, request) {
   await env.INBOX_DB.prepare('UPDATE auth_states SET token = ?2, staff = ?3 WHERE state = ?1').bind(state, token, name).run();
   await logAccess(env, { name }, 'login_line', '');
   // Started from the maid web app (/maid/auth/start): hand the token back to it instead.
-  if (/(?:^|;\s*)mm_login_next=maid(?:;|$)/.test(request?.headers.get('cookie') || '')) {
+  // Remembered by state in KV, not only by cookie: LINE often finishes the login in another
+  // browser (the LINE app, Safari) than the one that started it, which has no cookie.
+  const fromMaid = /(?:^|;\s*)mm_login_next=maid(?:;|$)/.test(request?.headers.get('cookie') || '')
+    || !!(await env.KV?.get(MAID_LOGIN_KEY + state).catch(() => null));
+  if (fromMaid) {
     return new Response(null, {
       status: 302,
       headers: {
@@ -878,13 +882,27 @@ async function loginCallback(env, url, request) {
    URL fragment. The app then asks /maid/me who that is. */
 const MAID_HOME_URL = 'https://maid-webapp-umber.vercel.app/home/';
 const MAID_PEOPLE = { Ma: 'ma', KP: 'kaopan', "P'Koy": 'koy', "P'Yu": 'yu' };
+const MAID_LOGIN_KEY = 'maid-login:';
 
 export async function maidLoginStart(env, url) {
   const res = await loginStart(env, url);
   if (res.status !== 302) return res;
+  await env.KV?.put(MAID_LOGIN_KEY + (url.searchParams.get('s') || ''), '1', { expirationTtl: 900 }).catch(() => null);
   const headers = new Headers(res.headers);
   headers.append('Set-Cookie', 'mm_login_next=maid; Path=/inbox/auth; Max-Age=600; Secure; HttpOnly; SameSite=Lax');
   return new Response(null, { status: 302, headers });
+}
+
+/** GET /maid/auth/poll?s=<state>: the app that started the login picks the token up here when
+ *  LINE finished it somewhere else (same rules as the inbox poll, plus CORS for the app). */
+export async function maidLoginPoll(env, url) {
+  const res = await loginPoll(env, url);
+  const data = await res.json();
+  if (data?.ok) data.who = MAID_PEOPLE[data.name] || '';
+  return new Response(JSON.stringify(data), {
+    status: res.status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'access-control-allow-origin': '*' }
+  });
 }
 
 /** GET /maid/me?t=<token> (no headers, so no CORS preflight) -> { ok, who, name } */
