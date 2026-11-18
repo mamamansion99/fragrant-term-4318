@@ -11378,6 +11378,36 @@ function buildForgotKeyHelpReply(text) {
 
 const ROOM_COMPOUND_TRAVEL_RE = /(ห่าง|ไกล|กี่\s*(?:กม|โล|กิโล)|สนามบิน|สุวรรณภูมิ|ดอนเมือง|แอร์พอร์ต|สจล|kmitl|มหาวิทยาลัย|มหาลัย|เดินทาง|รถเมล์|รถไฟฟ้า)/i;
 
+// ผู้เช่าไล่คำนวณค่าเช่าสัญญาใหม่เอง (ค่าห้อง + ส่วนกลาง + น้ำไฟ) → สรุปยอดให้ครบ
+// ค่าห้อง: ตัวเลขที่ผู้เช่าพิมพ์หลัง "ค่าห้อง/ค่าเช่า/เป็น" (ตกลงกับเจ้าหน้าที่มาแล้ว) ไม่มีก็ใช้ Rooms.baseRentTHB
+// ไม่มีทั้งสองอย่าง = null ให้เจ้าหน้าที่ตอบ · อัตราตรงกับ _Config_Renewal / ROOM_UTIL
+async function renewalFeeBreakdown(text, roomId) {
+  const COMMON = 200, ELEC = 8, WATER = 18, WATER_MIN = 50;
+  let rent = 0;
+  const m = String(text).match(/เป็น\s*([0-9]{1,2},?[0-9]{3})/) || String(text).match(/(?:ค่าห้อง|ค่าเช่า)\s*([0-9]{1,2},?[0-9]{3})/);
+  if (m) rent = Number(m[1].replace(',', ''));
+  if (!(rent >= 3500 && rent <= 6000) && roomId) {
+    try {
+      const res = await fetch('https://mm-v2.pages.dev/api/rooms');
+      const data = await res.json();
+      rent = Number((data?.rooms || []).find((r) => r.roomId === roomId)?.baseRentTHB) || 0;
+    } catch (err) {
+      console.error('renewal_fee_rooms_failed', String(err?.message || err));
+    }
+  }
+  if (!(rent >= 3500 && rent <= 6000)) return null;
+  const f = (n) => n.toLocaleString('en-US');
+  return [
+    `ค่าใช้จ่ายรายเดือนสัญญาใหม่${roomId ? ' ห้อง ' + roomId : ''} คิดดังนี้ค่ะ`,
+    `• ค่าห้อง ${f(rent)} บาท`,
+    `• ค่าส่วนกลาง ${COMMON} บาท`,
+    `→ รวมค่าห้อง+ส่วนกลาง ${f(rent + COMMON)} บาท/เดือน`,
+    `• ค่าไฟ ${ELEC} บาท/หน่วย`,
+    `• ค่าน้ำ ${WATER} บาท/หน่วย (ขั้นต่ำ ${WATER_MIN} บาท)`,
+    'ค่าน้ำ-ไฟคิดตามหน่วยที่ใช้จริง ทุกรายการอยู่ในบิลรายเดือนใบเดียวกันค่ะ'
+  ].join('\n');
+}
+
 async function quickKeywordReply(text, env, userId) {
   const normalized = (text || '').trim();
   if (!normalized) return null;
@@ -11592,7 +11622,11 @@ async function quickKeywordReply(text, env, userId) {
     // ผู้เช่าที่ยกตัวเลขมาคำนวณค่าเช่าสัญญาใหม่ (มีตัวเลข/หลายบรรทัด/ข้อความยาว) ไม่ได้ถามแค่ "มีค่าส่วนกลางไหม"
     // ตอบ 200 ตายตัวซ้ำไม่ตรงคำถาม (เคส B602 17 พ.ย.) → ปล่อยให้เจ้าหน้าที่ตอบใน inbox
     const isCalcTalk = /\d/.test(normalized) || /\n/.test(String(text || '')) || normalized.length > 30;
-    if (isCalcTalk && await inboxContactType(env, userId) === 'TENANT') return null;
+    if (isCalcTalk && await inboxContactType(env, userId) === 'TENANT') {
+      const info = await inboxContactInfo(env, userId);
+      const text = await renewalFeeBreakdown(normalized, String(info?.room_id || ''));
+      return text ? [{ type: 'text', text }] : null;
+    }
     return [{ type: 'text', text: 'ค่าส่วนกลาง 200 บาท/เดือนค่ะ' }];
   }
 
