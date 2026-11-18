@@ -11589,6 +11589,10 @@ async function quickKeywordReply(text, env, userId) {
     normalized.includes('ค่าส่วนกลางไหม') ||
     normalized.includes('ค่าส่วนกลางมั้ย');
   if (asksCommonFee) {
+    // ผู้เช่าที่ยกตัวเลขมาคำนวณค่าเช่าสัญญาใหม่ (มีตัวเลข/หลายบรรทัด/ข้อความยาว) ไม่ได้ถามแค่ "มีค่าส่วนกลางไหม"
+    // ตอบ 200 ตายตัวซ้ำไม่ตรงคำถาม (เคส B602 17 พ.ย.) → ปล่อยให้เจ้าหน้าที่ตอบใน inbox
+    const isCalcTalk = /\d/.test(normalized) || /\n/.test(String(text || '')) || normalized.length > 30;
+    if (isCalcTalk && await inboxContactType(env, userId) === 'TENANT') return null;
     return [{ type: 'text', text: 'ค่าส่วนกลาง 200 บาท/เดือนค่ะ' }];
   }
 
