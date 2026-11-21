@@ -7593,8 +7593,9 @@ const worker = {
           )
         );
 
-        // สลิปคืนประกัน: รูปถัดไปหลังกด 📎 ส่งสลิปคืนเงิน ต้องมาก่อน catch-all ของกลุ่มรายจ่าย
-        // ไม่งั้นสลิปไหลเข้า AI รายจ่ายแล้วลง P&L เป็นค่าใช้จ่าย
+        // สลิปคืนประกัน: รูปถัดไปหลังกด 📎 ส่งสลิปคืนเงิน → ปิดงานคืนประกัน (co-refund)
+        // และยังส่งเข้า AI รายจ่ายเหมือนเดิม: ที่ผ่านมาเงินคืนประกันลง Expense_Ledger เป็น OTHER/REFUND (เช่น EXP0325 A504)
+        // ถ้าตัดออก P&L จะเปลี่ยนเงียบ ๆ — ถ้าจะเลิกนับเป็นรายจ่าย ต้องตัดสินใจเรื่องบัญชีก่อน
         if (m.type === 'image' && isRefundChat(env, chatId) && messageUserId) {
           const refundWaitKey = buildRefundSlipWaitKey(chatId, messageUserId);
           const refundWait = await kvGet(env, refundWaitKey);
@@ -7616,6 +7617,20 @@ const worker = {
               actorName: await checkinStaffName(env, ev),
               receivedAt: new Date().toISOString()
             });
+            if (env.EXPENSE_GROUP_ID && chatId === env.EXPENSE_GROUP_ID && env.N8N_EXPENSE_WEBHOOK_URL) {
+              ctx.waitUntil(
+                notifyN8nExpense(env, {
+                  source: 'expense_group',
+                  intent: 'record_expense',
+                  type: 'image',
+                  text: '',
+                  imageMessageId: slipMessageId,
+                  userId: messageUserId,
+                  groupId: chatId,
+                  timestamp: new Date().toISOString()
+                }).catch(console.error)
+              );
+            }
             await replyOrPushText(
               env,
               replyToken,
