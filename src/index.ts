@@ -1969,6 +1969,63 @@ function buildStaffFormLinkMessage(roomId, label, url, staffName) {
 const CHECKOUT_SETTLE_MIN_AMOUNT = 1;
 const DEFAULT_N8N_CHECKOUT_SETTLE_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-settle';
 
+// คืนประกันจากกลุ่มรายจ่าย (n8n CheckOut_Refund j2F3hnhThiaugkLf, webhook co-refund)
+// การ์ดห้องละใบ: 📩 ส่งฟอร์มบัญชีให้ผู้เช่า · 📋 คัดลอกเลขบัญชี (clipboard ไม่ผ่าน worker) · 📎 ส่งสลิปคืนเงิน
+// ส่งสลิป = อนุมัติ + จ่ายในขั้นเดียว (เจ้าของสั่ง 2026-11-21) รูปถัดไปของคนกดไม่เข้า AI รายจ่าย
+const REFUND_SLIP_START_ACT = 'refund_slip_start';
+const REFUND_FORM_RESEND_ACT = 'refund_form_resend';
+const REFUND_SLIP_TTL_SECONDS = 20 * 60;
+const REFUND_EXPENSE_GROUP_ID = 'C2190a9a8cbde42b097a9d2fd0c1599bc';
+const REFUND_TEST_GROUP_ID = 'Ce27a96b5397dbdad51077d0ccc2c1d4c'; // กลุ่มส่วนตัว ใช้กับห้องทดสอบ A999
+const DEFAULT_N8N_CHECKOUT_REFUND_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/co-refund';
+const REFUND_FLOW_ID_RE = /^CO-[A-Z]\d{3,4}-[A-Z0-9-]{4,40}$/;
+
+function isRefundChat(env, chatId) {
+  const id = String(chatId || '');
+  return !!id && (id === (env.EXPENSE_GROUP_ID || REFUND_EXPENSE_GROUP_ID) || id === REFUND_TEST_GROUP_ID);
+}
+
+function buildRefundSlipWaitKey(groupId, userId) {
+  return `refund_slip_wait:${groupId}:${userId}`;
+}
+
+function refundRoomFromFlowId(flowId) {
+  return String(flowId || '').split('-')[1] || '';
+}
+
+function buildRefundSlipPrompt(roomId) {
+  return {
+    type: 'text',
+    text: `📎 ส่งรูปสลิปโอนคืนประกันห้อง ${roomId} มาได้เลยค่ะ\nรูปถัดไปของคุณจะบันทึกเป็นสลิปคืนประกัน (ไม่ลงรายจ่าย) และแจ้งผู้เช่าให้เอง`,
+    quickReply: {
+      items: [
+        { type: 'action', action: { type: 'cameraRoll', label: '🖼️ เลือกสลิปจากอัลบั้ม' } },
+        { type: 'action', action: { type: 'camera', label: '📷 ถ่ายรูป' } }
+      ]
+    }
+  };
+}
+
+async function notifyN8nCheckoutRefund(env, payload) {
+  const url = env.N8N_CHECKOUT_REFUND_URL || DEFAULT_N8N_CHECKOUT_REFUND_URL;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) console.error('checkout_refund_forward_non_200', res.status, payload?.intent || '');
+    return res.ok;
+  } catch (err) {
+    console.error('checkout_refund_forward_error', String(err));
+    return false;
+  }
+}
+
 // ถ่ายใบคำนวณ: ปุ่ม quick reply เปิดกล้อง/อัลบั้มทันที ไม่ต้องหาไอคอนกล้องเอง (ใช้ได้บนมือถือ)
 function buildCheckoutCalcPhotoPrompt(roomId) {
   return {
@@ -5893,6 +5950,39 @@ const worker = {
           continue;
         }
 
+        if (act === REFUND_SLIP_START_ACT || act === REFUND_FORM_RESEND_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const flowId = String(data.flow || '').trim().toUpperCase();
+          const roomId = refundRoomFromFlowId(flowId);
+          if (!isRefundChat(env, chatId) || !userId || !REFUND_FLOW_ID_RE.test(flowId)) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มรายจ่ายเท่านั้นค่ะ', 'refund_pb_wrong_chat_failed');
+            continue;
+          }
+          if (act === REFUND_SLIP_START_ACT) {
+            await kvPut(
+              env,
+              buildRefundSlipWaitKey(chatId, userId),
+              { flowId, roomId, ts: Date.now() },
+              REFUND_SLIP_TTL_SECONDS
+            );
+            await replyOrPushMessages(env, replyToken, chatId, [buildRefundSlipPrompt(roomId)], 'refund_slip_prompt_failed');
+            continue;
+          }
+          const formOk = await notifyN8nCheckoutRefund(env, {
+            intent: 'refund_form_resend',
+            flowId,
+            chatId,
+            actorLineUserId: userId,
+            actorName: await checkinStaffName(env, ev),
+            receivedAt: new Date().toISOString()
+          });
+          if (!formOk) {
+            await replyOrPushText(env, replyToken, chatId, `ระบบไม่ตอบสนอง ยังไม่ได้ส่งฟอร์มให้ห้อง ${roomId} กดใหม่อีกครั้งค่ะ`, 'refund_form_failed');
+          }
+          continue;
+        }
+
         if (
           act === CHECKIN_CALC_START_ACT ||
           act === CHECKIN_CASH_START_ACT ||
@@ -7502,6 +7592,42 @@ const worker = {
             (earlyCanonicalKind === 'key_forgot' && earlyCanonicalActiveFlow.phase === 'await_slip')
           )
         );
+
+        // สลิปคืนประกัน: รูปถัดไปหลังกด 📎 ส่งสลิปคืนเงิน ต้องมาก่อน catch-all ของกลุ่มรายจ่าย
+        // ไม่งั้นสลิปไหลเข้า AI รายจ่ายแล้วลง P&L เป็นค่าใช้จ่าย
+        if (m.type === 'image' && isRefundChat(env, chatId) && messageUserId) {
+          const refundWaitKey = buildRefundSlipWaitKey(chatId, messageUserId);
+          const refundWait = await kvGet(env, refundWaitKey);
+          if (
+            refundWait &&
+            REFUND_FLOW_ID_RE.test(String(refundWait.flowId || '')) &&
+            Date.now() - Number(refundWait.ts || 0) < REFUND_SLIP_TTL_SECONDS * 1000
+          ) {
+            await kvDel(env, refundWaitKey);
+            const slipMessageId = String(m.id || '');
+            const slipUrls = await signedLineImageUrls(env, slipMessageId);
+            const slipOk = await notifyN8nCheckoutRefund(env, {
+              intent: 'refund_slip',
+              flowId: String(refundWait.flowId),
+              chatId,
+              imageMessageId: slipMessageId,
+              ...slipUrls,
+              actorLineUserId: messageUserId,
+              actorName: await checkinStaffName(env, ev),
+              receivedAt: new Date().toISOString()
+            });
+            await replyOrPushText(
+              env,
+              replyToken,
+              chatId,
+              slipOk
+                ? `📎 รับสลิปคืนประกันห้อง ${refundWait.roomId} แล้ว กำลังบันทึก`
+                : `⚠️ ส่งสลิปห้อง ${refundWait.roomId} เข้าระบบไม่สำเร็จ กด 📎 ส่งสลิปคืนเงิน แล้วส่งรูปใหม่ค่ะ`,
+              'refund_slip_ack_failed'
+            );
+            continue;
+          }
+        }
 
         if (
           m.type === 'image' &&
