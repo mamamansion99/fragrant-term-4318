@@ -346,6 +346,10 @@ describe('Worker routes', () => {
 		expect(messages.length).toBeLessThanOrEqual(5);
 		expect(messages[0].text).toContain('สัญญาเช่า');
 		expect(messages[2].text).toContain('PDF');
+		const withFile = floodReliefDocsMessages({ room: 'A211', url: 'https://drive.google.com/file/d/abc/view', name: 'a211.pdf' });
+		expect(withFile[2].text).toContain('https://drive.google.com/file/d/abc/view');
+		expect(withFile[2].text).toContain('A211');
+		expect(withFile.map((m) => m.text).join('')).not.toContain('drive/folders');
 	});
 
 	it('does not start a booking for a blocked LINE user', async () => {

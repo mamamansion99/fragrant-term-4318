@@ -7781,8 +7781,10 @@ const worker = {
           // "ขอเอกสารเยียวยาน้ำท่วม" contains น้ำท่วม and used to get the emergency card.
           if (ev.source?.type === 'user' && isFloodReliefDocsAsk(textIn)) {
             tagEventLog('flood_relief_docs');
-            await replyOrPushMessages(env, replyToken, chatId, floodReliefDocsMessages(), 'flood_relief_reply_failed');
-            ctx.waitUntil(alertFloodReliefContract(env, userId, textIn).catch((err) => console.error('flood_relief_alert_failed', err)));
+            const contact = await inboxContactInfo(env, userId);
+            const contract = contact?.room_id ? await fetchFloodContractLink(env, contact.room_id) : null;
+            await replyOrPushMessages(env, replyToken, chatId, floodReliefDocsMessages(contract), 'flood_relief_reply_failed');
+            ctx.waitUntil(alertFloodReliefContract(env, userId, textIn, contact, contract).catch((err) => console.error('flood_relief_alert_failed', err)));
             continue;
           }
           const staffTaskCommand = canUseStaffTasks(env, ev, chatId, userId)
@@ -14607,23 +14609,59 @@ function isFloodReliefDocsAsk(text) {
 }
 
 // Wording and steps are the ones staff send in LINE OA (latest version 2026-11-08).
-function floodReliefDocsMessages() {
+function floodReliefDocsMessages(contract = null) {
   return [
     { type: 'text', text: 'ยื่นเอกสารน้ำท่วม เตรียมตามนี้ครับ\n1. สัญญาเช่า\n2. สำเนาบัตรประชาชนของลูกหอ\n3. รูปถ่ายน้ำท่วมประมาณ 2-3 รูป\n4. ปริ้นสลิปการจ่ายค่าเช่าย้อนหลังสัก 3 เดือน\n\nเตรียมไปเท่านี้เพียงพอครับ ไม่ต้องใช้บัตรประชาชนของเจ้าของหอ' },
     { type: 'text', text: 'ขั้นตอนการยื่น\n1. ลงทะเบียนในแอปทางลัดก่อนไปสำนักงานเขต\n2. ถึงสำนักงานเขตให้ไปเอาบัตรคิวก่อน\n3. เอาเอกสารมากรอกข้อมูล แล้วนั่งรอเรียกคิว\n\nวันอาทิตย์คนค่อนข้างเยอะ เคยรอตั้งแต่ 8 โมงครึ่งถึง 4 โมงเย็น ถ้าไปวันธรรมดาคนอาจจะน้อยกว่าครับ' },
-    { type: 'text', text: 'ไฟล์สัญญาเช่า เดี๋ยวเจ้าหน้าที่ส่งเป็น PDF ให้ในแชทนี้นะครับ' }
+    contract?.url
+      ? { type: 'text', text: `ไฟล์สัญญาเช่า ห้อง ${contract.room} (PDF)\n${contract.url}\n\nกดลิงก์แล้วดาวน์โหลดไปปริ้นได้เลยครับ` }
+      : { type: 'text', text: 'ไฟล์สัญญาเช่า เดี๋ยวเจ้าหน้าที่ส่งเป็น PDF ให้ในแชทนี้นะครับ' }
   ];
 }
 
-// The lease PDF has to be downloaded from Horganice by a person, so staff get a to-do.
-async function alertFloodReliefContract(env, userId, textIn) {
+// Staff saved each room's lease PDF (a211.pdf …) in one Drive folder. n8n MM_FloodContract
+// finds the asking tenant's own file and shares just that file; the folder link would
+// expose every tenant's contract.
+const DEFAULT_N8N_FLOOD_CONTRACT_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/flood-contract';
+
+async function fetchFloodContractLink(env, roomId) {
+  const room = String(roomId || '').trim().toUpperCase();
+  if (!/^[A-Z]\d{3}$/.test(room)) return null;
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(env.N8N_FLOOD_CONTRACT_URL || DEFAULT_N8N_FLOOD_CONTRACT_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ room }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || data?.ok !== true) {
+      console.error('flood_contract_lookup_failed', res.status);
+      return null;
+    }
+    if (!data.found || !/^https:\/\/drive\.google\.com\//.test(String(data.url || ''))) return null;
+    return { room, url: String(data.url), name: String(data.name || '') };
+  } catch (err) {
+    console.error('flood_contract_lookup_error', String(err));
+    return null;
+  }
+}
+
+// Found the room's file → staff only get a "sent" note. Not found → a person still has
+// to download the PDF from Horganice.
+async function alertFloodReliefContract(env, userId, textIn, contact = null, contract = null) {
   if (!userId) return;
   const dedupeKey = `flood_relief:alert:${userId}`;
   if (await kvGet(env, dedupeKey)) return;
   await kvPut(env, dedupeKey, { ts: Date.now() }, FLOOD_RELIEF_ALERT_DEDUPE_SECONDS);
-  const c = await inboxContactInfo(env, userId);
+  const c = contact || await inboxContactInfo(env, userId);
   const who = [c?.room_id ? `ห้อง ${c.room_id}` : 'ไม่ทราบห้อง', c?.tenant_name || c?.display_name || ''].filter(Boolean).join(' · ');
-  const text = `📄 ต้องโหลดสัญญาเช่าจาก Horganice ส่งให้ลูกหอ\n${who}\nขอเอกสารเยียวยาน้ำท่วม: "${String(textIn || '').slice(0, 120)}"\nบอทส่งรายการเอกสารให้แล้ว เหลือไฟล์ PDF สัญญา\nตอบแชท: https://fragrant-term-4318.mamamansion99.workers.dev/inbox#${userId}`;
+  const text = contract?.url
+    ? `✅ ส่งไฟล์สัญญาเช่าให้ลูกหอแล้ว (ยื่นเยียวยาน้ำท่วม)\n${who}\nไฟล์: ${contract.name || contract.room}`
+    : `📄 ต้องโหลดสัญญาเช่าจาก Horganice ส่งให้ลูกหอ\n${who}\nขอเอกสารเยียวยาน้ำท่วม: "${String(textIn || '').slice(0, 120)}"\nไม่พบไฟล์ของห้องนี้ในโฟลเดอร์สัญญาใน Drive\nตอบแชท: https://fragrant-term-4318.mamamansion99.workers.dev/inbox#${userId}`;
   await Promise.allSettled(getOwnerGroupIds(env).map((to) => safeLinePushText(env.LINE_ACCESS_TOKEN, to, text, 'flood_relief_alert_failed')));
 }
 
