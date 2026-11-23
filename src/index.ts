@@ -10918,7 +10918,7 @@ async function handleMaidDepositPayment(request, env) {
 // Maid board move-out form: info / pending / submit. The board is a static page, so the
 // n8n webhook secret stays here; the body is passed through and n8n validates it.
 const DEFAULT_N8N_MOVEOUT_STAFF_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/moveout-staff';
-const MAID_MOVEOUT_ACTIONS = new Set(['info', 'pending', 'submit']);
+const MAID_MOVEOUT_ACTIONS = new Set(['info', 'pending', 'submit', 'ready']);
 
 async function handleMaidMoveOut(request, env) {
   // Sent as text/plain from the browser so it needs no preflight; answer any origin.
