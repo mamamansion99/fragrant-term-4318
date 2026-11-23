@@ -22,7 +22,8 @@ const DEFAULT_STAFF = {
   Ue90558b73d62863e2287ac32e69541a3: 'Ma',
   U193cae8dd9197f7d4bd6ada8046fd98b: 'KP',
   U2855d93e108ccebbef7d1b55ec8827e5: "P'Koy",
-  U9293d43980e98649e20c8759a2c2d7f0: "P'Yu"
+  U9293d43980e98649e20c8759a2c2d7f0: "P'Yu",
+  Ua3e2f84505daa64ee21b8608e8857c33: 'Ma' // POCO (บัญชีเดียวกับ Ma)
 };
 
 // INBOX_STAFF="Uxxx:Name,Uyyy:Name" overrides the default list.
