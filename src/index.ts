@@ -5379,6 +5379,11 @@ const worker = {
       return handleMaidDepositPayment(request, env);
     }
 
+    // Maid board: a move-out date the tenant told a maid directly (n8n MM_MoveOut_Intent moveout-staff).
+    if (request.method === 'POST' && url.pathname === '/maid/moveout') {
+      return handleMaidMoveOut(request, env);
+    }
+
     // Custom callback for tenant ID change completion
     if (request.method === 'POST' && url.pathname === '/tenant-change-complete') {
       const secret = env.WORKER_SECRET || '';
@@ -10908,6 +10913,42 @@ async function handleMaidDepositPayment(request, env) {
     UNPAID: 'แจ้งผู้จัดการแล้วว่ายังไม่จ่าย'
   };
   return respond(200, { ok: true, message: messages[built.method] });
+}
+
+// Maid board move-out form: info / pending / submit. The board is a static page, so the
+// n8n webhook secret stays here; the body is passed through and n8n validates it.
+const DEFAULT_N8N_MOVEOUT_STAFF_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/moveout-staff';
+const MAID_MOVEOUT_ACTIONS = new Set(['info', 'pending', 'submit']);
+
+async function handleMaidMoveOut(request, env) {
+  // Sent as text/plain from the browser so it needs no preflight; answer any origin.
+  const respond = (status, data) => new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+  });
+  let body = {};
+  try { body = JSON.parse(await request.text()); } catch (_) { return respond(400, { ok: false, message: 'ข้อมูลผิดรูปแบบ' }); }
+  if (!MAID_MOVEOUT_ACTIONS.has(String(body?.action || ''))) return respond(400, { ok: false, message: 'ไม่รู้จักคำสั่งนี้' });
+  const headers = { 'Content-Type': 'application/json' };
+  const secret = n8nWebhookSecret(env);
+  if (secret) headers['x-mm-secret'] = secret;
+  try {
+    const res = await fetch(env.N8N_MOVEOUT_STAFF_URL || DEFAULT_N8N_MOVEOUT_STAFF_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(25000)
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || typeof data !== 'object') {
+      console.error('maid_moveout_failed', res.status);
+      return respond(502, { ok: false, message: 'ระบบไม่ตอบ ลองใหม่อีกครั้ง' });
+    }
+    return respond(200, data);
+  } catch (err) {
+    console.error('maid_moveout_error', String(err));
+    return respond(502, { ok: false, message: 'ระบบไม่ตอบ ลองใหม่อีกครั้ง' });
+  }
 }
 
 async function notifyN8nRenewalDeposit(env, payload) {
