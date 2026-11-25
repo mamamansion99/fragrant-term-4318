@@ -239,7 +239,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
     <button class="opt" id="endcancel" style="justify-content:center"><b>ยกเลิก</b></button>
   </div></div>
   <div class="sheet" id="photosheet" hidden><div class="pane">
-    <h3>ส่งรูปนี้ให้ลูกค้า</h3><p class="hint">ส่งแล้วแก้หรือลบไม่ได้</p>
+    <h3>ส่งรูปนี้ให้ลูกค้า</h3><p class="hint">ส่งแล้วแก้หรือลบไม่ได้ · Enter = ส่ง</p>
     <img id="photoprev" alt="รูปที่จะส่ง" style="display:block;max-width:100%;max-height:50vh;margin:0 auto 12px;border-radius:12px">
     <div class="acts"><button class="btn go" id="photosend">ส่งรูป</button><button class="btn" id="photocancel" style="margin-left:auto">ยกเลิก</button></div>
   </div></div>
@@ -764,8 +764,23 @@ function jpegOf(img, maxSide, quality) {
   return c.toDataURL('image/jpeg', quality);
 }
 $('photobtn').onclick = () => { if (current) $('photofile').click(); };
-$('photofile').addEventListener('change', async () => {
-  const f = $('photofile').files[0]; $('photofile').value = ''; if (!f) return;
+$('photofile').addEventListener('change', () => {
+  const f = $('photofile').files[0]; $('photofile').value = ''; if (f) openPhoto(f);
+});
+// A screenshot pasted (Cmd/Ctrl+V) anywhere in an open chat opens the same send sheet.
+document.addEventListener('paste', (e) => {
+  if (!current || !$('photosheet').hidden) return;
+  const item = [...((e.clipboardData && e.clipboardData.items) || [])].find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+  const f = item && item.getAsFile();
+  if (!f) return;
+  e.preventDefault(); openPhoto(f);
+});
+document.addEventListener('keydown', (e) => {
+  if ($('photosheet').hidden) return;
+  if (e.key === 'Enter') { e.preventDefault(); $('photosend').click(); }
+  else if (e.key === 'Escape') closePhoto();
+});
+async function openPhoto(f) {
   try {
     const img = await loadImage(f);
     let orig = jpegOf(img, 2048, 0.85);
@@ -775,7 +790,7 @@ $('photofile').addEventListener('change', async () => {
     photoData = { orig: orig.split(',')[1], preview: preview.split(',')[1] };
     $('photoprev').src = preview; $('photosheet').hidden = false;
   } catch (_) { toast('เปิดรูปนี้ไม่ได้ ลองรูปอื่น'); }
-});
+}
 function closePhoto() { $('photosheet').hidden = true; photoData = null; $('photoprev').removeAttribute('src'); }
 $('photocancel').onclick = closePhoto;
 $('photosheet').addEventListener('click', (e) => { if (e.target === $('photosheet')) closePhoto(); });
