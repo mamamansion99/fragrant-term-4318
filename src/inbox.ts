@@ -270,7 +270,14 @@ function json(data, status = 200) {
 }
 
 async function fillProfiles(env, rows) {
-  const missing = rows.filter((r) => !r.display_name && Date.now() - (r.profile_checked_at || 0) > 24 * 3600 * 1000).slice(0, 8);
+  // Retry a missing name or picture daily; refresh the rest weekly because
+  // LINE picture URLs change when a user updates their photo.
+  const DAY = 24 * 3600 * 1000;
+  const due = (r) => {
+    const age = Date.now() - (r.profile_checked_at || 0);
+    return !r.display_name || !r.picture_url ? age > DAY : age > 7 * DAY;
+  };
+  const missing = rows.filter(due).slice(0, 20);
   await Promise.all(missing.map(async (r) => {
     let name = '';
     let pic = '';
@@ -422,7 +429,7 @@ async function listMessages(env, url, deps) {
   const contact = await env.INBOX_DB.prepare('SELECT * FROM contacts WHERE user_id = ?1').bind(userId).first();
   return {
     contact: contact ? {
-      u: contact.user_id, name: contact.display_name || '', room: contact.room_id || '', tenant: contact.tenant_name || '',
+      u: contact.user_id, name: contact.display_name || '', pic: contact.picture_url || '', room: contact.room_id || '', tenant: contact.tenant_name || '',
       type: contact.contact_type || 'NON_TENANT',
       human: (contact.human_until || 0) > Date.now() ? contact.human_by || 'staff' : '',
       humanUntil: contact.human_until || 0,

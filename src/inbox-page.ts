@@ -54,6 +54,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .row{display:flex;gap:12px;padding:12px 16px;align-items:center;width:100%;text-align:left}
 .row:active{background:var(--raised)}
 .av{position:relative;width:48px;height:48px;border-radius:50%;flex:none;display:grid;place-items:center;font:600 17px var(--display);color:#fff;background-size:cover;background-position:center}
+.av .avp{position:absolute;inset:0;width:100%;height:100%;border-radius:50%;object-fit:cover}
 .av i{position:absolute;right:-1px;bottom:-1px;width:14px;height:14px;border-radius:50%;border:2.5px solid var(--surface)}
 .mid{flex:1;min-width:0}.top{display:flex;gap:8px;align-items:baseline}
 .nm{font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -291,12 +292,14 @@ function preview(c) {
   const body = stickerImg(c.text) ? 'ส่งสติกเกอร์' : c.text;
   return c.waiting ? '<b>' + esc(body) + '</b>' : esc(who + body);
 }
+// A dead picture URL removes itself so the initial underneath shows.
+function avImg(pic) { return pic ? '<img class="avp" src="' + esc(pic) + '" alt="" onerror="this.remove()">' : ''; }
 async function loadList() {
   const d = await api('/inbox/api/chats?f=' + filter + '&q=' + encodeURIComponent($('q').value));
   $('waitN').textContent = d.waitingCount; $('waitN').hidden = !d.waitingCount;
   $('list').innerHTML = d.chats.length ? d.chats.map((c) => {
     const st = state(c);
-    const av = c.pic ? '<div class="av" style="background:url(' + esc(JSON.stringify(c.pic)) + ') center/cover">' : '<div class="av" style="background:' + colorOf(c.u) + '">' + esc(initial(c.name, c.u));
+    const av = '<div class="av" style="background:' + colorOf(c.u) + '">' + esc(initial(c.name, c.u)) + avImg(c.pic);
     const closed = c.status && c.status !== 'open';
     return '<button class="row' + (closed ? ' dim' : '') + '" data-u="' + c.u + '">' + av + '<i style="background:' + DOT[st] + '"></i></div>' +
       '<div class="mid"><div class="top"><span class="nm">' + esc(c.name || 'ลูกค้า') + (c.room ? '<span class="chip c-room">' + esc(c.room) + '</span>' : '') + (closed ? '<span class="chip c-closed">' + esc(c.statusReason || 'ปิดแล้ว') + '</span>' : chipFor(c)) +
@@ -476,7 +479,7 @@ function renderThread(d) {
   d.messages.forEach((m) => { if (m.dir === 'OUT' && m.rich) collectActions(m.rich, labels); });
   const c = d.contact || { u: current, type: 'NON_TENANT' };
   if (quickFor !== current) { quickFor = current; setQuick(c.type !== 'TENANT'); }
-  const tav = $('tav'); tav.textContent = ''; tav.style.background = colorOf(current); tav.textContent = initial(c.name, current);
+  const tav = $('tav'); tav.textContent = ''; tav.style.background = colorOf(current); tav.innerHTML = esc(initial(c.name, current)) + avImg(c.pic);
   $('tname').textContent = (c.name || 'ลูกค้า') + (c.room ? ' · ' + c.room : '');
   $('tsub').textContent = c.type === 'TENANT' ? 'ผู้เช่า' + (c.tenant ? ' · ' + c.tenant : '') : 'ลูกค้าใหม่';
   const f = c.facts || {};
