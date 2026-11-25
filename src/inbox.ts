@@ -208,6 +208,27 @@ export async function screeningAskedRecently(env, userId, windowMs) {
   }
 }
 
+// Which booking link this customer was already sent (by the AI, the group-card
+// button or staff): 'prebook' = ฝากชื่อ LIFF, 'book' = bare mm-v2.pages.dev
+// (the /tour, /kmitl-guide etc. links do not count). Latest one wins; null = none.
+export async function bookingLinkSent(env, userId) {
+  const db = env?.INBOX_DB;
+  if (!db || !String(userId || '').startsWith('U')) return null;
+  try {
+    const row = await db.prepare(
+      `SELECT CASE WHEN instr(text, 'liff.line.me/2011657200-OBxvsBpn') THEN 'prebook' ELSE 'book' END AS kind
+         FROM messages WHERE user_id = ?1 AND direction = 'OUT'
+          AND (instr(text, 'liff.line.me/2011657200-OBxvsBpn')
+               OR (instr(text, 'mm-v2.pages.dev') AND NOT instr(text, 'pages.dev/')))
+        ORDER BY ts DESC LIMIT 1`
+    ).bind(userId).first();
+    return row?.kind || null;
+  } catch (err) {
+    console.error('booking_link_check_failed', { userId, error: String(err?.message || err) });
+    return null;
+  }
+}
+
 export async function payRentCommandInWindow(env, userId, windowMs) {
   const db = env?.INBOX_DB;
   if (!db || !String(userId || '').startsWith('U')) return null;

@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { handleInboxRequest, maidLoginStart, maidLoginPoll, maidMe, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
+import { handleInboxRequest, maidLoginStart, maidLoginPoll, maidMe, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, bookingLinkSent, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
 
 /* =========================
  * 0) Small utilities
@@ -11899,15 +11899,18 @@ async function quickKeywordReply(text, env, userId) {
   const bookingRegex = /จอง.*(ยังไง|อย่างไร|ทำไง|ทำอย่างไร)/i;
   const bookingInterest = normalized.includes('สนใจจอง') || (normalized.includes('สนใจ') && normalized.includes('จอง'));
   if (normalized.includes('วิธีจอง') || normalized.includes('อยากจอง') || bookingInterest || includesAny(lower, ['book', 'booking']) || bookingRegex.test(normalized)) {
-    // Asked already (by this template, the availability one or the AI): point back
-    // instead of sending the same question again.
-    const asked = await screeningAskedRecently(env, userId, 3 * 24 * 3600 * 1000);
+    // Sent a link already (AI / group-card button / staff) -> give that link again.
+    // Asked the screening but no link -> staff are still checking, never re-send the form.
+    const sent = await bookingLinkSent(env, userId);
+    if (sent) {
+      const link = sent === 'prebook' ? (env?.PREBOOK_URL || 'https://liff.line.me/2011657200-OBxvsBpn') : 'https://mm-v2.pages.dev';
+      return [{ type: 'text', text: `ลิงก์สำหรับจองครับ ${link}` }];
+    }
+    const asked = await screeningAskedRecently(env, userId, 30 * 24 * 3600 * 1000);
     return [
       {
         type: 'text',
-        text: asked
-          ? 'ได้เลยครับ แจ้งข้อมูลที่สอบถามไว้ด้านบนได้เลยนะครับ'
-          : SCREENING_FORM
+        text: asked ? 'เดี๋ยวเจ้าหน้าที่ตรวจสอบห้องว่างให้แล้วแจ้งกลับนะครับ' : SCREENING_FORM
       }
     ];
   }
