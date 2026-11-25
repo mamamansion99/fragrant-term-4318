@@ -5158,7 +5158,7 @@ const worker = {
       });
     }
 
-    if (url.pathname.startsWith(LINE_PROXY_PREFIX)) {
+    if (url.pathname.startsWith(LINE_PROXY_PREFIX) || url.pathname.startsWith(N8N_LINE_PROXY_PREFIX)) {
       return handleLineProxy(request, env, ctx, url);
     }
 
@@ -5442,6 +5442,7 @@ const worker = {
 
     const payload = JSON.parse(bodyText || '{}');
     const events = Array.isArray(payload.events) ? payload.events : [];
+    await rememberLineReplyTokens(env, events).catch((err) => console.error('line_reply_token_store_failed', err));
     const firstEvent = events[0];
     const replyToLine = createReplyToLine(env);
 
@@ -13830,14 +13831,43 @@ function flushEventLog(env, ctx, log) {
  * Optional header x-mm-handler names the sender in the chat log.
  * ----------------------------------------------------- */
 const LINE_PROXY_PREFIX = '/line/v2/bot/';
+const N8N_LINE_PROXY_PREFIX = '/line-proxy/v2/bot/';
+const LINE_REPLY_TOKEN_TTL_MS = 10 * 60 * 1000;
+
+async function rememberLineReplyTokens(env, events) {
+  const db = env.INBOX_DB;
+  if (!db) return;
+  const now = Date.now();
+  const tokens = events
+    .filter(({ replyToken, source }) => replyToken && source?.type === 'user' && source.userId?.startsWith('U'))
+    .map(({ replyToken, source }) => db.prepare(
+      'INSERT OR REPLACE INTO reply_tokens (token, user_id, ts) VALUES (?1, ?2, ?3)'
+    ).bind(replyToken, source.userId, now));
+  if (tokens.length) {
+    await db.batch([
+      db.prepare('DELETE FROM reply_tokens WHERE ts < ?1').bind(now - LINE_REPLY_TOKEN_TTL_MS),
+      ...tokens
+    ]);
+  }
+}
 const LINE_PROXY_FORWARD_HEADERS = ['authorization', 'content-type', 'x-line-retry-key'];
 const LINE_PROXY_RETURN_HEADERS = ['content-type', 'x-line-request-id', 'x-line-accepted-request-id', 'retry-after'];
 
 async function handleLineProxy(request, env, ctx, url) {
-  if (request.method !== 'POST' && request.method !== 'GET') {
+  const isN8n = url.pathname.startsWith(N8N_LINE_PROXY_PREFIX);
+  if (request.method !== 'POST' && (isN8n || request.method !== 'GET')) {
     return new Response(JSON.stringify({ message: 'method not allowed' }), { status: 405, headers: { 'content-type': 'application/json' } });
   }
-  const linePath = url.pathname.slice('/line'.length); // /v2/bot/...
+  const linePath = url.pathname.slice(isN8n ? '/line-proxy'.length : '/line'.length);
+  if (isN8n) {
+    if (!['/v2/bot/message/push', '/v2/bot/message/reply'].includes(linePath)) {
+      return Response.json({ message: 'not found' }, { status: 404 });
+    }
+    const token = request.headers.get('authorization')?.match(/^Bearer ([^\s]+)$/i)?.[1];
+    if (!env.LINE_ACCESS_TOKEN || token !== env.LINE_ACCESS_TOKEN) {
+      return Response.json({ message: 'unauthorized' }, { status: 401 });
+    }
+  }
   // ?src=<workflow> names the sender in the chat log; LINE never sees it.
   const src = url.searchParams.get('src') || '';
   const lineSearch = new URLSearchParams(url.search);
@@ -13849,26 +13879,60 @@ async function handleLineProxy(request, env, ctx, url) {
     const v = request.headers.get(h);
     if (v) headers[h] = v;
   }
-  const bodyText = request.method === 'POST' ? await request.text() : undefined;
+  const body = isN8n ? await request.arrayBuffer() : request.method === 'POST' ? await request.text() : undefined;
 
   let res;
   try {
-    res = await fetch(target, { method: request.method, headers, body: bodyText });
+    res = await fetch(target, { method: request.method, headers, body, redirect: isN8n ? 'manual' : 'follow' });
   } catch (err) {
     console.error('line_proxy_fetch_failed', err);
     return new Response(JSON.stringify({ message: 'line proxy could not reach LINE' }), { status: 502, headers: { 'content-type': 'application/json' } });
   }
-  const resText = await res.text();
   const out = new Headers();
   for (const h of LINE_PROXY_RETURN_HEADERS) {
     const v = res.headers.get(h);
     if (v) out.set(h, v);
   }
 
-  if (res.ok && linePath === '/v2/bot/message/push' && bodyText) {
-    ctx.waitUntil(logProxiedPush(env, request, bodyText, resText, src).catch((err) => console.error('line_proxy_log_failed', err)));
+  if (isN8n) {
+    if (res.ok && request.headers.get('x-inbox-skip') !== '1') {
+      ctx.waitUntil(logN8nLineMessage(env, linePath, body, res.clone())
+        .catch((err) => console.error('n8n_proxy_log_failed', err)));
+    }
+    return new Response(res.body, { status: res.status, headers: out });
+  }
+
+  const resText = await res.text();
+  if (res.ok && linePath === '/v2/bot/message/push' && body) {
+    ctx.waitUntil(logProxiedPush(env, request, body, resText, src)
+      .catch((err) => console.error('line_proxy_log_failed', err)));
   }
   return new Response(resText, { status: res.status, headers: out });
+}
+
+async function logN8nLineMessage(env, linePath, bytes, response) {
+  const db = env.INBOX_DB;
+  if (!db) return;
+  const body = JSON.parse(new TextDecoder().decode(bytes));
+  let userId = body.to;
+  if (linePath === '/v2/bot/message/reply') {
+    if (typeof body.replyToken !== 'string') return;
+    userId = await db.prepare('SELECT user_id FROM reply_tokens WHERE token = ?1 AND ts >= ?2')
+      .bind(body.replyToken, Date.now() - LINE_REPLY_TOKEN_TTL_MS).first('user_id');
+  }
+  if (typeof userId !== 'string' || !userId.startsWith('U') || !Array.isArray(body.messages) || !body.messages.length) return;
+  const sent = await sentMessagesOf(response);
+  if (!sent[0]?.id) return;
+
+  await recordInboxOutbound(env, {
+    timestamp: new Date().toISOString(),
+    userId,
+    sourceType: 'user',
+    messageType: body.messages.map((message) => message?.type || '').join(','),
+    text: summarizeOutboundMessages(body.messages),
+    logId: `n8n:${sent[0].id}`,
+    handler: 'n8n_proxy'
+  }, 'bot', body.messages, sent, '', { countsAsReply: false });
 }
 
 async function logProxiedPush(env, request, bodyText, resText, src = '') {

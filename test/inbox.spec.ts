@@ -1,6 +1,7 @@
-import { env, fetchMock, SELF } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { createExecutionContext, env, fetchMock, SELF, waitOnExecutionContext } from 'cloudflare:test';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { issueInboxToken, payRentCommandInWindow, recordInboxEvent, recordInboxOutbound } from '../src/inbox';
+import worker from "../src";
 
 const STAFF = 'Ue90558b73d62863e2287ac32e69541a3';
 const CUSTOMER = 'Uinboxtest000000000000000000000001';
@@ -469,5 +470,117 @@ describe('inbox page script', () => {
 		const scripts = [...INBOX_PAGE_HTML.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 		expect(scripts.length).toBeGreaterThan(0);
 		for (const s of scripts) expect(() => new Function(s)).not.toThrow();
+	});
+});
+
+describe('n8n LINE proxy', () => {
+	const card = {
+		type: 'flex', altText: 'เตือนค่าเช่า',
+		contents: { type: 'bubble', body: { type: 'box', layout: 'vertical', contents: [{ type: 'text', text: 'เตือนค่าเช่า' }] } }
+	};
+	const successfulBody = '{"sentMessages":[{"id":"999","quoteToken":"line-quote"}]}';
+
+	beforeEach(() => {
+		fetchMock.activate();
+		fetchMock.disableNetConnect();
+	});
+	afterEach(() => {
+		fetchMock.deactivate();
+	});
+
+	async function proxy(kind: 'push' | 'reply', body: string, overrides = {}) {
+		const ctx = createExecutionContext();
+		const request = new Request('https://example.com/line-proxy/v2/bot/message/' + kind, {
+			method: 'POST',
+			headers: { authorization: 'Bearer test-line-token', 'content-type': 'application/json', ...overrides },
+			body
+		});
+		const response = await worker.fetch(request, e, ctx);
+		await waitOnExecutionContext(ctx);
+		return response;
+	}
+
+	function mockLine(kind: 'push' | 'reply', body: string, headers: Record<string, string> = {}) {
+		return fetchMock.get('https://api.line.me').intercept({
+			path: '/v2/bot/message/' + kind, method: 'POST', body,
+			headers: { authorization: 'Bearer test-line-token', 'content-type': 'application/json', ...headers }
+		});
+	}
+
+	async function mirrored() {
+		return (await e.INBOX_DB.prepare("SELECT * FROM messages WHERE handler = 'n8n_proxy'").all()).results;
+	}
+
+	it('keeps the LINE body and retry key, mirrors the card once, and leaves the chat waiting', async () => {
+		await recordInboxEvent(e, inbound('จ่ายเมื่อไหร่คะ', 'waiting-in', new Date().toISOString()));
+		const retryKey = 'c9832dd6-2aed-424e-854d-ef119ef53f31';
+		const body = '  ' + JSON.stringify({ to: CUSTOMER, messages: [card] }) + '\n';
+		mockLine('push', body, { 'x-line-retry-key': retryKey })
+			.reply(200, successfulBody, { headers: { 'x-line-request-id': 'line-request' } }).times(2);
+		for (let i = 0; i < 2; i++) {
+			const response = await proxy('push', body, { 'x-line-retry-key': retryKey });
+			expect(response.status).toBe(200);
+			expect(response.headers.get('x-line-request-id')).toBe('line-request');
+			expect(await response.text()).toBe(successfulBody);
+		}
+		expect(await mirrored()).toMatchObject([{ user_id: CUSTOMER, author: 'bot', log_id: 'n8n:999', kind: 'flex', quote_token: 'line-quote' }]);
+		const token = await issueInboxToken(e, STAFF);
+		const thread = (await get('/inbox/api/messages?u=' + CUSTOMER, token)).body.messages;
+		expect(thread.at(-1).rich).toEqual([card]);
+		const waiting = (await get('/inbox/api/chats?f=waiting', token)).body.chats;
+		expect(waiting.some((chat: any) => chat.u === CUSTOMER)).toBe(true);
+	});
+
+	it.each(['Cgroup', 'Rroom', CUSTOMER])('sends without mirroring for %s when outside 1:1 or skipped', async (to) => {
+		const body = JSON.stringify({ to, messages: [card] });
+		mockLine('push', body).reply(200, successfulBody);
+		const response = await proxy('push', body, to === CUSTOMER ? { 'x-inbox-skip': '1' } : {});
+		expect(response.status).toBe(200);
+		expect(await mirrored()).toEqual([]);
+	});
+
+	it('rejects invalid bearer tokens before forwarding', async () => {
+		const response = await proxy('push', '{}', { authorization: 'Bearer wrong' });
+		expect(response.status).toBe(401);
+		expect(await mirrored()).toEqual([]);
+	});
+
+	it('passes a LINE failure through and leaves the inbox alone', async () => {
+		const body = JSON.stringify({ to: CUSTOMER, messages: [card] });
+		const failure = '{ "message": "LINE rejected the message" }';
+		mockLine('push', body).reply(400, failure);
+		const response = await proxy('push', body);
+		expect(response.status).toBe(400);
+		expect(await response.text()).toBe(failure);
+		expect(await mirrored()).toEqual([]);
+	});
+
+	it('maps signed LINE webhook reply tokens only for 1:1 events and expires old tokens', async () => {
+		await e.INBOX_DB.prepare('INSERT INTO reply_tokens VALUES (?1, ?2, ?3)').bind('old', CUSTOMER, Date.now() - 660000).run();
+		const events = { events: [
+			{ type: 'test', replyToken: 'personal', source: { type: 'user', userId: CUSTOMER } },
+			{ type: 'test', replyToken: 'group', source: { type: 'group', userId: CUSTOMER, groupId: 'Cgroup' } }
+		] };
+		const encoded = new TextEncoder();
+		const secret = 'proxy-webhook-test';
+		const key = await crypto.subtle.importKey('raw', encoded.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+		const raw = JSON.stringify(events);
+		const signature = await crypto.subtle.sign('HMAC', key, encoded.encode(raw));
+		const ctx = createExecutionContext();
+		const delivered = await worker.fetch(new Request('https://example.com/webhook', {
+			method: 'POST', body: raw, headers: { 'x-line-signature': btoa(String.fromCharCode(...new Uint8Array(signature))) }
+		}), { ...e, LINE_CHANNEL_SECRET: secret }, ctx);
+		expect(delivered.status).toBe(200);
+		await waitOnExecutionContext(ctx);
+		const mappings = (await e.INBOX_DB.prepare('SELECT token, user_id FROM reply_tokens').all()).results;
+		expect(mappings).toEqual([{ token: 'personal', user_id: CUSTOMER }]);
+
+		for (const replyToken of ['old', 'group', 'personal']) {
+			const body = JSON.stringify({ replyToken, messages: [card] });
+			mockLine('reply', body).reply(200, successfulBody);
+			expect((await proxy('reply', body)).status).toBe(200);
+			expect((await mirrored()).length).toBe(replyToken === 'personal' ? 1 : 0);
+		}
+		expect(await mirrored()).toMatchObject([{ user_id: CUSTOMER, log_id: 'n8n:999' }]);
 	});
 });
