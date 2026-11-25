@@ -436,13 +436,31 @@ function collectActions(node, out) {
   for (const k in node) if (node[k] && typeof node[k] === 'object') collectActions(node[k], out);
 }
 const ACT_LABEL = { slip_yes: 'ยืนยันรหัสจอง', send_slip: 'ส่งสลิป', send_id: 'ส่งบัตรประชาชน', id_yes: 'บัตรถูกต้อง', id_no: 'ขอส่งบัตรใหม่',
-  id_retry: 'ขอส่งบัตรใหม่', checkin_pick: 'เลือกวันเข้าอยู่' };
+  id_retry: 'ขอส่งบัตรใหม่', checkin_pick: 'เลือกวันเข้าอยู่', slip_no: 'รหัสจองไม่ถูก', confirm: 'ยืนยันการจอง',
+  renewal_reply: 'ตอบเรื่องต่อสัญญา', RENEWAL_ACCEPT_TERMS: 'ยอมรับเงื่อนไขต่อสัญญา', RENEWAL_ASK_MORE: 'ขอถามเพิ่มเรื่องต่อสัญญา',
+  RENEWAL_SIGN_SLOT_CONFIRM: 'ยืนยันวันนัดเซ็นสัญญา', RENEWAL_SIGN_SLOT_CHANGE: 'ขอเปลี่ยนวันนัดเซ็นสัญญา',
+  RENEWAL_ATT_CONFIRM: 'ยืนยันว่าจะมาเซ็นสัญญา', RENEWAL_DEPOSIT_PAY: 'จ่ายค่าประกันส่วนต่าง',
+  LEAVE_PICK_CHECKOUT: 'เลือกวันย้ายออก', LEAVE_REASON: 'เหตุผลย้ายออก', MOVEOUT_TENANT: 'เลือกวันย้ายออก',
+  LATE_REASON: 'เหตุผลจ่ายค่าเช่าช้า', BILL_PAY_CLICK: 'กดจ่ายบิล', PARK_PAY: 'จ่ายค่าที่จอดรถ', CHECKOUT2: 'จ่ายค่าเช็กเอาต์',
+  REPAIR_START: 'แจ้งซ่อม', REPAIR_DISMISS: 'ไม่แจ้งซ่อม', REPAIR_CAT: 'เลือกประเภทงานซ่อม', REPAIR_SUBMIT: 'ส่งเรื่องแจ้งซ่อม',
+  ROOM_RENT_IMG: 'ดูรูปราคาห้อง', rent_cancel: 'ยกเลิก', parking_rent_request: 'ขอเช่าที่จอดรถ', fridge_rent_request: 'ขอเช่าตู้เย็น',
+  RES_COMMUTE_AIRPORT: 'เดินทางไปสนามบิน', RES_COMMUTE_KMITL: 'เดินทางไป สจล.', RES_CONTACT_BIKE: 'ติดต่อวินมอเตอร์ไซค์' };
+// Second part of the label from the choice inside the button data.
+const ACT_CHOICE = { CONTINUE: 'ต่อสัญญา', LEAVE: 'ย้ายออก', UNDECIDED: 'ยังไม่แน่ใจ',
+  JOB: 'งาน/ที่เรียน', BOUGHT_HOME: 'ซื้อบ้าน', FAMILY: 'ครอบครัว', RENT: 'ค่าเช่า', ROOM_TYPE: 'อยากได้ห้องแบบอื่น',
+  ROOM_ISSUE: 'ปัญหาในห้อง', NOISE_SAFETY: 'เสียง/ความปลอดภัย', PARKING_COMMUTE: 'ที่จอดรถ/การเดินทาง', SERVICE: 'บริการ',
+  OTHER: 'อื่น ๆ', SKIP: 'ไม่ตอบ', INCOME: 'รายได้ยังไม่เข้า', TODAY: 'ลืม จะโอนวันนี้', PAID_APP: 'จ่ายในแอปแล้ว', ASK: 'ขอถามก่อน',
+  TRANSFER: 'โอน', transfer: 'โอน', CASH: 'เงินสด', FIX_AC: 'แอร์', FIX_BATH: 'ห้องน้ำ' };
 function postbackText(text, labels) {
   const raw = String(text || ''), sp = raw.indexOf(' {');
   const data = sp > 0 ? raw.slice(0, sp) : raw;
   let params = {}; try { params = sp > 0 ? JSON.parse(raw.slice(sp + 1)) : {}; } catch (_) {}
-  const act = (/(?:^|&)act=([^&]+)/.exec(data) || [])[1] || '';
-  let label = labels[data] || ACT_LABEL[act] || (act ? act.replace(/_/g, ' ') : data.slice(0, 40));
+  const q = {};
+  if (data.charAt(0) === '{') { try { Object.assign(q, JSON.parse(data)); } catch (_) {} }
+  else data.split('&').forEach((kv) => { const i = kv.indexOf('='); if (i > 0) { try { q[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (_) { q[kv.slice(0, i)] = kv.slice(i + 1); } } });
+  const act = String(q.act || q.action || '');
+  const choice = ACT_CHOICE[q.answer || q.r || q.method || q.paymentMethod || q.c] || '';
+  let label = labels[data] || ((ACT_LABEL[act] || (act ? act.replace(/_/g, ' ') : data.slice(0, 40))) + (choice ? ': ' + choice : ''));
   const when = params.datetime || params.date || params.time;
   if (when) {
     const dt = new Date(params.datetime || params.date);
