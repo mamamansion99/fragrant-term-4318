@@ -1038,6 +1038,7 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activ
   if (env.CHECKIN_WEB && roomId === 'A999' && chatId === PRACTICE_TENANT) {
     const result = await checkinCall(env, 'start', {
       receivedAt: new Date(event.timestamp || Date.now()).toISOString(),
+      restart: parseCheckinRestartCommand(text) === 'A999',
       notice: 'วันเข้าอยู่ 19 ธ.ค. 69\nวันเริ่มคิดค่าเช่า 15 ธ.ค. 69\nคิดค่าเช่า 15–31 ธ.ค. รวม 17 วัน (ข้อมูลห้องฝึก)',
     });
     const message = result.ok ? 'ห้องฝึก A999 · กรุณารอเจ้าหน้าที่ทำใบคำนวณก่อนชำระเงินค่ะ' : 'เปิดเช็กอินไม่สำเร็จ กรุณาลองอีกครั้งค่ะ';

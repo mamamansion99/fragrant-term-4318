@@ -164,7 +164,9 @@ export class CheckinWeb {
     if (action === 'start') {
       const old = currentId && await state.get<Round>('round:' + currentId);
       if (old && old.startedAt === body.receivedAt) return response({ ok: true });
-      if (old && !['done', 'starting'].includes(old.phase) && Date.now() - Date.parse(old.startedAt) < 8 * 3600_000) {
+      const restartable = old && ['bill', 'method', 'transfer', 'review'].includes(old.phase);
+      if (old && !['done', 'starting'].includes(old.phase) && !(body.restart === true && restartable) &&
+          (!restartable || Date.now() - Date.parse(old.startedAt) < 8 * 3600_000)) {
         await this.pushCard(old);
         return response({ ok: true });
       }
