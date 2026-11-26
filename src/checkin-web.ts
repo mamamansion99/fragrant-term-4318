@@ -32,7 +32,6 @@ interface CheckinEnv {
   LINE_ACCESS_TOKEN: string;
   N8N_CHECKIN_FLOW_URL?: string;
   N8N_CHECKINFLOW_URL?: string;
-  CHECKIN_WEB_PILOT?: string;
 }
 
 function response(body: unknown, status = 200) {

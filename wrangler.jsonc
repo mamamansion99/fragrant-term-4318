@@ -14,7 +14,6 @@
     }
   },
   "vars": {
-    "CHECKIN_WEB_PILOT": "A999",
     "ALLOWED_ORIGIN": "https://mamamansion-ar2.pages.dev",
     "GITHUB_REPO": "mamamansion99/fragrant-term-4318",
     "GITHUB_BRANCH": "main",

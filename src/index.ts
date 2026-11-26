@@ -1035,7 +1035,7 @@ async function clearUserWorkflowStatesForCheckin(env, event) {
 async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activeFlowExpected = null) {
   const userId = String(event?.source?.userId || '').trim();
   const chatId = getChatId(event);
-  if (env.CHECKIN_WEB_PILOT === 'A999' && roomId === 'A999' && chatId === PRACTICE_TENANT) {
+  if (env.CHECKIN_WEB && roomId === 'A999' && chatId === PRACTICE_TENANT) {
     const result = await checkinCall(env, 'start', {
       receivedAt: new Date(event.timestamp || Date.now()).toISOString(),
       notice: 'วันเข้าอยู่ 19 ธ.ค. 69\nวันเริ่มคิดค่าเช่า 15 ธ.ค. 69\nคิดค่าเช่า 15–31 ธ.ค. รวม 17 วัน (ข้อมูลห้องฝึก)',
@@ -9723,7 +9723,7 @@ const worker = {
             continue;
           }
 
-          if (chatId === PRACTICE_TENANT && env.CHECKIN_WEB_PILOT === 'A999') {
+          if (chatId === PRACTICE_TENANT && env.CHECKIN_WEB) {
             const imageMessageId = String(ev?.message?.id || '');
             const result = await checkinCall(env, 'slip', {
               event: ev,
