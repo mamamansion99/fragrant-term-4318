@@ -4265,20 +4265,10 @@ describe('การ์ดเช็คอินในกลุ่มเจ้า�
 		}
 	});
 
-	it('carries the room on every button, including extra key rental', () => {
+	it('carries the room on both buttons', () => {
 		const card = buildCheckinStaffStartCard('A505', '10:31');
 		const data = card.contents.footer.contents.map((b) => b.action.data);
-		expect(data).toEqual(['act=checkin_calc_start&room=A505', 'act=checkin_cash_start&room=A505', 'act=checkin_key_start&room=A505']);
-	});
-
-	it('offers key, keycard and set when staff press the key button', () => {
-		const picker = __testables.buildCheckinKeyRentPicker('B103');
-		const data = picker.contents.footer.contents.map((b) => b.action.data);
-		expect(data).toEqual([
-			'act=checkin_key_rent&room=B103&mode=KEY',
-			'act=checkin_key_rent&room=B103&mode=KEYCARD',
-			'act=checkin_key_rent&room=B103&mode=SET'
-		]);
+		expect(data).toEqual(['act=checkin_calc_start&room=A505', 'act=checkin_cash_start&room=A505']);
 	});
 
 	it('puts the one-time nonce on the confirm and cancel buttons', () => {
@@ -4350,7 +4340,7 @@ describe('signed tenant check-in with a later move-in date', () => {
 			expect(staffText).toContain('เริ่มคิดค่าเช่า 15 ธ.ค. 2569');
 			expect(staffText).toContain('31 ธ.ค. 2569 รวม 17 วัน');
 			expect(card.contents.footer.contents.map((button: { action: { data: string } }) => button.action.data)).toEqual([
-				'act=checkin_calc_start&room=B111', 'act=checkin_cash_start&room=B111', 'act=checkin_key_start&room=B111'
+				'act=checkin_calc_start&room=B111', 'act=checkin_cash_start&room=B111'
 			]);
 		} finally {
 			releaseLookup();
@@ -4360,59 +4350,5 @@ describe('signed tenant check-in with a later move-in date', () => {
 				fetchMock.mockRestore();
 			}
 		}
-	});
-});
-
-describe('เช่ากุญแจเพิ่มตอนเช็คอิน', () => {
-	const keyUrl = 'https://example.com/rent-key-checkin';
-	const staffGroup = 'C355d5b5c8a01d88bf61296b4e10f1575';
-	async function pressKeyButton(data: string, groupId = staffGroup) {
-		const mockEnv = { ...env, LINE_ACCESS_TOKEN: 'line-token', LINE_CHANNEL_SECRET: 'line-secret', N8N_CHECKIN_KEY_RENT_URL: keyUrl };
-		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => Response.json({ ok: true }));
-		const ctx = createExecutionContext();
-		try {
-			const request = await buildSignedLineRequest([{
-				type: 'postback',
-				replyToken: 'key-reply-' + data,
-				webhookEventId: 'key-evt-' + data + groupId,
-				timestamp: Date.now(),
-				source: { type: 'group', groupId, userId: 'U9293d43980e98649e20c8759a2c2d7f0' },
-				postback: { data }
-			}]);
-			expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
-			await waitOnExecutionContext(ctx);
-			const bodiesFor = (url: string) => fetchMock.mock.calls
-				.filter(([input]) => String(input) === url)
-				.map(([, init]) => JSON.parse(String(init?.body)));
-			return { keyBodies: bodiesFor(keyUrl), replies: bodiesFor('https://api.line.me/v2/bot/message/reply') };
-		} finally {
-			fetchMock.mockRestore();
-		}
-	}
-
-	it('sends the chosen set to n8n with prices and the staff name', async () => {
-		const { keyBodies } = await pressKeyButton('act=checkin_key_rent&room=b103&mode=SET');
-		expect(keyBodies).toEqual([expect.objectContaining({
-			roomId: 'B103',
-			mode: 'SET',
-			amount: 600,
-			groupId: staffGroup,
-			actorName: 'พี่ยุ',
-			items: [
-				{ assetType: 'KEYCARD', qty: 1, unitPrice: 100, amount: 100 },
-				{ assetType: 'KEY', qty: 1, unitPrice: 500, amount: 500 }
-			]
-		})]);
-	});
-
-	it('shows the picker without recording anything', async () => {
-		const { keyBodies, replies } = await pressKeyButton('act=checkin_key_start&room=B103');
-		expect(keyBodies).toHaveLength(0);
-		expect(replies[0].messages[0].altText).toBe('เช่ากุญแจเพิ่ม ห้อง B103');
-	});
-
-	it('ignores the button outside the staff group', async () => {
-		const { keyBodies } = await pressKeyButton('act=checkin_key_rent&room=B103&mode=KEY', 'Cother');
-		expect(keyBodies).toHaveLength(0);
 	});
 });
