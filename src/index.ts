@@ -2188,6 +2188,12 @@ async function readCheckinRentNotice(env, roomId, lineUserId) {
   }
 }
 
+// ห้องฝึกของแม่บ้าน: n8n ข้ามบัญชีรายรับ/เงินสด/สัญญา และส่งข้อความถึงผู้เช่าเข้ากลุ่ม "ผู้เช่าห้อง A999"
+const PRACTICE_ROOM_ID = 'A999';
+function isPracticeRoom(roomId) {
+  return String(roomId || '').trim().toUpperCase() === PRACTICE_ROOM_ID;
+}
+
 function buildCheckinStaffStartCard(roomId, startedAtText, rentNotice = '') {
   const button = (label, act, style, color = undefined) => ({
     type: 'button',
@@ -2212,6 +2218,9 @@ function buildCheckinStaffStartCard(roomId, startedAtText, rentNotice = '') {
         layout: 'vertical',
         spacing: 'sm',
         contents: [
+          ...(isPracticeRoom(roomId)
+            ? [{ type: 'text', text: '🧪 ห้องฝึก — ไม่ลงบัญชี ไม่สร้างสัญญา', size: 'xs', weight: 'bold', color: '#7C3AED', wrap: true }]
+            : []),
           { type: 'text', text: `🧾 เริ่มเช็คอิน ห้อง ${roomId}`, weight: 'bold', size: 'md' },
           { type: 'text', text: `เริ่มเมื่อ ${startedAtText} น.`, size: 'sm', color: '#666666' },
           ...(rentNotice ? [{ type: 'text', text: rentNotice, size: 'sm', weight: 'bold', wrap: true, color: '#854D0E' }] : []),
