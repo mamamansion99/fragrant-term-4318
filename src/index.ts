@@ -1908,6 +1908,12 @@ const CHECKIN_CASH_OK_ACT = 'checkin_cash_ok';
 const CHECKIN_CASH_NO_ACT = 'checkin_cash_no';
 const CHECKIN_CASH_START_ACT = 'checkin_cash_start';
 const CHECKIN_CALC_START_ACT = 'checkin_calc_start';
+// 🔑 เช่ากุญแจเพิ่มตอนเช็คอิน — เงินรวมในยอดเช็คอิน (ใบคำนวณ/สลิป/เงินสด) ไม่ผ่านสาย "เช่ากุญแจ" ของผู้เช่า
+// เดิมไม่มีที่บันทึก KEY_LEDGER จึงไม่รู้ว่าห้องไหนถือกุญแจเช่า และตอนคืนไม่ได้คืนมัดจำ 400
+//   กด 🔑 → เลือก กุญแจ / คีย์การ์ด / ชุด → n8n RENT_KEY (webhook rent-key-checkin) ลง KEY_LEDGER เป็น Paid แล้วตอบกลุ่มเอง
+const CHECKIN_KEY_START_ACT = 'checkin_key_start';
+const CHECKIN_KEY_RENT_ACT = 'checkin_key_rent';
+const DEFAULT_N8N_CHECKIN_KEY_RENT_WEBHOOK_URL = 'https://n8n.srv1112305.hstgr.cloud/webhook/rent-key-checkin';
 
 // เช็คเอาท์ใช้กลไกเดียวกับเช็คอิน (KV เดียวกัน ปุ่มยืนยันเดียวกัน) ต่างกันที่ state มี flow: 'checkout'
 // แล้วส่งเข้า n8n CheckOut_Settle (webhook co-settle) แทน CheckIn
@@ -2215,7 +2221,8 @@ function buildCheckinStaffStartCard(roomId, startedAtText, rentNotice = '') {
           { type: 'text', text: `🧾 เริ่มเช็คอิน ห้อง ${roomId}`, weight: 'bold', size: 'md' },
           { type: 'text', text: `เริ่มเมื่อ ${startedAtText} น.`, size: 'sm', color: '#666666' },
           ...(rentNotice ? [{ type: 'text', text: rentNotice, size: 'sm', weight: 'bold', wrap: true, color: '#854D0E' }] : []),
-          { type: 'text', text: 'จ่ายเงินสด: รับเงินแล้วกด 💵 · ทุกห้องส่งใบคำนวณด้วย 📷', size: 'xs', color: '#888888', wrap: true }
+          { type: 'text', text: 'จ่ายเงินสด: รับเงินแล้วกด 💵 · ทุกห้องส่งใบคำนวณด้วย 📷', size: 'xs', color: '#888888', wrap: true },
+          { type: 'text', text: 'ลูกบ้านเช่ากุญแจ/คีย์การ์ดเพิ่ม: รวมเงินในยอดเช็คอิน แล้วกด 🔑', size: 'xs', color: '#888888', wrap: true }
         ]
       },
       footer: {
@@ -2224,7 +2231,49 @@ function buildCheckinStaffStartCard(roomId, startedAtText, rentNotice = '') {
         spacing: 'sm',
         contents: [
           button('📷 ส่งใบคำนวณ', CHECKIN_CALC_START_ACT, 'primary', '#2f6fed'),
-          button('💵 รับเงินสด', CHECKIN_CASH_START_ACT, 'secondary')
+          button('💵 รับเงินสด', CHECKIN_CASH_START_ACT, 'secondary'),
+          button('🔑 เช่ากุญแจเพิ่ม', CHECKIN_KEY_START_ACT, 'secondary')
+        ]
+      }
+    }
+  };
+}
+
+function buildCheckinKeyRentPicker(roomId) {
+  const option = (label, mode) => ({
+    type: 'button',
+    style: 'secondary',
+    height: 'sm',
+    action: {
+      type: 'postback',
+      label,
+      data: `act=${CHECKIN_KEY_RENT_ACT}&room=${roomId}&mode=${mode}`,
+      displayText: `เช่าเพิ่มตอนเช็คอิน ${roomId}: ${label}`
+    }
+  });
+  return {
+    type: 'flex',
+    altText: `เช่ากุญแจเพิ่ม ห้อง ${roomId}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: `🔑 ห้อง ${roomId} เช่าอะไรเพิ่มคะ`, weight: 'bold', size: 'md' },
+          { type: 'text', text: 'เงินรวมในยอดเช็คอินแล้ว ไม่ต้องเก็บแยก', size: 'xs', color: '#888888', wrap: true }
+        ]
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        contents: [
+          option('กุญแจ 500', 'KEY'),
+          option('คีย์การ์ด 100', 'KEYCARD'),
+          option('ทั้งชุด 600', 'SET')
         ]
       }
     }
@@ -6022,6 +6071,42 @@ const worker = {
           });
           if (!formOk) {
             await replyOrPushText(env, replyToken, chatId, `ระบบไม่ตอบสนอง ยังไม่ได้ส่งฟอร์มให้ห้อง ${roomId} กดใหม่อีกครั้งค่ะ`, 'refund_form_failed');
+          }
+          continue;
+        }
+
+        if (act === CHECKIN_KEY_START_ACT || act === CHECKIN_KEY_RENT_ACT) {
+          const chatId = getChatId(ev);
+          const userId = String(ev?.source?.userId || '').trim();
+          const roomId = String(data.room || '').trim().toUpperCase();
+          if (!isCheckinStaffChat(chatId) || !userId || !/^[AB]\d{3,4}$/.test(roomId)) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ใช้ได้ในกลุ่มเจ้าหน้าที่เท่านั้นค่ะ', 'checkin_key_wrong_chat_failed');
+            continue;
+          }
+          if (act === CHECKIN_KEY_START_ACT) {
+            await replyOrPushMessages(env, replyToken, chatId, [buildCheckinKeyRentPicker(roomId)], 'checkin_key_picker_failed');
+            continue;
+          }
+          const mode = normalizeKeyRentMode(data.mode);
+          const details = mode ? buildKeyRentDetails(mode, roomId, `checkin ${mode} ${roomId}`) : null;
+          if (!details) {
+            await replyOrPushText(env, replyToken, chatId, 'ปุ่มนี้ไม่ถูกต้อง กด 🔑 เช่ากุญแจเพิ่ม ที่การ์ดเช็คอินใหม่ค่ะ', 'checkin_key_bad_mode_failed');
+            continue;
+          }
+          // n8n ตอบกลุ่มเอง (บันทึกแล้ว / เคยบันทึกแล้ว) worker พูดเฉพาะตอน webhook ล่ม
+          const keyOk = await notifyN8nCheckinKeyRent(env, {
+            roomId,
+            mode,
+            items: details.items,
+            amount: details.amount,
+            groupId: chatId,
+            actorUserId: userId,
+            actorName: await checkinStaffName(env, ev),
+            eventId: ev?.webhookEventId || null,
+            receivedAt: new Date().toISOString()
+          });
+          if (!keyOk) {
+            await replyOrPushText(env, replyToken, chatId, `ระบบไม่ตอบสนอง ยังไม่ได้บันทึกกุญแจห้อง ${roomId} กดใหม่อีกครั้งค่ะ`, 'checkin_key_webhook_failed');
           }
           continue;
         }
@@ -13611,6 +13696,15 @@ async function notifyN8nCheckinHorganice(env, payload) {
   );
 }
 
+async function notifyN8nCheckinKeyRent(env, payload) {
+  return postToN8nCarWebhook(
+    env,
+    env.N8N_CHECKIN_KEY_RENT_URL || DEFAULT_N8N_CHECKIN_KEY_RENT_WEBHOOK_URL,
+    payload,
+    'notifyN8nCheckinKeyRent'
+  );
+}
+
 async function notifyN8nCarHorganice(env, payload) {
   return postToN8nCarWebhook(env, env.N8N_CAR_HORGANICE_URL || '', payload, 'notifyN8nCarHorganice');
 }
@@ -14920,6 +15014,7 @@ export const __testables = {
   buildStaffFormUrl,
   parseCheckinCashAmount,
   buildCheckinStaffStartCard,
+  buildCheckinKeyRentPicker,
   readCheckinRentNotice,
   buildCheckinCashConfirmMessage,
   buildCheckoutCashFlowState,
