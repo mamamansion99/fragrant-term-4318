@@ -1,4 +1,6 @@
 // @ts-nocheck
+import { CheckinWeb, checkinCall, checkinWebRequest, PRACTICE_TENANT } from './checkin-web';
+export { CheckinWeb };
 import { PARKING_GUIDE_HTML } from './parking-guide-page';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { handleInboxRequest, maidLoginStart, maidLoginPoll, maidMe, inboxStaff, isInboxPath, issueInboxToken, inboxContactType, inboxContactInfo, payRentCommandInWindow, screeningAskedRecently, bookingLinkSent, recordInboxEvent, recordInboxOutbound, leadOnHold } from './inbox';
@@ -1033,6 +1035,15 @@ async function clearUserWorkflowStatesForCheckin(env, event) {
 async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activeFlowExpected = null) {
   const userId = String(event?.source?.userId || '').trim();
   const chatId = getChatId(event);
+  if (env.CHECKIN_WEB_PILOT === 'A999' && roomId === 'A999' && chatId === PRACTICE_TENANT) {
+    const result = await checkinCall(env, 'start', {
+      receivedAt: new Date(event.timestamp || Date.now()).toISOString(),
+      notice: 'วันเข้าอยู่ 19 ธ.ค. 69\nวันเริ่มคิดค่าเช่า 15 ธ.ค. 69\nคิดค่าเช่า 15–31 ธ.ค. รวม 17 วัน (ข้อมูลห้องฝึก)',
+    });
+    const message = result.ok ? 'ห้องฝึก A999 · กรุณารอเจ้าหน้าที่ทำใบคำนวณก่อนชำระเงินค่ะ' : 'เปิดเช็กอินไม่สำเร็จ กรุณาลองอีกครั้งค่ะ';
+    await replyOrPushText(env, replyToken, chatId, message, 'checkin_web_start_reply_failed');
+    return;
+  }
   await clearUserWorkflowStatesForEvent(
     env,
     event,
@@ -5180,6 +5191,17 @@ const worker = {
 
   async handleFetch(request, env, ctx) {
     const url = new URL(request.url);
+
+    if (url.pathname === '/maid/checkin-web' || url.pathname === '/maid/checkin-web/workflow') {
+      return checkinWebRequest(request, env, req => handleIssuePhotoUpload(req, env), async token => {
+        if (!token) return '';
+        const authUrl = new URL('/maid/me', url);
+        authUrl.searchParams.set('t', token);
+        const result = await maidMe(env, authUrl);
+        const data = await result.json();
+        return result.ok ? data.name : '';
+      });
+    }
 
     // CORS preflight for browser
     if (request.method === 'OPTIONS') {
@@ -9699,6 +9721,27 @@ const worker = {
               ctx.waitUntil(linePushText(env.LINE_ACCESS_TOKEN, chatId, ackText).catch(console.error));
             }
             continue;
+          }
+
+          if (chatId === PRACTICE_TENANT && env.CHECKIN_WEB_PILOT === 'A999') {
+            const imageMessageId = String(ev?.message?.id || '');
+            const result = await checkinCall(env, 'slip', {
+              event: ev,
+              imageMessageId,
+              ...(await signedLineImageUrls(env, imageMessageId)),
+              receivedAt: new Date().toISOString(),
+            });
+            const outcome = await result.json();
+            if (outcome.captured) {
+              await replyOrPushText(env, replyToken, chatId, outcome.expired
+                ? 'หมดเวลาส่งสลิป กรุณาแจ้งเจ้าหน้าที่ตรวจรายการเดิมค่ะ'
+                : 'ได้รับรูปแล้วค่ะ เจ้าหน้าที่ดูสถานะเช็กอินบนเว็บได้', 'checkin_web_slip_reply_failed');
+              continue;
+            }
+            if (result.status === 502) {
+              await replyOrPushText(env, replyToken, chatId, 'ยังตรวจสลิปไม่ได้ กรุณาแจ้งเจ้าหน้าที่ค่ะ', 'checkin_web_slip_error');
+              continue;
+            }
           }
 
           const checkinFlowKey = buildCheckinFlowKey(ev?.source?.userId, chatId);

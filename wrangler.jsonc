@@ -14,6 +14,7 @@
     }
   },
   "vars": {
+    "CHECKIN_WEB_PILOT": "A999",
     "ALLOWED_ORIGIN": "https://mamamansion-ar2.pages.dev",
     "GITHUB_REPO": "mamamansion99/fragrant-term-4318",
     "GITHUB_BRANCH": "main",
@@ -88,13 +89,15 @@
       {
         "name": "ACTIVE_FLOW_OWNER",
         "class_name": "ActiveFlowOwner"
-      }
+      },
+      { "name": "CHECKIN_WEB", "class_name": "CheckinWeb" }
     ]
   },
   "migrations": [
     {
       "tag": "active-flow-owner-v1",
       "new_sqlite_classes": ["ActiveFlowOwner"]
-    }
+    },
+    { "tag": "checkin-web-v1", "new_sqlite_classes": ["CheckinWeb"] }
   ]
 }
