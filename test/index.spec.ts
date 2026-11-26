@@ -2263,10 +2263,13 @@ describe('Worker routes', () => {
 	it('parses the check-in room command', () => {
 		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101')).toBe('A101');
 		expect(__testables.parseCheckinCommand(' เช็คอินห้อง b514 ')).toBe('B514');
+		expect(__testables.parseCheckinCommand('เช็กอินห้อง b111')).toBe('B111');
 		expect(__testables.parseCheckinCommand('เช็คอิน A101')).toBeNull();
 		// "ใหม่" ต่อท้าย = สั่งเริ่มรอบใหม่ ไม่ใช่คำสั่งเช็คอินปกติ (กันสร้างแถวซ้ำ)
 		expect(__testables.parseCheckinCommand('เช็คอินห้อง A101 ใหม่')).toBeNull();
 		expect(__testables.parseCheckinRestartCommand('เช็คอินห้อง a101 ใหม่')).toBe('A101');
+		expect(__testables.parseCheckinCommand('เช็กอินห้อง b111 ใหม่')).toBeNull();
+		expect(__testables.parseCheckinRestartCommand('เช็กอินห้อง b111 ใหม่')).toBe('B111');
 		expect(__testables.parseCheckinRestartCommand('เช็คอินห้อง A101')).toBeNull();
 		expect(__testables.buildCheckinStartGuardKey('b101')).toBe('checkin_started:B101');
 		expect(__testables.isCheckinStartGuardActive({ ts: Date.now() })).toBe(true);
@@ -4228,7 +4231,39 @@ describe('เงินสดเช็คเอาท์ <RoomID> [ยอด]', (
 });
 
 describe('การ์ดเช็คอินในกลุ่มเจ้าหน้าที่', () => {
-	const { buildCheckinStaffStartCard, buildCheckinCashConfirmMessage } = __testables;
+	const { buildCheckinStaffStartCard, buildCheckinCashConfirmMessage, readCheckinRentNotice } = __testables;
+
+	it.each([
+		['2026-12-05', '2026-12-05', '31 ธ.ค. 2569 รวม 27 วัน'],
+		['2027-01-03', '2026-12-30', '31 ธ.ค. 2569 รวม 2 วัน'],
+		['2028-02-29', '2028-02-28', '29 ก.พ. 2571 รวม 2 วัน'],
+		['2026-12-31', '2026-12-31', '31 ธ.ค. 2569 รวม 1 วัน']
+	])('counts the first rental month inclusively for move-in %s and rent start %s', async (moveIn, rentStart, expected) => {
+		const mock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(Response.json({ ok: true, change: { moveIn, rentStart } }));
+		try {
+			const notice = await readCheckinRentNotice({ MM_WEBHOOK_URL: 'https://example.com', WORKER_SECRET: 'test' }, 'B111', 'Utest');
+			expect(notice).toContain(expected);
+		} finally {
+			mock.mockRestore();
+		}
+	});
+
+	it('omits the notice only for a verified unchanged booking and prompts for a manual check on failure', async () => {
+		const mock = vi.spyOn(globalThis, 'fetch')
+			.mockResolvedValueOnce(Response.json({ ok: true, change: null }))
+			.mockResolvedValueOnce(Response.json({ ok: false }))
+			.mockResolvedValueOnce(Response.json({ ok: true, change: { moveIn: '2026-03-03', rentStart: '2026-02-30' } }))
+			.mockRejectedValueOnce(new Error('timeout'));
+		const config = { MM_WEBHOOK_URL: 'https://example.com', WORKER_SECRET: 'test' };
+		try {
+			expect(await readCheckinRentNotice(config, 'B111', 'Utest')).toBe('');
+			for (let i = 0; i < 3; i++) {
+				expect(await readCheckinRentNotice(config, 'B111', 'Utest')).toContain('ตรวจวันเข้าอยู่และวันเริ่มคิดค่าเช่า');
+			}
+		} finally {
+			mock.mockRestore();
+		}
+	});
 
 	it('carries the room on both buttons', () => {
 		const card = buildCheckinStaffStartCard('A505', '10:31');
@@ -4242,5 +4277,78 @@ describe('การ์ดเช็คอินในกลุ่มเจ้า�
 		expect(actions[0].data).toBe('act=checkin_cash_ok&n=abc123def456');
 		expect(actions[0].label).toBe('ยืนยัน 9,550');
 		expect(actions[1].data).toBe('act=checkin_cash_no&n=abc123def456');
+	});
+});
+
+describe('signed tenant check-in with a later move-in date', () => {
+	it.each(['เช็กอินห้อง b111', 'เช็คอินห้อง b111'])('keeps the tenant reply immediate and gives staff the billing dates for %s', async (text) => {
+		const gasUrl = 'https://example.com/checkin-rent';
+		const flowUrl = 'https://example.com/checkin-flow';
+		const mockEnv = {
+			...env,
+			LINE_ACCESS_TOKEN: 'line-token',
+			LINE_CHANNEL_SECRET: 'line-secret',
+			WORKER_SECRET: 'worker-test-secret',
+			MM_WEBHOOK_URL: gasUrl,
+			N8N_CHECKIN_FLOW_URL: flowUrl
+		};
+		let releaseLookup!: () => void;
+		const lookupGate = new Promise<void>((resolve) => { releaseLookup = resolve; });
+		const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+			if (String(input) === gasUrl) {
+				await lookupGate;
+				return Response.json({ ok: true, change: { moveIn: '2026-12-19', rentStart: '2026-12-15' } });
+			}
+			return Response.json({ ok: true });
+		});
+		const bodiesFor = (url: string) => fetchMock.mock.calls
+			.filter(([input]) => String(input) === url)
+			.map(([, init]) => JSON.parse(String(init?.body)));
+		const replyUrl = 'https://api.line.me/v2/bot/message/reply';
+		const pushUrl = 'https://api.line.me/v2/bot/message/push';
+		const ctx = createExecutionContext();
+		try {
+			const request = await buildSignedLineRequest([{
+				type: 'message',
+				replyToken: 'checkin-tenant-reply',
+				webhookEventId: 'checkin-notice-' + text,
+				timestamp: Date.now(),
+				source: { type: 'user', userId: 'U-checkin-notice' },
+				message: { type: 'text', id: 'checkin-message-' + text, text }
+			}]);
+			expect((await worker.fetch(request, mockEnv, ctx)).status).toBe(200);
+			await vi.waitFor(() => {
+				expect(bodiesFor(gasUrl)).toEqual([expect.objectContaining({
+					act: 'checkin_rent_notice', roomId: 'B111', lineUserId: 'U-checkin-notice'
+				})]);
+				expect(bodiesFor(replyUrl)).toEqual([expect.objectContaining({
+					replyToken: 'checkin-tenant-reply',
+					messages: [expect.objectContaining({ type: 'text', text: expect.stringContaining('ส่งสลิปในแชทนี้ภายใน 30 นาที') })]
+				})]);
+			});
+			expect(bodiesFor(pushUrl)).toHaveLength(0);
+			releaseLookup();
+			await waitOnExecutionContext(ctx);
+			expect(bodiesFor(flowUrl)).toEqual([expect.objectContaining({ intent: 'checkin_start', roomId: 'B111' })]);
+			const pushes = bodiesFor(pushUrl);
+			expect(pushes).toHaveLength(1);
+			expect(pushes[0].to).toBe('C355d5b5c8a01d88bf61296b4e10f1575');
+			const [card] = pushes[0].messages;
+			expect(card.type).toBe('flex');
+			const staffText = card.contents.body.contents.map((item: { text: string }) => item.text).join('\n');
+			expect(staffText).toContain('เข้าอยู่ตามนัดใหม่ 19 ธ.ค. 2569');
+			expect(staffText).toContain('เริ่มคิดค่าเช่า 15 ธ.ค. 2569');
+			expect(staffText).toContain('31 ธ.ค. 2569 รวม 17 วัน');
+			expect(card.contents.footer.contents.map((button: { action: { data: string } }) => button.action.data)).toEqual([
+				'act=checkin_calc_start&room=B111', 'act=checkin_cash_start&room=B111'
+			]);
+		} finally {
+			releaseLookup();
+			try {
+				await waitOnExecutionContext(ctx);
+			} finally {
+				fetchMock.mockRestore();
+			}
+		}
 	});
 });

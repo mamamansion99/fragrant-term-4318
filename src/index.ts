@@ -245,10 +245,10 @@ const CHECKIN_CHANGE_KEYWORDS = [
   'changecheckindate',
   'changecheckintime'
 ];
-const CHECKIN_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s*$/i;
+const CHECKIN_COMMAND_RE = /^\s*เช็[คก]อินห้อง\s+([^\s]+)\s*$/i;
 // พิมพ์คำสั่งเดิมซ้ำ = สร้างแถวใหม่ในชีท CheckIn ทุกครั้ง (B101 12/09/2026 ได้ 2 แถว)
 // จึงกันซ้ำต่อห้องไว้ และเปิดทางเริ่มใหม่จริง ๆ ด้วยคำว่า "ใหม่" ต่อท้าย
-const CHECKIN_RESTART_COMMAND_RE = /^\s*เช็คอินห้อง\s+([^\s]+)\s+(?:ใหม่|เริ่มใหม่|restart|force)\s*$/i;
+const CHECKIN_RESTART_COMMAND_RE = /^\s*เช็[คก]อินห้อง\s+([^\s]+)\s+(?:ใหม่|เริ่มใหม่|restart|force)\s*$/i;
 const CHECKIN_FLOW_TTL_SECONDS = 30 * 60;
 const CHECKIN_FLOW_TTL_MS = CHECKIN_FLOW_TTL_SECONDS * 1000;
 const CHECKIN_KEYCARD_PHOTO_TTL_SECONDS = 20 * 60;
@@ -1096,14 +1096,15 @@ async function startCheckinFlow(env, ctx, event, replyToken, text, roomId, activ
     `รับทราบแล้วค่ะ กำลังแจ้งเจ้าหน้าที่ให้ดำเนินงานเช็คอินห้อง ${roomId} ต่อทันที\n\n` +
     '💳 โอนเงิน — ส่งสลิปในแชทนี้ภายใน 30 นาที\n' +
     '💵 เงินสด — ชำระกับเจ้าหน้าที่ได้เลย ไม่ต้องส่งสลิป';
-  await replyOrPushText(env, replyToken, chatId, ackMsg, 'checkin_start_ack_failed');
-
-  // การ์ดในกลุ่มเจ้าหน้าที่ — ปุ่มส่งใบคำนวณ / รับเงินสด ของห้องนี้
+  // Prepare the staff card independently so the tenant can send the slip immediately.
   ctx.waitUntil(
-    linePush(env.LINE_ACCESS_TOKEN, CHECKIN_CASH_STAFF_GROUP_ID, [
-      buildCheckinStaffStartCard(roomId, formatTimeBangkok(new Date()))
-    ]).catch((err) => console.error('checkin_staff_card_push_failed', err))
+    readCheckinRentNotice(env, roomId, userId).then((notice) =>
+      linePush(env.LINE_ACCESS_TOKEN, CHECKIN_CASH_STAFF_GROUP_ID, [
+        buildCheckinStaffStartCard(roomId, formatTimeBangkok(new Date(payload.receivedAt)), notice)
+      ])
+    ).catch((err) => console.error('checkin_staff_card_push_failed', err))
   );
+  await replyOrPushText(env, replyToken, chatId, ackMsg, 'checkin_start_ack_failed');
 }
 
 function parseCheckinCommand(text) {
@@ -2152,7 +2153,42 @@ async function signedLineImageUrls(env, messageId) {
   };
 }
 
-function buildCheckinStaffStartCard(roomId, startedAtText) {
+async function readCheckinRentNotice(env, roomId, lineUserId) {
+  const manualCheck = '⚠️ กรุณาตรวจวันเข้าอยู่และวันเริ่มคิดค่าเช่าจากประวัติการจองก่อนทำใบคำนวณ';
+  const url = getWebhookGas(env);
+  const workerSecret = getWorkerForwardSecret(env);
+  if (!url || !workerSecret) return manualCheck;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ act: 'checkin_rent_notice', roomId, lineUserId, workerSecret }),
+      redirect: 'follow',
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!res.ok) return manualCheck;
+    const data = await res.json() as { ok?: boolean; change?: { moveIn: string; rentStart: string } | null };
+    if (data?.ok !== true) return manualCheck;
+    if (data.change === null) return '';
+    const { moveIn, rentStart } = data.change || {};
+    if (!isIsoDate(moveIn) || !isIsoDate(rentStart) || rentStart > moveIn) return manualCheck;
+    const start = new Date(rentStart + 'T00:00:00Z');
+    if (start.toISOString().slice(0, 10) !== rentStart ||
+        new Date(moveIn + 'T00:00:00Z').toISOString().slice(0, 10) !== moveIn) return manualCheck;
+    const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0));
+    const days = end.getUTCDate() - start.getUTCDate() + 1;
+    return [
+      '📅 เข้าอยู่ตามนัดใหม่ ' + formatThaiDateFromIso(moveIn),
+      '💰 เริ่มคิดค่าเช่า ' + formatThaiDateFromIso(rentStart),
+      'ค่าเช่าเดือนแรกถึง ' + formatThaiDateFromIso(end.toISOString().slice(0, 10)) + ' รวม ' + days + ' วัน'
+    ].join('\n');
+  } catch (err) {
+    console.warn('checkin_rent_notice_unavailable', { roomId, error: String(err) });
+    return manualCheck;
+  }
+}
+
+function buildCheckinStaffStartCard(roomId, startedAtText, rentNotice = '') {
   const button = (label, act, style, color = undefined) => ({
     type: 'button',
     style,
@@ -2178,6 +2214,7 @@ function buildCheckinStaffStartCard(roomId, startedAtText) {
         contents: [
           { type: 'text', text: `🧾 เริ่มเช็คอิน ห้อง ${roomId}`, weight: 'bold', size: 'md' },
           { type: 'text', text: `เริ่มเมื่อ ${startedAtText} น.`, size: 'sm', color: '#666666' },
+          ...(rentNotice ? [{ type: 'text', text: rentNotice, size: 'sm', weight: 'bold', wrap: true, color: '#854D0E' }] : []),
           { type: 'text', text: 'จ่ายเงินสด: รับเงินแล้วกด 💵 · ทุกห้องส่งใบคำนวณด้วย 📷', size: 'xs', color: '#888888', wrap: true }
         ]
       },
@@ -14883,6 +14920,7 @@ export const __testables = {
   buildStaffFormUrl,
   parseCheckinCashAmount,
   buildCheckinStaffStartCard,
+  readCheckinRentNotice,
   buildCheckinCashConfirmMessage,
   buildCheckoutCashFlowState,
   parseCheckoutCashAmount,
