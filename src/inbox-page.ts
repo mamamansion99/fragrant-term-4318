@@ -79,6 +79,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .in{align-self:flex-start;background:var(--surface);border-top-left-radius:6px}
 .out{align-self:flex-end;background:var(--bot);border-top-right-radius:6px}.out.ai{background:var(--ai)}.out.mine{background:var(--mine)}
 .b img{max-width:100%;border-radius:10px;display:block}
+.b>img{width:auto;max-width:min(100%,240px);max-height:320px;object-fit:contain}
 .b.rich{background:transparent;padding:0;box-shadow:none;max-width:100%}
 .qt{display:flex;gap:8px;align-items:center;border-left:3px solid var(--mute);background:rgba(127,127,127,.12);border-radius:8px;padding:5px 8px;margin:2px 0 6px;font-size:12.5px;color:var(--mute);max-width:260px}
 .qt img{width:40px;height:40px;object-fit:cover;border-radius:6px;flex:0 0 auto}
@@ -100,7 +101,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .fx-btn{border-radius:8px;padding:10px 8px;text-align:center;font-size:14px;font-weight:600}
 .fx-tbtn{border-top:1px solid #e5e5e5;padding:11px;text-align:center;color:#42659a;font-size:14px}
 .fx-text{background:var(--raised);color:var(--ink);border-radius:14px;padding:8px 12px;white-space:pre-wrap;display:inline-block}
-.fx-photo{max-width:240px;border-radius:12px;display:block}
+.fx-photo{max-width:240px;max-height:320px;object-fit:contain;border-radius:12px;display:block}
 .stk{max-width:120px;padding:2px}.stk img{width:110px;height:auto;display:block}
 .stk.in{background:none;border:0}.stk.out{background:none}
 .hold{display:flex;align-items:center;gap:10px;padding:8px 12px 8px 16px;font-size:13px;border-top:1px solid var(--line)}
