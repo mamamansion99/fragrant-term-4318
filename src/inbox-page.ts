@@ -497,7 +497,7 @@ function renderThread(d) {
   const labels = {};
   d.messages.forEach((m) => { if (m.dir === 'OUT' && m.rich) collectActions(m.rich, labels); });
   const c = d.contact || { u: current, type: 'NON_TENANT' };
-  if (quickFor !== current) { quickFor = current; setQuick(c.type !== 'TENANT'); }
+  if (quickFor !== current) { quickFor = current; setQuick(false); }
   const tav = $('tav'); tav.textContent = ''; tav.style.background = colorOf(current); tav.innerHTML = esc(initial(c.name, current)) + avImg(c.pic);
   $('tname').textContent = (c.name || 'ลูกค้า') + (c.room ? ' · ' + c.room : '');
   $('tsub').textContent = c.type === 'TENANT' ? 'ผู้เช่า' + (c.tenant ? ' · ' + c.tenant : '') : 'ลูกค้าใหม่';
